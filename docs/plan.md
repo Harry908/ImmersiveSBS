@@ -1,6 +1,6 @@
 # ImmersiveSBS — plan
 
-Status: **plan only; the repo holds an empty skeleton.** Written 2026-10-07.
+Status: **P1 and P2 built, awaiting the first run on the glasses** (see `progress.md`). Written 2026-10-07.
 
 ImmersiveSBS turns a pair of video glasses in hardware 3D mode (RayNeo GT Max: 3840×1080, one
 1920×1080 half per eye) into a full desktop monitor, and can convert 2D video on that desktop

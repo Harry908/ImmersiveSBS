@@ -8,7 +8,9 @@ it into both halves, and can convert 2D video to stereo 3D with a depth model. I
 overlay design of DesktopSbS (`D:\Desktop\DesktopSbS`, GPL-3.0); this repo is GPL-3.0 too and
 ports code from it.
 
-`docs/plan.md` is the design and phase plan: read it before starting a phase and keep it current.
+`docs/plan.md` is the design and phase plan; `progress.md` is the living record (machine,
+displays, driver install, what each phase did and what is open). Read both before starting a
+phase and keep them current.
 `docs/video-3d-plan.md` is the earlier AI-video plan; only §0 and §4–§7 still apply.
 
 ## Build

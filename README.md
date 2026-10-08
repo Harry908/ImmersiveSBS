@@ -9,7 +9,8 @@ ImmersiveSBS instead renders the desktop on a 1920×1080 virtual monitor and sho
 pixel, to each eye. When AI 3D is on, a depth model turns 2D video into a true side-by-side
 picture.
 
-**Status:** early. Nothing runs yet; see [docs/plan.md](docs/plan.md).
+**Status:** early (phases P1–P2: tray app, not yet field-tested); see [docs/plan.md](docs/plan.md) and
+[progress.md](progress.md).
 
 - Requirements (planned): Windows 10 2004 or later (Windows 11 recommended), a DirectX 11 GPU;
   an NVIDIA RTX GPU for AI 3D.

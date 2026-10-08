@@ -1,0 +1,101 @@
+<Window x:Class="ImmersiveSBS.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:theme="clr-namespace:ImmersiveSBS.Theme"
+        theme:ThemeManager.IsEnabled="True"
+        Title="ImmersiveSBS settings" Width="760" Height="900"
+        WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="Margin" Value="0 0 0 4"/>
+        </Style>
+    </Window.Resources>
+
+    <DockPanel>
+        <Border DockPanel.Dock="Bottom" Style="{StaticResource Footer}">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="Save" Style="{StaticResource AccentButton}" MinWidth="96" Margin="0 0 8 0" Click="OnSave" IsDefault="True"/>
+                <Button Content="Cancel" MinWidth="96" Click="OnCancel" IsCancel="True"/>
+            </StackPanel>
+        </Border>
+
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="24 20 24 24">
+                <TextBlock Text="ImmersiveSBS" Style="{StaticResource TitleText}" Margin="0 0 0 16"/>
+
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="Status" Style="{StaticResource SectionText}"/>
+                        <TextBlock x:Name="StatusText" TextWrapping="Wrap"/>
+                        <TextBlock x:Name="MainDisplayWarning" Foreground="{DynamicResource CautionBrush}" TextWrapping="Wrap"
+                                   Margin="0 8 0 0" Visibility="Collapsed"
+                                   Text="The virtual monitor is your main display, so the taskbar, the Start menu and most new windows are on it. When ImmersiveSBS is not running, nothing shows them. Consider keeping a real monitor as the main display and turning on 'Show my taskbar on all displays' (Settings &gt; Personalization &gt; Taskbar). Without the glasses: Win+P, 'PC screen only'."/>
+                        <TextBlock x:Name="StatsText" FontFamily="Consolas" FontSize="15" Margin="0 8 0 0"
+                                   Style="{StaticResource SecondaryText}"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" Margin="0 12 0 0">
+                    <StackPanel>
+                        <TextBlock Text="Displays" Style="{StaticResource SectionText}"/>
+                        <TextBlock Text="Virtual monitor (what you work on)" Style="{StaticResource FieldLabel}"/>
+                        <ComboBox x:Name="VirtualMonitorBox"/>
+                        <TextBlock Text="Glasses" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
+                        <ComboBox x:Name="GlassesBox"/>
+                        <TextBlock Style="{StaticResource CaptionText}" Margin="0 12 0 0"
+                                   Text="Arrange the displays in Settings &gt; System &gt; Display. Place the glasses where the cursor rarely goes, for example above another monitor."/>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" Margin="0 12 0 0">
+                    <StackPanel>
+                        <TextBlock Text="Showing" Style="{StaticResource SectionText}"/>
+                        <TextBlock Text="Capture" Style="{StaticResource FieldLabel}"/>
+                        <ComboBox x:Name="CaptureBox">
+                            <ComboBoxItem Content="Desktop Duplication (recommended)"/>
+                            <ComboBoxItem Content="Windows.Graphics.Capture (cursor drawn by Windows)"/>
+                        </ComboBox>
+                        <CheckBox x:Name="ShowIn2DBox" Margin="0 16 0 0"
+                                  Content="Also show the virtual monitor when the glasses are in 2D mode"/>
+                        <CheckBox x:Name="CursorBox" Margin="0 8 0 0"
+                                  Content="Stop the cursor at the edge of the glasses"/>
+                        <CheckBox x:Name="WindowsBox" Margin="0 8 0 0"
+                                  Content="Move windows that land on the glasses to the virtual monitor"/>
+                        <CheckBox x:Name="ShowInWindowBox" Margin="0 8 0 0"
+                                  Content="Show the virtual monitor in a window when it is not on the glasses"/>
+                        <CheckBox x:Name="EvacuateBox" Margin="0 8 0 0"
+                                  Content="On exit, move windows from the virtual monitor to a visible display"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" Margin="0 12 0 0">
+                    <StackPanel>
+                        <TextBlock Text="Startup and shortcuts" Style="{StaticResource SectionText}"/>
+                        <CheckBox x:Name="StartWithWindowsBox" Content="Start with Windows"/>
+                        <Grid Margin="0 16 0 0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Text="Pause or resume" VerticalAlignment="Center" Margin="0 0 16 8"/>
+                            <TextBox Grid.Row="0" Grid.Column="1" x:Name="PauseShortcutBox" Margin="0 0 0 8"/>
+                            <TextBlock Grid.Row="1" Text="Settings" VerticalAlignment="Center" Margin="0 0 16 8"/>
+                            <TextBox Grid.Row="1" Grid.Column="1" x:Name="SettingsShortcutBox" Margin="0 0 0 8"/>
+                            <TextBlock Grid.Row="2" Text="Exit" VerticalAlignment="Center" Margin="0 0 16 0"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" x:Name="ExitShortcutBox"/>
+                        </Grid>
+                        <TextBlock Style="{StaticResource CaptionText}" Margin="0 8 0 0"
+                                   Text="Written like Ctrl+Alt+B; at least one of Ctrl, Alt, Shift or Win. Leave empty for none."/>
+                        <TextBlock x:Name="ErrorText" Foreground="{DynamicResource CautionBrush}" TextWrapping="Wrap"
+                                   Margin="0 8 0 0" Visibility="Collapsed"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+    </DockPanel>
+</Window>

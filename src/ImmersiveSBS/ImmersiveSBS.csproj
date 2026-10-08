@@ -11,7 +11,27 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <!-- The tray icon and its menu (NotifyIcon, ContextMenuStrip), as in DesktopSbS. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>ImmersiveSBS.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- P/Invoke structs with fixed buffers and COM vtable calls. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WPF names win: WinForms and System.Drawing are imported per file where used. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="ImmersiveSBS.ico" />
+  </ItemGroup>
 
 </Project>
