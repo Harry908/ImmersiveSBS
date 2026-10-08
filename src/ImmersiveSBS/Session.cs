@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Drawing;
 using ImmersiveSBS.Capture;
+using ImmersiveSBS.Depth;
 using ImmersiveSBS.Displays;
 using ImmersiveSBS.Interop;
 using ImmersiveSBS.Presentation;
@@ -24,7 +25,8 @@ public sealed record SessionStats(
     double CaptureFps, double PointerUpdatesPerSecond, double PresentFps, double RefreshHz,
     double PresentLatencyAvgMs, double PresentLatencyMaxMs,
     double DisplayLatencyAvgMs, double DisplayLatencyMaxMs,
-    double VideoMemoryMb)
+    double VideoMemoryMb,
+    string? Ai = null)
 {
     public override string ToString() =>
         $"Capture   {Method}, {SourceWidth}×{SourceHeight}, {CaptureFps:0.0} fps, cursor {PointerUpdatesPerSecond:0}/s\n" +
@@ -32,7 +34,8 @@ public sealed record SessionStats(
         $"glasses {(RefreshHz > 0 ? RefreshHz.ToString("0.00") + " Hz" : "refresh unknown")}\n" +
         $"Capture → Present  avg {PresentLatencyAvgMs:0.0} ms, max {PresentLatencyMaxMs:0.0} ms\n" +
         $"Capture → vblank   {(DisplayLatencyAvgMs > 0 ? $"avg {DisplayLatencyAvgMs:0.0} ms, max {DisplayLatencyMaxMs:0.0} ms" : "no frame statistics")}\n" +
-        $"VRAM (this process, render adapter)  {VideoMemoryMb:0} MB";
+        $"VRAM (this process, render adapter)  {VideoMemoryMb:0} MB" +
+        (Ai != null ? "\n" + Ai : "");
 }
 
 /// <summary>
@@ -45,6 +48,14 @@ public sealed class Session
     private readonly Thread thread;
     private volatile bool stopRequested;
     private volatile SessionStats? stats;
+    private volatile StereoSettings stereo = StereoSettings.Off;
+    private volatile DepthService? depth;
+    private volatile int stereoVersion;
+    private volatile bool audioDelayed;
+    private readonly object delayLock = new();
+    private Rectangle delayRegion;
+    private bool pickRequested;
+    private Point? pickPoint;
     private readonly object boundsLock = new();
     private Rectangle? requestedBounds;
 
@@ -61,6 +72,78 @@ public sealed class Session
     public event Action<string?>? Ended;
 
     public SessionStats? Stats => stats;
+
+    /// <summary>AI 3D settings; any thread, applied from the next frame without a restart.</summary>
+    public StereoSettings Stereo
+    {
+        get => stereo;
+        set
+        {
+            stereo = value;
+            Interlocked.Increment(ref stereoVersion);
+        }
+    }
+
+    /// <summary>
+    /// Set by the controller while the app under <see cref="DelayRegion"/> has its sound played
+    /// <see cref="StereoSettings.BufferSeconds"/> late; the video is delayed only then, so the two
+    /// can never drift apart. Any thread.
+    /// </summary>
+    public bool AudioDelayed
+    {
+        get => audioDelayed;
+        set => audioDelayed = value;
+    }
+
+    /// <summary>
+    /// The video region (virtual monitor px) whose sound should be delayed, or empty; read by the
+    /// controller to find the app playing it. Any thread.
+    /// </summary>
+    public Rectangle DelayRegion
+    {
+        get { lock (delayLock) return delayRegion; }
+    }
+
+    private void SetDelayRegion(Rectangle r)
+    {
+        lock (delayLock) delayRegion = r;
+    }
+
+    /// <summary>
+    /// Picks the video at <paramref name="point"/> (virtual monitor px) and locks it, or releases
+    /// a lock (also when <paramref name="point"/> is null); applied on the next frame. Any thread.
+    /// </summary>
+    public void RequestPick(Point? point)
+    {
+        lock (delayLock)
+        {
+            pickRequested = true;
+            pickPoint = point;
+        }
+        Interlocked.Increment(ref stereoVersion);
+    }
+
+    private bool TakePick(out Point? point)
+    {
+        lock (delayLock)
+        {
+            point = pickPoint;
+            bool requested = pickRequested;
+            pickRequested = false;
+            return requested;
+        }
+    }
+
+    /// <summary>The shared depth model, owned by the controller; null while AI 3D is off.</summary>
+    public DepthService? Depth
+    {
+        get => depth;
+        set
+        {
+            depth = value;
+            Interlocked.Increment(ref stereoVersion);
+        }
+    }
 
     /// <summary>True when the user closed the mirror window, which ended the session.</summary>
     public bool ClosedByUser { get; private set; }
@@ -91,6 +174,7 @@ public sealed class Session
         ID3D11Device? device = null;
         IDXGIAdapter3? adapter = null;
         ICaptureSource? capture = null;
+        AiStereo? ai = null;
         Renderer? renderer = null;
         IntPtr hwnd = IntPtr.Zero;
 
@@ -132,7 +216,8 @@ public sealed class Session
                 ? new DuplicationCapture(device, SourceGdiName)
                 : new GraphicsCapture(device, SourceGdiName);
 
-            Loop(adapter, capture, renderer, hwnd);
+            ai = new AiStereo(device);
+            Loop(adapter, capture, renderer, hwnd, ai);
         }
         catch (Exception e)
         {
@@ -141,6 +226,7 @@ public sealed class Session
         }
         finally
         {
+            ai?.Dispose();
             capture?.Dispose();
             renderer?.Dispose();
             if (hwnd != IntPtr.Zero) Native.DestroyWindow(hwnd);
@@ -156,7 +242,7 @@ public sealed class Session
     private string? SourceGdiName() =>
         DisplayConfigurationService.Resolve(options.Source, retryWhileTargetUnavailable: false)?.Identity.GdiDeviceName;
 
-    private void Loop(IDXGIAdapter3 adapter, ICaptureSource capture, Renderer renderer, IntPtr hwnd)
+    private void Loop(IDXGIAdapter3 adapter, ICaptureSource capture, Renderer renderer, IntPtr hwnd, AiStereo ai)
     {
         void Place(Rectangle target, string why)
         {
@@ -172,6 +258,8 @@ public sealed class Session
         int seenResizes = MirrorWindow.Resizes;
         int seenCloseRequests = MirrorWindow.CloseRequests;
         bool redraw = true;
+        int seenStereoVersion = stereoVersion;
+        string? aiStatus = null;
 
         while (!stopRequested)
         {
@@ -219,9 +307,13 @@ public sealed class Session
 
             CaptureUpdate update = capture.Acquire(redraw ? 0 : 16);
             meter.OnCapture(update);
-            if (!update.Any && !redraw)
+
+            // New depth or new AI settings change the picture even when the desktop did not.
+            bool aiChanged = Depth?.HasResult == true || stereoVersion != seenStereoVersion;
+            seenStereoVersion = stereoVersion;
+            if (!update.Any && !redraw && !aiChanged)
             {
-                meter.Publish(this, adapter, renderer, capture);
+                meter.Publish(this, adapter, renderer, capture, aiStatus);
                 continue;
             }
 
@@ -231,14 +323,33 @@ public sealed class Session
             meter.OnCapture(late);
             long content = Math.Max(update.ContentQpc, late.ContentQpc);
 
-            renderer.Render(capture.Texture, options.Method == CaptureMethod.DesktopDuplication ? capture.Pointer : null);
+            // AI 3D only exists in side-by-side; in 2D and in the window the frame stays flat.
+            StereoOverlay? overlay = null;
+            StereoSettings stereo = Stereo;
+            if (renderer.SideBySide && capture.Texture is { } frame)
+            {
+                var fd = frame.Description;
+                var eye = new Size(renderer.Width / 2, renderer.Height);
+                double scale = Math.Min((double)eye.Width / fd.Width, (double)eye.Height / fd.Height);
+                if (TakePick(out Point? pick)) ai.Pick(pick);
+                overlay = ai.Process(frame, update.Frame || late.Frame, stereo, Depth, eye, scale, AudioDelayed);
+                aiStatus = ai.Status;
+                SetDelayRegion(ai.DelayRegion);
+            }
+            else
+            {
+                aiStatus = stereo.Target == AiTarget.Off ? null : "AI 3D: works when the glasses are in 3D mode";
+                SetDelayRegion(Rectangle.Empty);
+            }
+
+            renderer.Render(capture.Texture, options.Method == CaptureMethod.DesktopDuplication ? capture.Pointer : null, overlay);
             long presentQpc = Stopwatch.GetTimestamp();
             uint presentCount = renderer.Present();
             meter.OnPresent(presentCount, content, presentQpc);
             if (renderer.TryGetFrameStatistics(out FrameStatistics fs)) meter.OnFrameStatistics(fs);
             redraw = false;
 
-            meter.Publish(this, adapter, renderer, capture);
+            meter.Publish(this, adapter, renderer, capture, aiStatus);
         }
     }
 
@@ -303,7 +414,7 @@ public sealed class Session
             displayMax = Math.Max(displayMax, ms);
         }
 
-        public void Publish(Session session, IDXGIAdapter3 adapter, Renderer renderer, ICaptureSource capture)
+        public void Publish(Session session, IDXGIAdapter3 adapter, Renderer renderer, ICaptureSource capture, string? ai)
         {
             long now = Stopwatch.GetTimestamp();
             double seconds = (now - windowStart) / (double)Stopwatch.Frequency;
@@ -324,7 +435,7 @@ public sealed class Session
                 frames / seconds, pointerUpdates / seconds, presents / seconds, refreshHz,
                 presentSum / measured, presentMax,
                 displayCount > 0 ? displaySum / displayCount : 0, displayMax,
-                vram);
+                vram, ai);
             session.stats = s;
 
             if (now >= nextLog)

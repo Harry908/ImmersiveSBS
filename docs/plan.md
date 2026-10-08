@@ -1,6 +1,6 @@
 # ImmersiveSBS — plan
 
-Status: **P1 and P2 built, awaiting the first run on the glasses** (see `progress.md`). Written 2026-10-07.
+Status: **P1 and P2 running on the glasses; P4 (AI 3D) and P5 (buffer and delayed sound) built, not yet seen in them** (see `progress.md`). Written 2026-10-07.
 
 ImmersiveSBS turns a pair of video glasses in hardware 3D mode (RayNeo GT Max: 3840×1080, one
 1920×1080 half per eye) into a full desktop monitor, and can convert 2D video on that desktop
@@ -115,21 +115,27 @@ package, fp16, static input shapes, one cached engine per model and size. Direct
 Depth Anything V2 Small (Apache-2.0, fast), Distill-Any-Depth Base (MIT, default), Large (MIT,
 518×518 export today; 518×294 re-export planned).
 
-### D5. Sound: process loopback, mute, delayed playback
+### D5. Sound: process loopback, turned-down session, delayed playback
 
 Only needed when the video is buffered.
 
 1. Capture the browser's process tree with process loopback
    (`AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK`, Windows 10 2004+).
-2. Mute the browser's own audio session (`ISimpleAudioVolume`) so the live sound is not heard.
-   Loopback is documented to tap before session volume and mute by default; **verify in P5**.
+2. Silence the live sound without silencing the capture. **Measured in P5** (Windows 11 build
+   26300, `AudioLoopbackTests`): loopback is taken *after* the session mute (a muted session
+   captures silence) and after the session volume, which acts as amplitude v² down to v = 0.001
+   (−120 dB; 0.0001 is silent). So the browser's sessions are turned down to v = 0.01 (−80 dB,
+   inaudible) instead of muted, and the capture is boosted by (1/v)² = 10 000; the mixer works
+   in float, so nothing is lost. A boosted packet with an implausible peak came from a session
+   not yet turned down and passes at unity gain.
 3. Play the captured sound through WASAPI on the user's output (the glasses carry sound over
    DisplayPort: "SmartGlasses (NVIDIA High Definition Audio)") exactly the buffer length after
-   capture.
+   capture, at the browser's own session volume.
 4. Video frames and audio packets are both stamped with QPC; each is presented at
-   `capture time + buffer`, and playback resamples slightly to follow the output clock.
-5. The browser is unmuted on pause, exit and crash; a marker file lets the next start undo a
-   killed run (as DesktopSbS does for the cursor scheme).
+   `capture time + buffer`. Capture and playback share the device clock, so there is no drift
+   to resample; packet jitter is absorbed and larger slips resynchronise.
+5. The browser's volumes are restored on stop, exit and crash; a marker file lets the next
+   start undo a killed run (as DesktopSbS does for the cursor scheme).
 
 Fallbacks, in order: route the browser to an unheard output and capture that; a virtual audio
 cable (driver); none of these is planned.
@@ -203,7 +209,8 @@ Installer (app + driver), README, update check.
 2. Glasses refresh rate in 3D mode, and whether the hardware 3D button works with the glasses
    removed from the desktop (P1).
 3. Whole-frame AI as well as video-only (P4; video-only is the default).
-4. Does process loopback really tap before the session mute (P5)?
+4. ~~Does process loopback really tap before the session mute (P5)?~~ No: after the mute and after
+   the session volume (v²); D5 turns the session down instead of muting.
 
 ## Sources
 

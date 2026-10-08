@@ -4,9 +4,12 @@ using System.IO;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
+using ImmersiveSBS.Audio;
 using ImmersiveSBS.Capture;
+using ImmersiveSBS.Depth;
 using ImmersiveSBS.Displays;
 using ImmersiveSBS.Input;
+using ImmersiveSBS.Interop;
 using ImmersiveSBS.Tray;
 
 namespace ImmersiveSBS;
@@ -26,9 +29,15 @@ public sealed class AppController : IDisposable
     private readonly Dispatcher dispatcher = Dispatcher.CurrentDispatcher;
     private readonly DispatcherTimer retryTimer = new() { Interval = TimeSpan.FromSeconds(5) };
     private DisplayChangeMonitor? displayMonitor;
+    private DepthService? depthService;
+    private string? depthStatus;
+
+    /// <summary>Field of view for glasses not in <see cref="KnownGlasses"/> (DesktopSbS default).</summary>
+    private const double DefaultFieldOfView = 50;
     private GlobalKeyboardHook? keyboard;
     private TrayIcon? tray;
     private SettingsWindow? settingsWindow;
+    private TuningWindow? tuningWindow;
     private volatile Dictionary<Shortcut, ShortcutCommand> shortcuts = [];
 
     private Session? session;
@@ -86,8 +95,98 @@ public sealed class AppController : IDisposable
         keyboard = new GlobalKeyboardHook { KeyPressed = OnKey };
         displayMonitor = new DisplayChangeMonitor();
         displayMonitor.Changed += reason => Evaluate(reason, force: false);
+        // A previous run that crashed while delaying sound left the app's sessions turned down.
+        SessionAttenuator.RecoverAfterCrash();
+        audioTimer.Tick += (_, _) => UpdateAudioDelay();
+        audioTimer.Start();
         Evaluate("start", force: true);
     }
+
+    #region Delayed sound
+
+    private readonly DispatcherTimer audioTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private AudioDelay? audioDelay;
+    private bool audioStarting;
+    private uint audioFailedProcess;
+
+    /// <summary>"Sound 1 s behind" while the delayed sound runs; null otherwise.</summary>
+    public string? AudioStatus => audioDelay == null ? null : $"sound {audioDelay.Delay.TotalSeconds:0.#} s behind";
+
+    /// <summary>
+    /// Keeps the delayed sound in step with what the session asks for: while it reports a video
+    /// region to delay, the app under that region has its sound delayed, and only once that runs is
+    /// the session told to delay the picture too.
+    /// </summary>
+    private void UpdateAudioDelay()
+    {
+        Session? s = session;
+        Rectangle region = s?.DelayRegion ?? Rectangle.Empty;
+        uint process = 0;
+        if (s is { Windowed: false } && Settings.BufferSeconds > 0 && !region.IsEmpty && VirtualMonitor != null && !shuttingDown)
+        {
+            var center = new System.Drawing.Point(VirtualMonitor.Bounds.X + region.X + region.Width / 2,
+                                   VirtualMonitor.Bounds.Y + region.Y + region.Height / 2);
+            process = Native.ProcessAt(center);
+            if (process == (uint)Environment.ProcessId) process = 0;
+        }
+
+        if (process == 0)
+        {
+            audioFailedProcess = 0;
+            StopAudioDelay();
+            return;
+        }
+
+        var delay = TimeSpan.FromSeconds(Settings.BufferSeconds);
+        if (audioDelay != null && audioDelay.ProcessId == process && audioDelay.Delay == delay)
+        {
+            audioDelay.Offset = TimeSpan.FromMilliseconds(Settings.AudioOffsetMs);
+            s!.AudioDelayed = true;
+            return;
+        }
+        if (audioStarting || process == audioFailedProcess) return;
+
+        StopAudioDelay();
+        _ = StartAudioDelayAsync(process, delay);
+    }
+
+    private async Task StartAudioDelayAsync(uint process, TimeSpan delay)
+    {
+        audioStarting = true;
+        try
+        {
+            AudioDelay started = await AudioDelay.StartAsync(process, delay);
+            if (shuttingDown)
+            {
+                started.Dispose();
+                return;
+            }
+            started.Offset = TimeSpan.FromMilliseconds(Settings.AudioOffsetMs);
+            audioDelay = started;
+            Notify();
+        }
+        catch (Exception e)
+        {
+            // Not retried for this app until the video moves to another one or the buffer changes.
+            audioFailedProcess = process;
+            Log.Write($"Audio: could not delay process {process}'s sound: {e.Message}");
+        }
+        finally
+        {
+            audioStarting = false;
+        }
+    }
+
+    private void StopAudioDelay()
+    {
+        if (session != null) session.AudioDelayed = false;
+        if (audioDelay == null) return;
+        audioDelay.Dispose();
+        audioDelay = null;
+        Notify();
+    }
+
+    #endregion
 
     #region Commands
 
@@ -116,8 +215,92 @@ public sealed class AppController : IDisposable
             case ShortcutCommand.Exit:
                 _ = ShutdownAsync();
                 break;
+
+            case ShortcutCommand.MoreDepth:
+            case ShortcutCommand.LessDepth:
+                Adjust(s => s.Ai3DStrength = Math.Round(Math.Clamp(s.Ai3DStrength + (command == ShortcutCommand.MoreDepth ? 0.1 : -0.1), 0, 1), 2),
+                    s => $"Depth {s.Ai3DStrength:0.0}");
+                break;
+
+            case ShortcutCommand.PictureBack:
+            case ShortcutCommand.PictureForward:
+                Adjust(s => s.Ai3DConvergence = Math.Round(Math.Clamp(s.Ai3DConvergence + (command == ShortcutCommand.PictureForward ? 0.05 : -0.05), 0.1, 0.9), 2),
+                    s => $"Screen plane {s.Ai3DConvergence:0.00}");
+                break;
+
+            case ShortcutCommand.PickVideo:
+                // The cursor is on the virtual monitor while the user works there; elsewhere this
+                // only releases a lock.
+                if (session is { Windowed: false } s && VirtualMonitor != null)
+                {
+                    Native.GetCursorPos(out System.Drawing.Point cursor);
+                    Rectangle vm = VirtualMonitor.Bounds;
+                    s.RequestPick(vm.Contains(cursor) ? new System.Drawing.Point(cursor.X - vm.X, cursor.Y - vm.Y) : null);
+                }
+                break;
+
+            case ShortcutCommand.Tuning:
+                if (tuningWindow == null)
+                {
+                    tuningWindow = new TuningWindow(this);
+                    tuningWindow.Closed += (_, _) => tuningWindow = null;
+                    tuningWindow.Show();
+                }
+                tuningWindow.Activate();
+                break;
+
+            case ShortcutCommand.ToggleAi3D:
+                SetAi3D(Settings.Ai3D == AiTarget.Off ? Settings.Ai3DLastTarget : AiTarget.Off);
+                break;
         }
     }
+
+    /// <summary>Switches AI 3D to <paramref name="target"/> and remembers the last target that was on.</summary>
+    public void SetAi3D(AiTarget target)
+    {
+        if (Settings.Ai3D == target) return;
+        AppSettings s = Settings.Clone();
+        if (s.Ai3D != AiTarget.Off) s.Ai3DLastTarget = s.Ai3D;
+        if (target != AiTarget.Off) s.Ai3DLastTarget = target;
+        s.Ai3D = target;
+        Log.Write($"App: AI 3D {target}.");
+        ApplySettings(s);
+    }
+
+    /// <summary>A hotkey change: applied and saved at once, and named in the status for the panel and tray.</summary>
+    private void Adjust(Action<AppSettings> change, Func<AppSettings, string> describe)
+    {
+        AppSettings s = Settings.Clone();
+        change(s);
+        LastAdjustment = describe(s);
+        Log.Write("App: " + LastAdjustment + ".");
+        ApplySettings(s);
+        tuningWindow?.Reload();
+    }
+
+    /// <summary>The last change made with a hotkey, e.g. "Depth 0.7"; shown in the tuning panel.</summary>
+    public string? LastAdjustment { get; private set; }
+
+    /// <summary>Sets the video stretch (1 = none).</summary>
+    public void SetStretch(double factor)
+    {
+        if (Math.Abs(Settings.VideoStretch - factor) < 0.001) return;
+        AppSettings s = Settings.Clone();
+        s.VideoStretch = factor;
+        ApplySettings(s);
+    }
+
+    /// <summary>Sets the video buffer, seconds (0 = live).</summary>
+    public void SetBuffer(double seconds)
+    {
+        if (Math.Abs(Settings.BufferSeconds - seconds) < 0.001) return;
+        AppSettings s = Settings.Clone();
+        s.BufferSeconds = seconds;
+        ApplySettings(s);
+    }
+
+    /// <summary>The depth model's state for the UI, or null while AI 3D is off.</summary>
+    public string? DepthStatus => Settings.Ai3D == AiTarget.Off ? null : depthStatus;
 
     /// <summary>True while the virtual monitor is shown in a window instead of on the glasses.</summary>
     public bool WindowShown => session is { Windowed: true };
@@ -152,10 +335,25 @@ public sealed class AppController : IDisposable
     }
 
     /// <summary>Saves new settings and applies them at once.</summary>
-    public void ApplySettings(AppSettings settings)
+    public void ApplySettings(AppSettings settings) => ApplySettings(settings, save: true);
+
+    /// <summary>
+    /// Applies settings live without saving them (the tuning panel while sliders move); the saved
+    /// file stays as it was until <see cref="ApplySettings(AppSettings)"/>.
+    /// </summary>
+    public void PreviewSettings(AppSettings settings)
+    {
+        // Only AI 3D, stretch and sound values change here: hand them to the running session and
+        // the depth thread without re-evaluating the displays on every slider step.
+        Settings = settings;
+        if (session != null) ApplyAi(session);
+        Notify();
+    }
+
+    private void ApplySettings(AppSettings settings, bool save)
     {
         Settings = settings;
-        Settings.Save();
+        if (save) Settings.Save();
         BuildShortcuts();
         failures = 0;
         lastFailure = null;
@@ -263,11 +461,63 @@ public sealed class AppController : IDisposable
             StatusText = blocker;
         }
 
+        if (Settings.Ai3D != AiTarget.Off && desired is { MirrorBounds: null })
+            StatusText += "; AI 3D " + (Settings.Ai3D == AiTarget.Video ? "video" : "whole screen");
+
+        UpdateDepthService();
         _ = ReconcileAsync(desired);
         // A kept session follows the settled layout (e.g. a new main display rebases every monitor).
         if (desired is { MirrorBounds: null }) session?.MoveTo(Glasses!.Bounds);
+        if (session != null) ApplyAi(session);
         UpdateGuards();
         Notify();
+    }
+
+    /// <summary>
+    /// Loads the depth model while AI 3D is on (and swaps it when the tier or size changes),
+    /// and frees its GPU memory when AI 3D is off. Shared by all sessions.
+    /// </summary>
+    private void UpdateDepthService()
+    {
+        DepthModel? wanted = Settings.Ai3D == AiTarget.Off ? null : new DepthModel(Settings.DepthTier, Settings.DepthPreset);
+        if (depthService != null && depthService.Model == wanted) return;
+
+        depthService?.Dispose();
+        depthService = null;
+        depthStatus = null;
+        if (wanted == null) return;
+
+        if (!wanted.Exists)
+        {
+            depthStatus = $"the model file {wanted.Stem}.onnx is missing from {DepthModel.ModelsDirectory}";
+            Log.Write("App: AI 3D: " + depthStatus);
+            return;
+        }
+
+        var service = new DepthService(wanted);
+        service.StatusChanged += () => dispatcher.BeginInvoke(() =>
+        {
+            if (depthService != service) return;
+            depthStatus = service.Status;
+            Notify();
+        });
+        depthService = service;
+        depthStatus = service.Status;
+    }
+
+    /// <summary>Hands the current AI 3D settings and model to a session (applied live).</summary>
+    private void ApplyAi(Session s)
+    {
+        double fov = KnownGlasses.FindByEdidKey(Glasses?.Identity.EdidKey)?.FieldOfView ?? DefaultFieldOfView;
+        var stereo = new StereoSettings(Settings.Ai3D, Settings.Ai3DStrength, Settings.Ai3DConvergence, fov, Settings.Native3D,
+            Settings.VideoStretch, Settings.BufferSeconds, Settings.Tuning);
+        if (s.Stereo != stereo) s.Stereo = stereo;
+        if (s.Depth != depthService) s.Depth = depthService;
+        if (depthService != null)
+        {
+            if (depthService.Tuning != Settings.Tuning) depthService.Tuning = Settings.Tuning;
+            depthService.Convergence = Settings.Ai3DConvergence;
+        }
     }
 
     /// <summary>What makes two sessions the same; the window's bounds only matter at creation.</summary>
@@ -336,6 +586,7 @@ public sealed class AppController : IDisposable
                     if (target.MirrorBounds == null) windowDismissed = false;
                     var s = new Session(target);
                     s.Ended += failure => dispatcher.BeginInvoke(() => OnSessionEnded(s, failure));
+                    ApplyAi(s);
                     session = s;
                     sessionKey = key;
                     s.Start();
@@ -438,7 +689,10 @@ public sealed class AppController : IDisposable
         Log.Write("App: exit.");
 
         settingsWindow?.Close();
+        tuningWindow?.Close();
         retryTimer.Stop();
+        audioTimer.Stop();
+        StopAudioDelay();
         if (session != null) await session.StopAsync();
         session = null;
 
@@ -462,6 +716,10 @@ public sealed class AppController : IDisposable
         displayMonitor?.Dispose();
         displayMonitor = null;
         keyboard?.Dispose();
+        audioDelay?.Dispose();
+        audioDelay = null;
+        depthService?.Dispose();
+        depthService = null;
         keyboard = null;
         tray?.Dispose();
         tray = null;

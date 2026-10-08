@@ -70,24 +70,95 @@
 
                 <Border Style="{StaticResource Card}" Margin="0 12 0 0">
                     <StackPanel>
+                        <TextBlock Text="AI 3D" Style="{StaticResource SectionText}"/>
+                        <TextBlock Style="{StaticResource CaptionText}" Margin="0 0 0 12"
+                                   Text="Turns 2D video into real 3D with a depth model, while the glasses are in 3D mode. Needs an NVIDIA RTX GPU."/>
+                        <TextBlock Text="Convert" Style="{StaticResource FieldLabel}"/>
+                        <ComboBox x:Name="AiTargetBox">
+                            <ComboBoxItem Content="Off"/>
+                            <ComboBoxItem Content="The playing video only"/>
+                            <ComboBoxItem Content="The whole screen (text shimmers a little)"/>
+                        </ComboBox>
+                        <TextBlock Text="Depth model" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
+                        <ComboBox x:Name="DepthTierBox">
+                            <ComboBoxItem Content="Depth Anything V2 Small (fastest)"/>
+                            <ComboBoxItem Content="Distill-Any-Depth Base (recommended)"/>
+                        </ComboBox>
+                        <TextBlock Text="Model resolution" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
+                        <ComboBox x:Name="DepthPresetBox">
+                            <ComboBoxItem Content="Fast (392×224)"/>
+                            <ComboBoxItem Content="Balanced (518×294, recommended)"/>
+                            <ComboBoxItem Content="Quality (756×420, 30 fps video)"/>
+                        </ComboBox>
+                        <TextBlock Text="Depth" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
+                        <ComboBox x:Name="StrengthBox">
+                            <ComboBoxItem Content="Gentle" Tag="0.4"/>
+                            <ComboBoxItem Content="Normal" Tag="0.6"/>
+                            <ComboBoxItem Content="Strong" Tag="0.8"/>
+                            <ComboBoxItem Content="Maximum comfortable" Tag="1.0"/>
+                        </ComboBox>
+                        <TextBlock Text="Screen plane" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
+                        <ComboBox x:Name="ConvergenceBox">
+                            <ComboBoxItem Content="Mostly behind the screen (recommended)" Tag="0.35"/>
+                            <ComboBoxItem Content="Half in front, half behind" Tag="0.5"/>
+                            <ComboBoxItem Content="More in front" Tag="0.65"/>
+                        </ComboBox>
+                        <TextBlock Text="Video that is already 3D" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
+                        <ComboBox x:Name="Native3DBox">
+                            <ComboBoxItem Content="Detect side-by-side and top-bottom, show as is"/>
+                            <ComboBoxItem Content="Always convert with depth"/>
+                            <ComboBoxItem Content="Always side-by-side"/>
+                            <ComboBoxItem Content="Always top-bottom"/>
+                        </ComboBox>
+                        <TextBlock x:Name="ModelsText" Style="{StaticResource CaptionText}" Margin="0 12 0 0"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" Margin="0 12 0 0">
+                    <StackPanel>
+                        <TextBlock Text="Video" Style="{StaticResource SectionText}"/>
+                        <TextBlock Text="Stretch" Style="{StaticResource FieldLabel}"/>
+                        <ComboBox x:Name="StretchBox">
+                            <ComboBoxItem Content="None" Tag="1.0"/>
+                            <ComboBoxItem Content="×1.1" Tag="1.1"/>
+                            <ComboBoxItem Content="×1.2" Tag="1.2"/>
+                            <ComboBoxItem Content="×1.25" Tag="1.25"/>
+                            <ComboBoxItem Content="×1.33 (4:3 shown as 16:9)" Tag="1.3333"/>
+                            <ComboBoxItem Content="×1.5" Tag="1.5"/>
+                        </ComboBox>
+                        <TextBlock Style="{StaticResource CaptionText}" Margin="0 4 0 0"
+                                   Text="Widens the playing video around its centre, for content in the wrong aspect ratio. Works with AI 3D off too."/>
+                        <TextBlock Text="Buffer" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
+                        <ComboBox x:Name="BufferBox">
+                            <ComboBoxItem Content="Off (live)" Tag="0"/>
+                            <ComboBoxItem Content="0.5 s" Tag="0.5"/>
+                            <ComboBoxItem Content="1 s" Tag="1"/>
+                            <ComboBoxItem Content="2 s" Tag="2"/>
+                        </ComboBox>
+                        <TextBlock Style="{StaticResource CaptionText}" Margin="0 4 0 0"
+                                   Text="Shows the video this late and plays its app's sound just as late, for steadier depth. Only while AI 3D follows a video; the rest of the desktop stays live. Not for calls or live streams."/>
+                        <TextBlock Text="Sound offset" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
+                        <ComboBox x:Name="AudioOffsetBox">
+                            <ComboBoxItem Content="Sound 80 ms earlier" Tag="-80"/>
+                            <ComboBoxItem Content="Sound 40 ms earlier" Tag="-40"/>
+                            <ComboBoxItem Content="Sound 20 ms earlier" Tag="-20"/>
+                            <ComboBoxItem Content="In step" Tag="0"/>
+                            <ComboBoxItem Content="Sound 20 ms later" Tag="20"/>
+                            <ComboBoxItem Content="Sound 40 ms later" Tag="40"/>
+                            <ComboBoxItem Content="Sound 80 ms later" Tag="80"/>
+                        </ComboBox>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" Margin="0 12 0 0">
+                    <StackPanel>
                         <TextBlock Text="Startup and shortcuts" Style="{StaticResource SectionText}"/>
                         <CheckBox x:Name="StartWithWindowsBox" Content="Start with Windows"/>
-                        <Grid Margin="0 16 0 0">
+                        <Grid x:Name="ShortcutsGrid" Margin="0 16 0 0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                            </Grid.RowDefinitions>
-                            <TextBlock Grid.Row="0" Text="Pause or resume" VerticalAlignment="Center" Margin="0 0 16 8"/>
-                            <TextBox Grid.Row="0" Grid.Column="1" x:Name="PauseShortcutBox" Margin="0 0 0 8"/>
-                            <TextBlock Grid.Row="1" Text="Settings" VerticalAlignment="Center" Margin="0 0 16 8"/>
-                            <TextBox Grid.Row="1" Grid.Column="1" x:Name="SettingsShortcutBox" Margin="0 0 0 8"/>
-                            <TextBlock Grid.Row="2" Text="Exit" VerticalAlignment="Center" Margin="0 0 16 0"/>
-                            <TextBox Grid.Row="2" Grid.Column="1" x:Name="ExitShortcutBox"/>
                         </Grid>
                         <TextBlock Style="{StaticResource CaptionText}" Margin="0 8 0 0"
                                    Text="Written like Ctrl+Alt+B; at least one of Ctrl, Alt, Shift or Win. Leave empty for none."/>

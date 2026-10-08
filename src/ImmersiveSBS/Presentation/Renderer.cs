@@ -1,3 +1,4 @@
+using System.Drawing;
 using System.Numerics;
 using ImmersiveSBS.Capture;
 using ImmersiveSBS.Displays;
@@ -19,7 +20,11 @@ namespace ImmersiveSBS.Presentation;
 public sealed class Renderer : IDisposable
 {
     private const string Hlsl = """
-        cbuffer Quad : register(b0) { float4 rect; }   // left, top, right, bottom in NDC
+        cbuffer Quad : register(b0)
+        {
+            float4 rect;     // left, top, right, bottom in NDC
+            float4 uvRect;   // left, top, right, bottom in texture coordinates
+        };
         Texture2D tex : register(t0);
         SamplerState samp : register(s0);
 
@@ -30,7 +35,7 @@ public sealed class Renderer : IDisposable
             float2 uv = float2(id & 1, id >> 1);       // strip: TL, TR, BL, BR
             VSOut o;
             o.pos = float4(lerp(rect.x, rect.z, uv.x), lerp(rect.y, rect.w, uv.y), 0, 1);
-            o.uv = uv;
+            o.uv = lerp(uvRect.xy, uvRect.zw, uv);
             return o;
         }
 
@@ -40,6 +45,11 @@ public sealed class Renderer : IDisposable
 
     private const SwapChainFlags Flags = SwapChainFlags.FrameLatencyWaitableObject;
 
+    /// <summary>The Quad constant buffer: where to draw (NDC) and which part of the texture.</summary>
+    private readonly record struct Quad(Vector4 Rect, Vector4 UvRect);
+
+    private const uint QuadSize = 32;
+
     private readonly ID3D11Device device;
     private readonly ID3D11DeviceContext context;
     private readonly IDXGISwapChain2 swapChain;
@@ -48,6 +58,7 @@ public sealed class Renderer : IDisposable
     private readonly ID3D11PixelShader sampleShader;
     private readonly ID3D11Buffer fullQuad;
     private readonly ID3D11Buffer cursorQuad;
+    private readonly ID3D11Buffer stereoQuad;
     private readonly ID3D11SamplerState pointSampler;
     private readonly ID3D11SamplerState linearSampler;
     private readonly ID3D11BlendState alphaBlend;
@@ -100,9 +111,10 @@ public sealed class Renderer : IDisposable
         opaqueShader = device.CreatePixelShader(Compiler.Compile(Hlsl, "PSOpaque", "renderer.hlsl", "ps_5_0").Span);
         sampleShader = device.CreatePixelShader(Compiler.Compile(Hlsl, "PSSample", "renderer.hlsl", "ps_5_0").Span);
 
-        Vector4 full = new(-1, 1, 1, -1);
-        fullQuad = device.CreateBuffer(in full, new BufferDescription(16, BindFlags.ConstantBuffer, ResourceUsage.Immutable));
-        cursorQuad = device.CreateBuffer(new BufferDescription(16, BindFlags.ConstantBuffer, ResourceUsage.Dynamic, CpuAccessFlags.Write));
+        Quad full = new(new Vector4(-1, 1, 1, -1), new Vector4(0, 0, 1, 1));
+        fullQuad = device.CreateBuffer(in full, new BufferDescription(QuadSize, BindFlags.ConstantBuffer, ResourceUsage.Immutable));
+        cursorQuad = device.CreateBuffer(new BufferDescription(QuadSize, BindFlags.ConstantBuffer, ResourceUsage.Dynamic, CpuAccessFlags.Write));
+        stereoQuad = device.CreateBuffer(new BufferDescription(QuadSize, BindFlags.ConstantBuffer, ResourceUsage.Dynamic, CpuAccessFlags.Write));
 
         pointSampler = device.CreateSamplerState(SamplerDescription.PointClamp);
         linearSampler = device.CreateSamplerState(SamplerDescription.LinearClamp);
@@ -139,7 +151,8 @@ public sealed class Renderer : IDisposable
         CreateTarget();
     }
 
-    public void Render(ID3D11Texture2D? source, PointerState? pointer)
+    /// <param name="stereo">AI 3D eye images of a region; drawn over the desktop in side-by-side only.</param>
+    public void Render(ID3D11Texture2D? source, PointerState? pointer, StereoOverlay? stereo = null)
     {
         context.ClearRenderTargetView(target!, new Color4(0, 0, 0, 1));
         if (source == null) return;
@@ -180,6 +193,15 @@ public sealed class Renderer : IDisposable
             context.PSSetShader(opaqueShader);
             context.PSSetShaderResource(0, sourceView!);
             context.Draw(4, 0);
+
+            if (stereo is StereoOverlay s && eyes == 2)
+            {
+                // The eyes texture holds the left eye in its left half, the right eye in its right.
+                WriteQuad(stereoQuad, s.Region, srcW, srcH, new Vector4(eye * 0.5f, 0, eye * 0.5f + 0.5f, 1));
+                context.VSSetConstantBuffer(0, stereoQuad);
+                context.PSSetShaderResource(0, s.Eyes);
+                context.Draw(4, 0);
+            }
 
             if (drawCursor)
             {
@@ -224,16 +246,24 @@ public sealed class Renderer : IDisposable
         }
 
         // Pixel rectangle of the cursor in the source, as NDC of the eye viewport.
-        var rect = new Vector4(
-            pointer.X * 2f / srcW - 1,
-            1 - pointer.Y * 2f / srcH,
-            (pointer.X + pointer.Width) * 2f / srcW - 1,
-            1 - (pointer.Y + pointer.Height) * 2f / srcH);
-
-        MappedSubresource m = context.Map(cursorQuad, MapMode.WriteDiscard);
-        *(Vector4*)m.DataPointer = rect;
-        context.Unmap(cursorQuad, 0);
+        WriteQuad(cursorQuad, new Rectangle(pointer.X, pointer.Y, pointer.Width, pointer.Height), srcW, srcH,
+            new Vector4(0, 0, 1, 1));
         return true;
+    }
+
+    /// <summary>Writes a quad covering <paramref name="sourceRect"/> (source px) of the eye viewport.</summary>
+    private unsafe void WriteQuad(ID3D11Buffer buffer, Rectangle sourceRect, int srcW, int srcH, Vector4 uv)
+    {
+        var quad = new Quad(
+            new Vector4(
+                sourceRect.Left * 2f / srcW - 1,
+                1 - sourceRect.Top * 2f / srcH,
+                sourceRect.Right * 2f / srcW - 1,
+                1 - sourceRect.Bottom * 2f / srcH),
+            uv);
+        MappedSubresource m = context.Map(buffer, MapMode.WriteDiscard);
+        *(Quad*)m.DataPointer = quad;
+        context.Unmap(buffer, 0);
     }
 
     private unsafe ID3D11ShaderResourceView CreateImage(byte[] bgra, int width, int height)
@@ -274,6 +304,7 @@ public sealed class Renderer : IDisposable
         linearSampler.Dispose();
         pointSampler.Dispose();
         cursorQuad.Dispose();
+        stereoQuad.Dispose();
         fullQuad.Dispose();
         sampleShader.Dispose();
         opaqueShader.Dispose();
@@ -281,3 +312,6 @@ public sealed class Renderer : IDisposable
         swapChain.Dispose();
     }
 }
+
+/// <summary>AI 3D eye images (left half, right half) for a region of the source, in source px.</summary>
+public readonly record struct StereoOverlay(ID3D11ShaderResourceView Eyes, Rectangle Region);

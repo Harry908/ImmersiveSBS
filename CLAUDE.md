@@ -17,7 +17,13 @@ phase and keep them current.
 
 ```
 dotnet build ImmersiveSBS.slnx -c Debug
+dotnet test ImmersiveSBS.slnx
 ```
+
+Tests (`tests/ImmersiveSBS.Tests`, xUnit) cover the pure logic and run the GPU warp on a real
+D3D11 device; `DepthEstimatorTests` runs the TensorRT model and skips itself without an RTX GPU
+or the model files in `%LOCALAPPDATA%\ImmersiveSBS\models`. Verify with tests and the app's log
+(`%LOCALAPPDATA%\ImmersiveSBS\ImmersiveSBS.log`) rather than throwaway harnesses.
 
 .NET 10 SDK, SDK-style project, x64 only, target `net10.0-windows10.0.19041.0` (WinRT APIs such
 as Windows.Graphics.Capture come from the target framework). Per-monitor v2 DPI awareness is set

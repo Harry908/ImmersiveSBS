@@ -208,6 +208,158 @@ monitor is main.
    edge, windows opened or snapped onto the glasses coming back.
 3. A proper icon.
 
+## P4 — AI 3D mode (built 2026-10-07, not yet seen in the glasses)
+
+The plan's V3–V6 on the captured virtual monitor (`docs/video-3d-plan.md` §4–§7). Off by
+default; tray "AI 3D" (Off / Video only / Whole screen), **Ctrl+Alt+D** toggles, settings card
+"AI 3D". Only in side-by-side; the mirror window and 2D mode stay flat.
+
+**Models.** The V0 static-shape fp16 exports were copied out of the temporary V0 scratch folder
+to `%LOCALAPPDATA%\ImmersiveSBS\models\` as `{da2-small|dad-base}_{H}x{W}.onnx` (224×392,
+294×518, 420×756; ~740 MB, not in the repo). Packaging (P6) has to ship or download them.
+
+**Inference** (`Depth/TensorRtRtx`, `DepthEstimator`, `DepthService`):
+- ONNX Runtime 1.30 (NuGet) with the TensorRT for RTX plug-in, found through the package
+  manager (`MicrosoftCorporationII.WinML.NVIDIA.TRT-RTX.EP.*`, 2.30.49.0 here) and registered
+  with `RegisterExecutionProviderLibrary`; no DirectML fallback (plan D4).
+- First use compiles an EPContext model with the engine embedded:
+  `%LOCALAPPDATA%\ImmersiveSBS\engines\{stem}.trtrtx-{version}.{vendor-device}.ctx.onnx`
+  (Base 518×294: 8.4 s compile). The provider's `nv_runtime_cache_path` keeps the JIT kernels:
+  later loads take **1.4 s** (8–10 s without it). A stale engine is rebuilt once.
+- Measured from .NET (test `DepthEstimatorTests`): Base 518×294 **8.5–9.2 ms** per frame warm,
+  as in V0 (8.2 ms mean).
+- One depth thread, newest input only; post-processing there (`DepthPostProcessor`, §6.1–6.2:
+  sampled p2/p98, EMA τ 0.5 s, per-pixel motion-adaptive blend α_min 0.2 at 30 fps, scene cut
+  at mean |ΔY| > 0.12). The service is owned by the controller and shared by sessions; it is
+  disposed (GPU memory freed) when AI 3D is off.
+
+**GPU** (`Depth/StereoSynth`, compute shaders on the render device):
+preprocess (crop, 4-tap box, ImageNet normalisation, planar NCHW, ~1.8 MB read back); 8×8 luma
+grid; joint bilateral 5×5 upsample guided by luma (§6.3); horizontal max-filter dilation 3 px
+(§6.4); forward splat with `InterlockedMax` on (nearness ≪ 16 | source x 12.4 fixed + 2) at
+floor and ceil per eye; resolve with holes continuing the farther neighbour; floating window
+bands (§7.3.5); native split for SbS/TB video (§7.4). The renderer composites the eyes texture
+over the region in each eye; the cursor stays on top at zero depth.
+
+**Driver** (`Depth/AiStereo`, per session, render thread): luma grid → `RegionTracker` (§5.3–5.4,
+energy decay 0.9, threshold 8, close, largest component, area ≥ 4% and ≥ 320×180, aspect 1–2.5,
+fill ≥ 0.6, accept after 0.5 s stable, paused after 3 s still) → `Native3DDetector` (NCC of the
+halves at ±3% offset > 0.85 for 2 s, out below 0.7 for 2 s) → model input → depth service →
+upload → synthesise only when the frame, the depth, the bands or the settings changed. The
+picture never waits for depth. Disparity (`StereoMath`, §7.1): B = 1° × ppd from the glasses'
+FOV in `KnownGlasses` (GT Max 59° → 36.6 px), S = σ·min(B/(1−c), B/c), defaults σ 0.6, c 0.35;
+δw = 0 because the virtual monitor fills the eye.
+
+**Tests** (`tests/ImmersiveSBS.Tests`, `dotnet test ImmersiveSBS.slnx`, 46): stereo maths
+(budget, plan table), post-processor (normalisation, breathing, motion, scene cut), region
+tracker, native 3D detector, display logic and shortcuts, the warp invariants of §7.5 on a real
+D3D11 device (flat at n ≡ c, opposite shifts, no holes, nearer wins, mirror symmetry, native
+split, floating window), and the TensorRT model itself (skips itself without GPU or files).
+
+Not done yet from the plan: static overlays at the screen plane (§6.5; needs tuning on real
+subtitles), edge refinement of the video rectangle at full resolution (§5.3 step 5; the
+rectangle is on the 8 px grid), the letterbox trim inside a tracked region (§5.5; bars carry no
+motion and mostly fall outside), manual pick/lock (§5.6), Auto preset (§4.2), hardware optical
+flow for 60 fps (§4.2a.5), zero-copy GPU input (§4.2a.7). Readbacks (grid, tensor) wait for the
+GPU each frame; measure before optimising.
+
+### Next
+
+1. See AI 3D in the glasses: a YouTube video windowed and full screen, Whole screen, a
+   side-by-side 3D video; tune σ, c, the tracker thresholds and the dilation.
+2. Measure the added GPU time and latency with AI 3D on (the stats line shows the depth timing).
+3. The §6.5 static overlays, once the viewing shows how much subtitles suffer.
+
+## P5 — Buffered video and sound, video stretch (built 2026-10-07, not yet seen in the glasses)
+
+Settings card "Video" and tray submenus "Video buffer" (Off / 0.5 / 1 / 2 s, default Off: the
+plan's 1 s default would also delay calls and live streams) and "Video stretch"; "Sound offset"
+−80…+80 ms in the settings.
+
+**Plan open question 4 answered** (`AudioLoopbackTests`, Windows 11 build 26300): process
+loopback is taken after the session mute (a muted session captures RMS 0) and after the
+session volume, which acts as amplitude v²: 0.1 → 0.0097, 0.03 → 0.00087, 0.01 → 0.0000966,
+0.001 → 0.0000010 of the tone; 0.0001 is silent. The control without mute or volume captures the
+tone exactly (RMS 0.00342 against 0.00354). So D5 now turns the app's sessions down to v = 0.01
+(−80 dB) instead of muting, and boosts the capture by (1/v)² = 10 000 (float mixer, lossless).
+A boosted packet peaking above 4.0 came from a session not yet turned down (a new tab, caught
+within 250 ms) and passes at unity gain; output is clamped to ±1. Not yet known: whether loopback
+is taken before or after the endpoint (device) volume; if after, the delayed sound is quieter by
+the device volume and needs a correction.
+
+**Sound** (`Audio/`): `AudioDelayLine` (pure, tested) files each captured packet by its QPC time,
+gaps are silence, jitter within 5 ms is absorbed and larger slips resynchronise; playback reads
+the samples captured exactly the delay before the time they will be heard (now + output
+latency − offset). `AudioDelay` uses NAudio 3.1 (MIT): `WasapiRecorderBuilder.WithProcessLoopback`
+(process tree included: browsers play from a child process), `WasapiPlayer` shared mode, 40 ms,
+on the default output at the device mix rate, at the app's own session volume.
+`SessionAttenuator` turns the sessions of the process tree down on every output, restores each
+one's own volume, and writes `attenuated-sessions.txt` so the next start repairs a crash.
+`ProcessTree` walks the Toolhelp snapshot.
+
+**Video** (`Depth/VideoDelayBuffer`, `AiStereo`): only the video region is delayed, never the
+desktop, so typing and the cursor stay live. Region crops go into a GPU ring stamped with the
+capture time (≤ 600 MB; when that cannot hold the delay at the frame rate, fewer frames are kept
+rather than a shorter delay); depth for each frame is filed with it when it arrives; the frame
+shown is the newest captured at or before now + 20 ms − delay, with nearness averaged over its
+neighbours (weights 1-2-3-2-1, look-ahead the delay makes possible). Until the ring covers the
+delay the oldest frame is held, as the sound starts silent. A frame without depth near it is
+shown flat.
+
+**Coupling:** the session reports the region to delay (buffer set, AI 3D following a video, not
+native 3D); the controller finds the app under the region's centre on the virtual monitor
+(`WindowFromPoint`), starts the delayed sound for its process tree, and only then tells the
+session to delay the picture (`Session.AudioDelayed`). If the sound cannot be delayed, the
+picture stays live, so the two cannot drift apart. A failed app is not retried until the video
+moves to another app or the buffer changes.
+
+**Stretch:** the region's overlay is drawn `VideoStretch` times wider around its centre (into
+pillarbox bars); with AI 3D off the tracker still runs and the region is drawn flat; with depth
+the strength is divided by the stretch so disparity stays within the budget.
+
+Tests: 57 (+ delay line 5, loopback 6). One unreproduced failure on the first run after a build
+(five reruns clean); watch for a flaky test.
+
+### Next
+
+1. Try the buffer with a YouTube video in AI 3D video mode: lip-sync (adjust Sound offset),
+   loudness against the original, a new tab starting sound meanwhile, pause/seek, exit and crash
+   restore of the browser's volume.
+2. Endpoint volume question above.
+3. ~~A live tuning panel~~ (done below).
+
+## Tuning panel, hotkeys, static overlays, pick and lock (built 2026-10-07, not yet seen)
+
+- **Tuning panel** (`TuningWindow`, tray "Tuning...", **Ctrl+Alt+T**): sliders for depth σ,
+  screen plane c, edge dilation, edge softness (guided-upsample σ), responsiveness (α_min),
+  scene-cut threshold, video stretch, sound offset; floating window and static overlays
+  check boxes; live status and stats. Changes go through `AppController.PreviewSettings`
+  (session and depth thread only, no display re-evaluation, not saved); Save writes the
+  settings, Cancel or closing restores the saved ones, Reset restores the plan's defaults.
+  Fine controls live in `StereoTuning` (stored as `Tuning` in settings.json).
+- **Hotkeys** (all editable; the settings window now lists every command): Ctrl+Alt+X / W more /
+  less depth (±0.1, DesktopSbS's keys), Ctrl+Alt+PageDown / PageUp picture back / forward
+  (c ∓ 0.05), Ctrl+Alt+Shift+D pick or release the video. Hotkey changes save at once and show
+  in the panel ("Last hotkey change").
+- **Static overlays** (§6.5, `DepthPostProcessor.StaticOverlays`, off by default, panel check
+  box): a model-resolution pixel unchanged (|ΔY| < 1.5/255) for 1 s on a strong edge (luma step
+  > 0.15 to a neighbour) while the picture moves (smoothed mean |ΔY| > 0.008) ramps to the
+  screen plane over 0.3 s; the temporal state keeps the model's value so switching off restores
+  depth at once. Tests: subtitle stripes go to c, a smooth static patch keeps its depth, a paused
+  picture is untouched. Off by default because a locked-off shot's textured static background
+  could be flattened too; tune on real subtitles.
+- **Pick and lock** (§5.6, `RegionTracker.Pick`/`Unlock`): the changing component under the
+  cursor (searching 4 cells around it) becomes the region and automatic detection stops
+  replacing it; the status says "locked". The plan's 1 s outline in both eyes is not done.
+
+Tests: 64.
+
+### Next
+
+1. In the glasses: AI 3D, buffer, stretch, tuning panel and hotkeys; then tune the defaults.
+2. P6 packaging (installer with the driver, model download, README), or P3 once the hardware
+   3D button test with the glasses removed from the desktop is done.
+
 ## Carried over from the DesktopSbS session
 
 - **Model speed results** are in `docs/video-3d-plan.md` §0 (TensorRT for RTX, fp16, static

@@ -2,6 +2,7 @@
 using System.Drawing;
 using System.Windows.Forms;
 using ImmersiveSBS.Capture;
+using ImmersiveSBS.Depth;
 using ImmersiveSBS.Theme;
 
 namespace ImmersiveSBS.Tray;
@@ -22,8 +23,16 @@ public sealed class TrayIcon : IDisposable
     private readonly ToolStripMenuItem pauseItem;
     private readonly ToolStripMenuItem windowItem;
     private readonly ToolStripMenuItem captureItem;
+    private readonly ToolStripMenuItem aiItem;
+    private readonly ToolStripMenuItem aiOffItem;
+    private readonly ToolStripMenuItem aiVideoItem;
+    private readonly ToolStripMenuItem aiScreenItem;
+    private readonly ToolStripMenuItem aiStatusItem;
+    private readonly ToolStripMenuItem stretchItem;
+    private readonly ToolStripMenuItem bufferItem;
     private readonly ToolStripMenuItem duplicationItem;
     private readonly ToolStripMenuItem graphicsCaptureItem;
+    private readonly ToolStripMenuItem tuningItem;
     private readonly ToolStripMenuItem settingsItem;
     private readonly ToolStripMenuItem logItem;
     private readonly ToolStripMenuItem exitItem;
@@ -47,6 +56,35 @@ public sealed class TrayIcon : IDisposable
         captureItem = new ToolStripMenuItem("Capture");
         captureItem.DropDownItems.AddRange([duplicationItem, graphicsCaptureItem]);
 
+        aiStatusItem = new ToolStripMenuItem { Enabled = false };
+        aiOffItem = new ToolStripMenuItem("Off");
+        aiOffItem.Click += (_, _) => controller.SetAi3D(AiTarget.Off);
+        aiVideoItem = new ToolStripMenuItem("Video only");
+        aiVideoItem.Click += (_, _) => controller.SetAi3D(AiTarget.Video);
+        aiScreenItem = new ToolStripMenuItem("Whole screen");
+        aiScreenItem.Click += (_, _) => controller.SetAi3D(AiTarget.WholeScreen);
+        aiItem = new ToolStripMenuItem("AI 3D");
+        aiItem.DropDownItems.AddRange([aiOffItem, aiVideoItem, aiScreenItem, new ToolStripSeparator(), aiStatusItem]);
+
+        stretchItem = new ToolStripMenuItem("Video stretch");
+        foreach ((string text, double factor) in new[] { ("None", 1.0), ("×1.1", 1.1), ("×1.2", 1.2), ("×1.25", 1.25), ("×1.33 (4:3 as 16:9)", 1.3333), ("×1.5", 1.5) })
+        {
+            var item = new ToolStripMenuItem(text) { Tag = factor };
+            item.Click += (_, _) => controller.SetStretch(factor);
+            stretchItem.DropDownItems.Add(item);
+        }
+
+        bufferItem = new ToolStripMenuItem("Video buffer");
+        foreach ((string text, double seconds) in new[] { ("Off (live)", 0.0), ("0.5 s", 0.5), ("1 s", 1.0), ("2 s", 2.0) })
+        {
+            var item = new ToolStripMenuItem(text) { Tag = seconds };
+            item.Click += (_, _) => controller.SetBuffer(seconds);
+            bufferItem.DropDownItems.Add(item);
+        }
+
+        tuningItem = new ToolStripMenuItem("Tuning...");
+        tuningItem.Click += (_, _) => controller.Execute(ShortcutCommand.Tuning);
+
         settingsItem = new ToolStripMenuItem("Settings...");
         settingsItem.Click += (_, _) => controller.Execute(ShortcutCommand.Settings);
 
@@ -62,9 +100,13 @@ public sealed class TrayIcon : IDisposable
             statusItem,
             new ToolStripSeparator(),
             pauseItem,
+            aiItem,
+            stretchItem,
+            bufferItem,
             windowItem,
             captureItem,
             new ToolStripSeparator(),
+            tuningItem,
             settingsItem,
             logItem,
             new ToolStripSeparator(),
@@ -94,7 +136,7 @@ public sealed class TrayIcon : IDisposable
     public void Refresh()
     {
         // NotifyIcon.Text is limited to 127 characters; keep it to a glance.
-        string text = "ImmersiveSBS - " + controller.StatusText;
+        string text = "ImmersiveSBS - " + controller.StatusText + (controller.AudioStatus is string audio ? "; " + audio : "");
         notifyIcon.Text = text.Length > 120 ? text[..117] + "..." : text;
     }
 
@@ -111,10 +153,20 @@ public sealed class TrayIcon : IDisposable
         windowItem.Checked = controller.WindowShown;
         duplicationItem.Checked = controller.Settings.CaptureMethod == CaptureMethod.DesktopDuplication;
         graphicsCaptureItem.Checked = controller.Settings.CaptureMethod == CaptureMethod.GraphicsCapture;
+        aiOffItem.Checked = controller.Settings.Ai3D == AiTarget.Off;
+        aiVideoItem.Checked = controller.Settings.Ai3D == AiTarget.Video;
+        aiScreenItem.Checked = controller.Settings.Ai3D == AiTarget.WholeScreen;
+        aiItem.ShortcutKeyDisplayString = controller.ShortcutText(ShortcutCommand.ToggleAi3D);
+        aiStatusItem.Text = controller.DepthStatus ?? "Converts 2D video to 3D with a depth model";
+        foreach (ToolStripMenuItem item in stretchItem.DropDownItems)
+            item.Checked = Math.Abs((double)item.Tag! - controller.Settings.VideoStretch) < 0.01;
+        foreach (ToolStripMenuItem item in bufferItem.DropDownItems)
+            item.Checked = Math.Abs((double)item.Tag! - controller.Settings.BufferSeconds) < 0.01;
 
         // Shortcuts are user-configurable, so read them each time.
         pauseItem.ShortcutKeyDisplayString = controller.ShortcutText(ShortcutCommand.Pause);
         settingsItem.ShortcutKeyDisplayString = controller.ShortcutText(ShortcutCommand.Settings);
+        tuningItem.ShortcutKeyDisplayString = controller.ShortcutText(ShortcutCommand.Tuning);
         exitItem.ShortcutKeyDisplayString = controller.ShortcutText(ShortcutCommand.Exit);
     }
 

@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
 using ImmersiveSBS.Capture;
+using ImmersiveSBS.Depth;
 using ImmersiveSBS.Displays;
 using ImmersiveSBS.Input;
 
@@ -19,6 +20,30 @@ public partial class SettingsWindow : Window
 
     private readonly AppController controller;
     private readonly DispatcherTimer statsTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    private readonly List<(ShortcutCommand Command, TextBox Box)> shortcutBoxes = [];
+
+    /// <summary>One labelled box per command, in the order of <see cref="ShortcutCommand"/>.</summary>
+    private void BuildShortcutRows(AppSettings s)
+    {
+        foreach (ShortcutCommand command in Enum.GetValues<ShortcutCommand>())
+        {
+            int row = ShortcutsGrid.RowDefinitions.Count;
+            ShortcutsGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var label = new TextBlock
+            {
+                Text = ShortcutCommands.Label(command),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 16, 8),
+            };
+            var box = new TextBox { Text = s.Shortcuts.GetValueOrDefault(command, ""), Margin = new Thickness(0, 0, 0, 8) };
+            Grid.SetRow(label, row);
+            Grid.SetRow(box, row);
+            Grid.SetColumn(box, 1);
+            ShortcutsGrid.Children.Add(label);
+            ShortcutsGrid.Children.Add(box);
+            shortcutBoxes.Add((command, box));
+        }
+    }
 
     public SettingsWindow(AppController controller)
     {
@@ -37,9 +62,18 @@ public partial class SettingsWindow : Window
         ShowInWindowBox.IsChecked = s.ShowInWindowWhenNotOnGlasses;
         EvacuateBox.IsChecked = s.MoveWindowsOffVirtualMonitorOnExit;
         StartWithWindowsBox.IsChecked = AppSettings.StartWithWindows;
-        PauseShortcutBox.Text = s.Shortcuts.GetValueOrDefault(ShortcutCommand.Pause, "");
-        SettingsShortcutBox.Text = s.Shortcuts.GetValueOrDefault(ShortcutCommand.Settings, "");
-        ExitShortcutBox.Text = s.Shortcuts.GetValueOrDefault(ShortcutCommand.Exit, "");
+        BuildShortcutRows(s);
+
+        AiTargetBox.SelectedIndex = (int)s.Ai3D;
+        DepthTierBox.SelectedIndex = (int)s.DepthTier;
+        DepthPresetBox.SelectedIndex = (int)s.DepthPreset;
+        Native3DBox.SelectedIndex = (int)s.Native3D;
+        SelectClosest(StrengthBox, s.Ai3DStrength);
+        SelectClosest(ConvergenceBox, s.Ai3DConvergence);
+        SelectClosest(StretchBox, s.VideoStretch);
+        SelectClosest(BufferBox, s.BufferSeconds);
+        SelectClosest(AudioOffsetBox, s.AudioOffsetMs);
+        ModelsText.Text = $"Model files: {DepthModel.ModelsDirectory}. The first use of a model on this PC prepares it for the GPU (about 20 s).";
 
         controller.StatusChanged += UpdateStatus;
         statsTimer.Tick += (_, _) => UpdateStatus();
@@ -65,9 +99,20 @@ public partial class SettingsWindow : Window
         box.SelectedIndex = match == null ? 0 : 1 + displays.IndexOf(match);
     }
 
+    /// <summary>Selects the item whose Tag value is nearest to <paramref name="value"/>.</summary>
+    private static void SelectClosest(ComboBox box, double value)
+    {
+        box.SelectedItem = box.Items.OfType<ComboBoxItem>()
+            .OrderBy(i => Math.Abs(TagValue(i) - value))
+            .FirstOrDefault();
+    }
+
+    private static double TagValue(ComboBoxItem item) =>
+        double.Parse((string)item.Tag, System.Globalization.CultureInfo.InvariantCulture);
+
     private void UpdateStatus()
     {
-        StatusText.Text = controller.StatusText;
+        StatusText.Text = controller.StatusText + (controller.AudioStatus is string audio ? "; " + audio : "");
         MainDisplayWarning.Visibility = controller.VirtualMonitor is { IsPrimary: true } ? Visibility.Visible : Visibility.Collapsed;
         StatsText.Text = controller.Session?.Stats?.ToString() ?? string.Empty;
     }
@@ -75,12 +120,7 @@ public partial class SettingsWindow : Window
     private void OnSave(object sender, RoutedEventArgs e)
     {
         var shortcuts = new Dictionary<ShortcutCommand, string>();
-        foreach (var (command, box) in new[]
-                 {
-                     (ShortcutCommand.Pause, PauseShortcutBox),
-                     (ShortcutCommand.Settings, SettingsShortcutBox),
-                     (ShortcutCommand.Exit, ExitShortcutBox),
-                 })
+        foreach (var (command, box) in shortcutBoxes)
         {
             string text = box.Text.Trim();
             if (text.Length == 0)
@@ -110,6 +150,17 @@ public partial class SettingsWindow : Window
         settings.ShowInWindowWhenNotOnGlasses = ShowInWindowBox.IsChecked == true;
         settings.MoveWindowsOffVirtualMonitorOnExit = EvacuateBox.IsChecked == true;
         settings.Shortcuts = shortcuts;
+        var target = (AiTarget)Math.Max(0, AiTargetBox.SelectedIndex);
+        if (target != AiTarget.Off) settings.Ai3DLastTarget = target;
+        settings.Ai3D = target;
+        settings.DepthTier = (DepthTier)Math.Max(0, DepthTierBox.SelectedIndex);
+        settings.DepthPreset = (DepthPreset)Math.Max(0, DepthPresetBox.SelectedIndex);
+        settings.Native3D = (Native3DMode)Math.Max(0, Native3DBox.SelectedIndex);
+        if (StrengthBox.SelectedItem is ComboBoxItem strength) settings.Ai3DStrength = TagValue(strength);
+        if (ConvergenceBox.SelectedItem is ComboBoxItem convergence) settings.Ai3DConvergence = TagValue(convergence);
+        if (StretchBox.SelectedItem is ComboBoxItem stretch) settings.VideoStretch = TagValue(stretch);
+        if (BufferBox.SelectedItem is ComboBoxItem buffer) settings.BufferSeconds = TagValue(buffer);
+        if (AudioOffsetBox.SelectedItem is ComboBoxItem offset) settings.AudioOffsetMs = (int)TagValue(offset);
 
         try
         {

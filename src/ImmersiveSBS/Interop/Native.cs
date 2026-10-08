@@ -232,6 +232,19 @@ internal static unsafe partial class Native
     [LibraryImport("user32.dll", EntryPoint = "GetWindowTextW")]
     private static partial int GetWindowTextW(IntPtr hwnd, char* buffer, int max);
 
+    [LibraryImport("user32.dll", EntryPoint = "WindowFromPoint")]
+    private static partial IntPtr WindowFromPointNative(POINT point);
+
+    /// <summary>The process owning the top-level window at a desktop point; 0 for none.</summary>
+    public static uint ProcessAt(System.Drawing.Point point)
+    {
+        IntPtr hwnd = WindowFromPointNative(new POINT { X = point.X, Y = point.Y });
+        if (hwnd == IntPtr.Zero) return 0;
+        IntPtr root = GetAncestor(hwnd, GA_ROOT);
+        GetWindowThreadProcessId(root != IntPtr.Zero ? root : hwnd, out uint pid);
+        return pid;
+    }
+
     public static string GetClassName(IntPtr hwnd)
     {
         char* buffer = stackalloc char[256];

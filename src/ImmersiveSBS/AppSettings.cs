@@ -2,6 +2,7 @@ using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using ImmersiveSBS.Capture;
+using ImmersiveSBS.Depth;
 using ImmersiveSBS.Displays;
 using Microsoft.Win32;
 
@@ -18,6 +19,46 @@ public enum ShortcutCommand
 
     /// <summary>Quit ImmersiveSBS.</summary>
     Exit,
+
+    /// <summary>Switch AI 3D off, or back on to the last target.</summary>
+    ToggleAi3D,
+
+    /// <summary>More AI 3D depth (strength +0.1).</summary>
+    MoreDepth,
+
+    /// <summary>Less AI 3D depth (strength −0.1).</summary>
+    LessDepth,
+
+    /// <summary>Screen plane toward the viewer: more of the picture behind it (convergence −0.05).</summary>
+    PictureBack,
+
+    /// <summary>Screen plane away from the viewer: more of the picture in front (convergence +0.05).</summary>
+    PictureForward,
+
+    /// <summary>Pick the changing area under the cursor as the video and lock it, or release the lock.</summary>
+    PickVideo,
+
+    /// <summary>Open the live tuning panel.</summary>
+    Tuning,
+}
+
+/// <summary>Labels for the shortcut editor.</summary>
+public static class ShortcutCommands
+{
+    public static string Label(ShortcutCommand command) => command switch
+    {
+        ShortcutCommand.Pause => "Pause or resume",
+        ShortcutCommand.ToggleAi3D => "AI 3D on or off",
+        ShortcutCommand.MoreDepth => "More depth",
+        ShortcutCommand.LessDepth => "Less depth",
+        ShortcutCommand.PictureBack => "Picture further back",
+        ShortcutCommand.PictureForward => "Picture further forward",
+        ShortcutCommand.PickVideo => "Pick the video under the cursor",
+        ShortcutCommand.Tuning => "Tuning panel",
+        ShortcutCommand.Settings => "Settings",
+        ShortcutCommand.Exit => "Exit",
+        _ => command.ToString(),
+    };
 }
 
 /// <summary>
@@ -73,7 +114,49 @@ public sealed class AppSettings
         [ShortcutCommand.Pause] = "Ctrl+Alt+B",
         [ShortcutCommand.Settings] = "Ctrl+Alt+F1",
         [ShortcutCommand.Exit] = "Ctrl+Alt+C",
+        [ShortcutCommand.ToggleAi3D] = "Ctrl+Alt+D",
+        // DesktopSbS's depth keys.
+        [ShortcutCommand.MoreDepth] = "Ctrl+Alt+X",
+        [ShortcutCommand.LessDepth] = "Ctrl+Alt+W",
+        [ShortcutCommand.PictureBack] = "Ctrl+Alt+PageDown",
+        [ShortcutCommand.PictureForward] = "Ctrl+Alt+PageUp",
+        [ShortcutCommand.PickVideo] = "Ctrl+Alt+Shift+D",
+        [ShortcutCommand.Tuning] = "Ctrl+Alt+T",
     };
+
+    /// <summary>Fine tuning of AI 3D, edited live in the tuning panel.</summary>
+    public StereoTuning Tuning { get; set; } = new();
+
+    /// <summary>What AI 3D converts; Off shows the virtual monitor flat in both eyes.</summary>
+    public AiTarget Ai3D { get; set; } = AiTarget.Off;
+
+    /// <summary>What the AI 3D shortcut switches back on to.</summary>
+    public AiTarget Ai3DLastTarget { get; set; } = AiTarget.Video;
+
+    /// <summary>σ: depth strength as a fraction of the comfort-limited maximum (video-3d-plan.md §7.1).</summary>
+    public double Ai3DStrength { get; set; } = 0.6;
+
+    /// <summary>c: the nearness at the screen plane; lower puts more of the picture behind it.</summary>
+    public double Ai3DConvergence { get; set; } = 0.35;
+
+    public DepthTier DepthTier { get; set; } = DepthTier.Base;
+
+    public DepthPreset DepthPreset { get; set; } = DepthPreset.Balanced;
+
+    /// <summary>
+    /// Shows the video this late, with the app's sound delayed by the same amount, for steadier
+    /// depth (video-3d-plan.md P5); 0 = live. Only while AI 3D follows a video; not for calls.
+    /// </summary>
+    public double BufferSeconds { get; set; }
+
+    /// <summary>Lip-sync trim for the delayed sound, ms; positive plays the sound later.</summary>
+    public int AudioOffsetMs { get; set; }
+
+    /// <summary>Horizontal stretch of the video around its centre, for content in the wrong aspect ratio.</summary>
+    public double VideoStretch { get; set; } = 1;
+
+    /// <summary>Video that is already side-by-side or top-bottom: detected and shown as is by default.</summary>
+    public Native3DMode Native3D { get; set; } = Native3DMode.Auto;
 
     [JsonIgnore]
     public DisplayIdentity? VirtualMonitorIdentity
