@@ -27,6 +27,33 @@
                     <StackPanel>
                         <TextBlock Text="Status" Style="{StaticResource SectionText}"/>
                         <TextBlock x:Name="StatusText" TextWrapping="Wrap"/>
+                        <Grid Margin="0 8 0 0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <!-- Spins while the depth model loads; a check or a warning once it is done. -->
+                            <Ellipse x:Name="ModelSpinner" Width="16" Height="16" Margin="0 0 10 0" VerticalAlignment="Center"
+                                     Stroke="{DynamicResource AccentFillBrush}" StrokeThickness="2.5"
+                                     StrokeDashArray="5 3" StrokeDashCap="Round" RenderTransformOrigin="0.5 0.5">
+                                <Ellipse.RenderTransform>
+                                    <RotateTransform/>
+                                </Ellipse.RenderTransform>
+                                <Ellipse.Triggers>
+                                    <EventTrigger RoutedEvent="Loaded">
+                                        <BeginStoryboard>
+                                            <Storyboard>
+                                                <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                                 From="0" To="360" Duration="0:0:1" RepeatBehavior="Forever"/>
+                                            </Storyboard>
+                                        </BeginStoryboard>
+                                    </EventTrigger>
+                                </Ellipse.Triggers>
+                            </Ellipse>
+                            <TextBlock x:Name="ModelIcon" Style="{StaticResource IconText}" FontSize="16" Margin="0 0 10 0"
+                                       VerticalAlignment="Center" Visibility="Collapsed"/>
+                            <TextBlock x:Name="ModelText" Grid.Column="1" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                        </Grid>
                         <TextBlock x:Name="MainDisplayWarning" Foreground="{DynamicResource CautionBrush}" TextWrapping="Wrap"
                                    Margin="0 8 0 0" Visibility="Collapsed"
                                    Text="The virtual monitor is your main display, so the taskbar, the Start menu and most new windows are on it. When ImmersiveSBS is not running, nothing shows them. Consider keeping a real monitor as the main display and turning on 'Show my taskbar on all displays' (Settings &gt; Personalization &gt; Taskbar). Without the glasses: Win+P, 'PC screen only'."/>
@@ -83,6 +110,9 @@
                         <ComboBox x:Name="DepthTierBox">
                             <ComboBoxItem Content="Depth Anything V2 Small (fastest)"/>
                             <ComboBoxItem Content="Distill-Any-Depth Base (recommended)"/>
+                            <ComboBoxItem Content="Distill-Any-Depth Large (sharpest; always 518×518, about 24 fps)"/>
+                            <ComboBoxItem Content="Depth Anything V2 Base (personal use only)"/>
+                            <ComboBoxItem Content="Depth Anything V2 Large (personal use only)"/>
                         </ComboBox>
                         <TextBlock Text="Model resolution" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
                         <ComboBox x:Name="DepthPresetBox">
@@ -117,6 +147,8 @@
                 <Border Style="{StaticResource Card}" Margin="0 12 0 0">
                     <StackPanel>
                         <TextBlock Text="Video" Style="{StaticResource SectionText}"/>
+                        <CheckBox x:Name="OfferTheaterBox" Margin="0 0 0 16"
+                                  Content="Show a &quot;3D theater&quot; button over a playing video (fills the glasses with it, always in 3D)"/>
                         <TextBlock Text="Stretch" Style="{StaticResource FieldLabel}"/>
                         <ComboBox x:Name="StretchBox">
                             <ComboBoxItem Content="None" Tag="1.0"/>

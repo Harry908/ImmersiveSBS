@@ -10,6 +10,7 @@ using ImmersiveSBS.Depth;
 using ImmersiveSBS.Displays;
 using ImmersiveSBS.Input;
 using ImmersiveSBS.Interop;
+using ImmersiveSBS.Theater;
 using ImmersiveSBS.Tray;
 
 namespace ImmersiveSBS;
@@ -30,6 +31,7 @@ public sealed class AppController : IDisposable
     private readonly DispatcherTimer retryTimer = new() { Interval = TimeSpan.FromSeconds(5) };
     private DisplayChangeMonitor? displayMonitor;
     private DepthService? depthService;
+    private DepthModel? missingModel;
     private string? depthStatus;
 
     /// <summary>Field of view for glasses not in <see cref="KnownGlasses"/> (DesktopSbS default).</summary>
@@ -97,7 +99,11 @@ public sealed class AppController : IDisposable
         displayMonitor.Changed += reason => Evaluate(reason, force: false);
         // A previous run that crashed while delaying sound left the app's sessions turned down.
         SessionAttenuator.RecoverAfterCrash();
-        audioTimer.Tick += (_, _) => UpdateAudioDelay();
+        audioTimer.Tick += (_, _) =>
+        {
+            UpdateAudioDelay();
+            UpdateTheater();
+        };
         audioTimer.Start();
         Evaluate("start", force: true);
     }
@@ -108,6 +114,7 @@ public sealed class AppController : IDisposable
     private AudioDelay? audioDelay;
     private bool audioStarting;
     private uint audioFailedProcess;
+    private long audioFailedAt;
 
     /// <summary>"Sound 1 s behind" while the delayed sound runs; null otherwise.</summary>
     public string? AudioStatus => audioDelay == null ? null : $"sound {audioDelay.Delay.TotalSeconds:0.#} s behind";
@@ -138,13 +145,13 @@ public sealed class AppController : IDisposable
         }
 
         var delay = TimeSpan.FromSeconds(Settings.BufferSeconds);
-        if (audioDelay != null && audioDelay.ProcessId == process && audioDelay.Delay == delay)
+        if (audioDelay != null && audioDelay.ProcessId == process && audioDelay.Delay == delay && !audioDelay.NeedsRestart)
         {
             audioDelay.Offset = TimeSpan.FromMilliseconds(Settings.AudioOffsetMs);
             s!.AudioDelayed = true;
             return;
         }
-        if (audioStarting || process == audioFailedProcess) return;
+        if (audioStarting || (process == audioFailedProcess && Environment.TickCount64 - audioFailedAt < 5000)) return;
 
         StopAudioDelay();
         _ = StartAudioDelayAsync(process, delay);
@@ -167,8 +174,9 @@ public sealed class AppController : IDisposable
         }
         catch (Exception e)
         {
-            // Not retried for this app until the video moves to another one or the buffer changes.
+            // Retried for this app after a few seconds (an output may be coming back).
             audioFailedProcess = process;
+            audioFailedAt = Environment.TickCount64;
             Log.Write($"Audio: could not delay process {process}'s sound: {e.Message}");
         }
         finally
@@ -281,6 +289,74 @@ public sealed class AppController : IDisposable
     /// <summary>The last change made with a hotkey, e.g. "Depth 0.7"; shown in the tuning panel.</summary>
     public string? LastAdjustment { get; private set; }
 
+    #region Theater
+
+    private readonly TheaterButtons theaterButtons = new();
+    private TheaterInput? theaterInput;
+    private long theaterWithoutVideoSince;
+
+    /// <summary>The found video fills both eyes in the glasses, the desktop hidden.</summary>
+    public bool Theater { get; private set; }
+
+    /// <summary>Turns theater mode on or off (tray, on-screen buttons).</summary>
+    public void SetTheater(bool on)
+    {
+        if (Theater == on) return;
+        Theater = on;
+        theaterWithoutVideoSince = 0;
+        Log.Write(on ? "App: theater on." : "App: theater off.");
+        // The theater turns AI 3D on for its video (and the model loads), so re-evaluate fully.
+        Evaluate(on ? "theater on" : "theater off", force: true);
+    }
+
+    /// <summary>Hook thread → UI thread: an on-screen button was clicked in the glasses.</summary>
+    private void OnTheaterClicked(TheaterAction action) => dispatcher.BeginInvoke(() =>
+    {
+        switch (action)
+        {
+            case TheaterAction.EnterTheater: SetTheater(true); break;
+            case TheaterAction.ExitTheater: SetTheater(false); break;
+            case TheaterAction.PlayPause: Native.PressMediaPlayPause(); break;
+        }
+    });
+
+    /// <summary>
+    /// The click hook runs only while the glasses show the virtual monitor; theater mode ends by
+    /// itself when no video has been found for a few seconds (the video was closed).
+    /// </summary>
+    private void UpdateTheater()
+    {
+        bool glasses = session is { Windowed: false } && !shuttingDown;
+        if (glasses && theaterInput == null)
+        {
+            theaterInput = new TheaterInput(theaterButtons);
+            theaterInput.Clicked += OnTheaterClicked;
+        }
+        else if (!glasses && theaterInput != null)
+        {
+            theaterInput.Dispose();
+            theaterInput = null;
+            theaterButtons.Clear();
+        }
+
+        if (!Theater) return;
+        if (session is { TheaterActive: true })
+        {
+            theaterWithoutVideoSince = 0;
+        }
+        else if (theaterWithoutVideoSince == 0)
+        {
+            theaterWithoutVideoSince = Environment.TickCount64;
+        }
+        else if (Environment.TickCount64 - theaterWithoutVideoSince > 4000)
+        {
+            Log.Write("App: theater ended: no video found.");
+            SetTheater(false);
+        }
+    }
+
+    #endregion
+
     /// <summary>Sets the video stretch (1 = none).</summary>
     public void SetStretch(double factor)
     {
@@ -299,8 +375,37 @@ public sealed class AppController : IDisposable
         ApplySettings(s);
     }
 
-    /// <summary>The depth model's state for the UI, or null while AI 3D is off.</summary>
-    public string? DepthStatus => Settings.Ai3D == AiTarget.Off ? null : depthStatus;
+    /// <summary>The depth model's state: loading, preparing, ready or failed; null when there is none (file missing).</summary>
+    public DepthServiceState? ModelState => depthService?.State;
+
+    /// <summary>
+    /// The depth model's state for the UI, AI 3D on or not, with the time spent so far while it
+    /// loads, e.g. "Loading Distill-Any-Depth Base 518×294… 2 s" or "Distill-Any-Depth Base 518×294 ready".
+    /// </summary>
+    public string ModelStatus
+    {
+        get
+        {
+            if (depthService is not DepthService d) return "Depth model: " + (depthStatus ?? "none");
+            double seconds = Stopwatch.GetElapsedTime(d.LoadStarted).TotalSeconds;
+            return d.State switch
+            {
+                DepthServiceState.Loading => $"Loading {d.Model}… {seconds:0} s",
+                DepthServiceState.Preparing => $"Preparing {d.Model} for this GPU (first use, about 20 s)… {seconds:0} s",
+                DepthServiceState.Failed => $"{d.Model} failed: {d.Status}",
+                _ => d.Status,
+            };
+        }
+    }
+
+    /// <summary>The depth model is loading or preparing.</summary>
+    public bool ModelBusy => ModelState is DepthServiceState.Loading or DepthServiceState.Preparing;
+
+    /// <summary>
+    /// What AI 3D converts right now: the setting, except that the theater always shows its video
+    /// in 3D (the saved setting is left as it is, so leaving the theater turns it back).
+    /// </summary>
+    private AiTarget EffectiveAi3D => Theater ? AiTarget.Video : Settings.Ai3D;
 
     /// <summary>True while the virtual monitor is shown in a window instead of on the glasses.</summary>
     public bool WindowShown => session is { Windowed: true };
@@ -461,8 +566,8 @@ public sealed class AppController : IDisposable
             StatusText = blocker;
         }
 
-        if (Settings.Ai3D != AiTarget.Off && desired is { MirrorBounds: null })
-            StatusText += "; AI 3D " + (Settings.Ai3D == AiTarget.Video ? "video" : "whole screen");
+        if (EffectiveAi3D != AiTarget.Off && desired is { MirrorBounds: null })
+            StatusText += Theater ? "; 3D theater" : "; AI 3D " + (Settings.Ai3D == AiTarget.Video ? "video" : "whole screen");
 
         UpdateDepthService();
         _ = ReconcileAsync(desired);
@@ -474,21 +579,25 @@ public sealed class AppController : IDisposable
     }
 
     /// <summary>
-    /// Loads the depth model while AI 3D is on (and swaps it when the tier or size changes),
-    /// and frees its GPU memory when AI 3D is off. Shared by all sessions.
+    /// Loads the depth model at start, AI 3D on or not, so turning 3D on (or entering the theater)
+    /// is instant; swaps it when the tier or size changes. It idles while nothing asks for depth.
+    /// Shared by all sessions.
     /// </summary>
     private void UpdateDepthService()
     {
-        DepthModel? wanted = Settings.Ai3D == AiTarget.Off ? null : new DepthModel(Settings.DepthTier, Settings.DepthPreset);
-        if (depthService != null && depthService.Model == wanted) return;
+        var wanted = new DepthModel(Settings.DepthTier, Settings.DepthPreset);
+        // Compared by file: the fixed-size Large is the same model whatever the preset.
+        if (depthService != null && depthService.Model.Stem == wanted.Stem) return;
+        if (depthService == null && missingModel?.Stem == wanted.Stem && !wanted.Exists) return;
 
         depthService?.Dispose();
         depthService = null;
         depthStatus = null;
-        if (wanted == null) return;
+        missingModel = null;
 
         if (!wanted.Exists)
         {
+            missingModel = wanted;
             depthStatus = $"the model file {wanted.Stem}.onnx is missing from {DepthModel.ModelsDirectory}";
             Log.Write("App: AI 3D: " + depthStatus);
             return;
@@ -509,10 +618,11 @@ public sealed class AppController : IDisposable
     private void ApplyAi(Session s)
     {
         double fov = KnownGlasses.FindByEdidKey(Glasses?.Identity.EdidKey)?.FieldOfView ?? DefaultFieldOfView;
-        var stereo = new StereoSettings(Settings.Ai3D, Settings.Ai3DStrength, Settings.Ai3DConvergence, fov, Settings.Native3D,
-            Settings.VideoStretch, Settings.BufferSeconds, Settings.Tuning);
+        var stereo = new StereoSettings(EffectiveAi3D, Settings.Ai3DStrength, Settings.Ai3DConvergence, fov, Settings.Native3D,
+            Settings.VideoStretch, Settings.BufferSeconds, Settings.Tuning, Theater, Settings.OfferTheater);
         if (s.Stereo != stereo) s.Stereo = stereo;
         if (s.Depth != depthService) s.Depth = depthService;
+        s.Buttons = theaterButtons;
         if (depthService != null)
         {
             if (depthService.Tuning != Settings.Tuning) depthService.Tuning = Settings.Tuning;
@@ -693,7 +803,13 @@ public sealed class AppController : IDisposable
         retryTimer.Stop();
         audioTimer.Stop();
         StopAudioDelay();
-        if (session != null) await session.StopAsync();
+        if (session != null)
+        {
+            // A render thread stuck in the driver must not hold the exit; process end frees it.
+            Task stop = session.StopAsync();
+            if (await Task.WhenAny(stop, Task.Delay(3000)) != stop)
+                Log.Write("App: the session did not stop within 3 s; exiting anyway.");
+        }
         session = null;
 
         // Nothing will show the virtual monitor after exit: bring its windows into sight.
@@ -707,8 +823,11 @@ public sealed class AppController : IDisposable
         System.Windows.Application.Current.Shutdown();
     }
 
+    /// <summary>Releases the hooks, the depth model, the delayed sound and the tray icon; safe to call twice.</summary>
     public void Dispose()
     {
+        theaterInput?.Dispose();
+        theaterInput = null;
         cursorGuard?.Dispose();
         cursorGuard = null;
         windowGuard?.Dispose();

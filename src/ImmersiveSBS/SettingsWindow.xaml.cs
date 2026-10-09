@@ -71,6 +71,7 @@ public partial class SettingsWindow : Window
         SelectClosest(StrengthBox, s.Ai3DStrength);
         SelectClosest(ConvergenceBox, s.Ai3DConvergence);
         SelectClosest(StretchBox, s.VideoStretch);
+        OfferTheaterBox.IsChecked = s.OfferTheater;
         SelectClosest(BufferBox, s.BufferSeconds);
         SelectClosest(AudioOffsetBox, s.AudioOffsetMs);
         ModelsText.Text = $"Model files: {DepthModel.ModelsDirectory}. The first use of a model on this PC prepares it for the GPU (about 20 s).";
@@ -113,6 +114,12 @@ public partial class SettingsWindow : Window
     private void UpdateStatus()
     {
         StatusText.Text = controller.StatusText + (controller.AudioStatus is string audio ? "; " + audio : "");
+        ModelText.Text = controller.ModelStatus;
+        ModelSpinner.Visibility = controller.ModelBusy ? Visibility.Visible : Visibility.Collapsed;
+        ModelIcon.Visibility = controller.ModelBusy ? Visibility.Collapsed : Visibility.Visible;
+        bool ready = controller.ModelState == DepthServiceState.Ready;
+        ModelIcon.Text = ready ? "" : "";   // CheckMark, Warning
+        ModelIcon.SetResourceReference(TextBlock.ForegroundProperty, ready ? "AccentFillBrush" : "CautionBrush");
         MainDisplayWarning.Visibility = controller.VirtualMonitor is { IsPrimary: true } ? Visibility.Visible : Visibility.Collapsed;
         StatsText.Text = controller.Session?.Stats?.ToString() ?? string.Empty;
     }
@@ -159,6 +166,7 @@ public partial class SettingsWindow : Window
         if (StrengthBox.SelectedItem is ComboBoxItem strength) settings.Ai3DStrength = TagValue(strength);
         if (ConvergenceBox.SelectedItem is ComboBoxItem convergence) settings.Ai3DConvergence = TagValue(convergence);
         if (StretchBox.SelectedItem is ComboBoxItem stretch) settings.VideoStretch = TagValue(stretch);
+        settings.OfferTheater = OfferTheaterBox.IsChecked == true;
         if (BufferBox.SelectedItem is ComboBoxItem buffer) settings.BufferSeconds = TagValue(buffer);
         if (AudioOffsetBox.SelectedItem is ComboBoxItem offset) settings.AudioOffsetMs = (int)TagValue(offset);
 

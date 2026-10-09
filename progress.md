@@ -231,7 +231,9 @@ to `%LOCALAPPDATA%\ImmersiveSBS\models\` as `{da2-small|dad-base}_{H}x{W}.onnx` 
 - One depth thread, newest input only; post-processing there (`DepthPostProcessor`, §6.1–6.2:
   sampled p2/p98, EMA τ 0.5 s, per-pixel motion-adaptive blend α_min 0.2 at 30 fps, scene cut
   at mean |ΔY| > 0.12). The service is owned by the controller and shared by sessions; it is
-  disposed (GPU memory freed) when AI 3D is off.
+  disposed (GPU memory freed) when AI 3D is off. (Changed 2026-10-07 at the user's request:
+  the model now loads at app start and stays loaded, idle, while AI 3D is off, so 3D and the
+  theater start at once.)
 
 **GPU** (`Depth/StereoSynth`, compute shaders on the render device):
 preprocess (crop, 4-tap box, ImageNet normalisation, planar NCHW, ~1.8 MB read back); 8×8 luma
@@ -354,9 +356,111 @@ Tests: 57 (+ delay line 5, loopback 6). One unreproduced failure on the first ru
 
 Tests: 64.
 
+### Bigger models (2026-10-07)
+
+Added to `%LOCALAPPDATA%\ImmersiveSBS\models` and to the settings' model list (`DepthTier`):
+- **Distill-Any-Depth Large** (MIT), from the V0 scratch: `dad-large_518x518.onnx`, the only
+  size its export accepts (a 16:9 frame is squeezed in; the preset is ignored). Its output is
+  [1, 1, H, W]; the estimator now takes the output shape from the model.
+- **Depth Anything V2 Base and Large** (CC-BY-NC-4.0: personal use, never shipped), fp16 from
+  `onnx-community/depth-anything-v2-{base,large}` (`onnx/model_fp16.onnx`, float32 I/O, dynamic
+  H×W), made static at 224×392, 294×518 and 420×756 with V0's `fix_static.py`. The dynamic
+  originals are kept in `models\download\` for other sizes.
+
+Warm time per frame from .NET on TensorRT for RTX (Balanced, `DepthEstimatorTests`, engines now
+cached): V2 Small 6.9 ms, DAD Base 8.2, V2 Base 8.7, V2 Large 26.0, DAD Large (518×518) 41.1.
+V2 Large fits 30 fps video; DAD Large fits 24 fps, and only the buffered path keeps up with it.
+
+### Buffer: first try in the glasses (2026-10-07)
+
+- **No sound:** the delayed copy played on the default output (`EDB323QU`, the Acer's HDMI
+  audio) while the browser plays elsewhere (per-app routing). Fixed: `SessionAttenuator` records
+  the output of the app's first session and `AudioDelay` plays there.
+- **Intermittent pauses:** the stats show 10-second windows where the virtual monitor delivered
+  no frames at all, so the browser stopped painting the video. Suspected: Chrome's player
+  stalling while its audio is captured or turned down (Chrome syncs video to its audio clock).
+  Not confirmed. `AudioDelay` now logs every 10 s what it captured (silent or not, packets from
+  sessions not yet turned down) and played, to tell an app stall from a capture or playback one.
+
+## Theater pop-out (built 2026-10-07, not yet seen)
+
+The user preferred a pop-out to a built-in player: the browser's video fills both eyes, with
+on-screen buttons rather than hotkeys.
+
+- **Entering:** a "3D theater" button at the found video's top-right corner while the mouse is
+  over it (fades 2.5 s after the mouse stops), or tray "3D theater". The video is found even
+  with AI 3D off (`StereoSettings.FindVideo`, setting `OfferTheater`, default on): the tracker
+  runs on the luma grid and nothing is drawn over the video.
+- **Theater:** the region's eye images (AI 3D, native 3D, or flat with AI off; delayed when the
+  buffer runs) fitted to the whole eye (`TheaterGeometry.Fit`), the desktop dark; the cursor is
+  mapped from the video region into that view; **Play / Pause** and **Exit theater** at the
+  top-right while the mouse moves. Play/Pause presses the media key (browsers obey it). Theater
+  ends by itself when no video has been found for 4 s.
+- **Buttons exist only in the glasses**, so `TheaterInput` (a low-level mouse hook on its own
+  thread, only while the glasses session runs) swallows the press and release on a button,
+  whose desktop rectangle the render thread publishes each frame (`TheaterButtons`); all other
+  clicks pass through. Button images are drawn once with System.Drawing (`ButtonImages`); the
+  renderer draws a `UiLayer` in eye px on top.
+- The cursor's hot spot is now kept from Desktop Duplication (`PointerState.HotX/HotY`).
+
+The browser keeps playing: it is the source of the picture. Tests: 75 (theater geometry, hit
+testing, button images).
+
+### First look in the glasses (2026-10-07)
+
+- **Theater with AI 3D off was flat;** the user wants the theater always in 3D. The theater now
+  converts its video whatever the AI 3D setting (`AppController.EffectiveAi3D`: Video while in
+  the theater; the saved setting is untouched, so leaving turns it back), loading the model on
+  entry. Until depth is there (model loading, buffer filling) the video is shown flat in the
+  theater instead of returning null, which had ended the theater after 4 s.
+- **Still no sound with the buffer.** The log showed two failures:
+  - Chrome keeps an idle session on every output it ever used (glasses, Realtek speakers,
+    EDB323QU), and "the first session" picked the wrong one: 20 min of sound played on EDB323QU
+    (`played 10.0 s` per 10 s) while the user listened elsewhere.
+  - When the player did open on the glasses' output, it never played (`played 0.0 s`): that
+    output resets when the glasses switch 2D/3D, and the stopped player was not noticed.
+
+  Now the output is that of the app's *active* session (the default output if several), or the
+  default output with automatic stream routing while none is active; the delayed sound
+  restarts when the app moves to another output for 1 s or when the player stops
+  (`PlaybackStopped`), and a failed start is retried after 5 s. The 10 s log line gives the
+  peak level (dBFS) and the output, and Windows' own meter of this app's session (level,
+  session volume, output): proof of whether the copy reaches the speakers.
+- A session restored while its output was gone stayed at 1 % for good (the marker was deleted
+  anyway; the log shows Chrome found at 0.01 later). Unreachable sessions now stay in the marker
+  for the next start, and a session found at exactly 0.01 is taken to be ours, original volume 1.
+- **Depth crash after changing model resolution:** `TryTake` recycled the session's old
+  `DepthFrame` (previous size) into the new service ("Buffers must match the processor's
+  size"); a frame of another size is no longer reused.
+- **Model status** (user request): the model loads at app start whatever AI 3D is set to, and
+  reloads only when its file changes (Large ignores the preset). Its state (`DepthServiceState`:
+  Loading, Preparing = first-use engine build, Ready, Failed) shows in Settings > Status
+  (spinner, then a check or a warning, with the seconds so far), in the tray (AI 3D submenu,
+  tooltip) and, while 3D is wanted, as a badge at the video's top-left corner in the glasses
+  (12 pre-drawn spinner turns; "3D ready" for 2 s after loading; a warning if failed or
+  missing). Tests: 76.
+- **Exit sweep** (the user suspected exit left GPU memory behind; at the time the app was not
+  running and the 2.2 GB in Task Manager belonged to NVIDIA Overlay). Found and fixed: the
+  audio recorder was stopped but never disposed; `DepthService.Dispose` freed the model after a
+  2 s join even when the worker was still running (mid-load or mid-compile), which can crash at
+  exit and leave a crashed process held by error reporting; exit waited on the render thread
+  without a limit (now 3 s). Exit now logs "Depth: unloaded …" and "App: exit complete", and a
+  background watchdog ends the process, with a log line, if anything still holds it 3 s later.
+  Windows' leak detector filed RADAR_PRE_LEAK_64 for the app once (18:44, 90 s after a start,
+  during a model load); the stats line now carries private and managed memory to tell.
+  Tests had been writing to the app's log (model loads after an exit were test runs); they
+  write `ImmersiveSBS.tests.log` now. The buffer was already off by default (0) and in the
+  user's settings.
+- V2 Base 756×420 averages 825 ms per frame on this GPU (V2 Large 756×420: 67 ms): its compiled
+  engine is suspect (compiled in 6.3 s, loaded in 16.7 s).
+- One stats window showed V2 Base 756×420 at 907 ms per frame (1 depth frame/s); not
+  reproduced or explained yet.
+
 ### Next
 
-1. In the glasses: AI 3D, buffer, stretch, tuning panel and hotkeys; then tune the defaults.
+1. In the glasses: the theater (enter, exit, Play/Pause, cursor alignment), the buffer again
+   (sound on the right device; the new audio log during a pause), stretch, tuning panel; then
+   tune the defaults; compare the five models.
 2. P6 packaging (installer with the driver, model download, README), or P3 once the hardware
    3D button test with the glasses removed from the desktop is done.
 

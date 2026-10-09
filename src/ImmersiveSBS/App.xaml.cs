@@ -51,5 +51,16 @@ public partial class App : Application
         controller?.Dispose();
         if (ownsMutex) SingleInstance.ReleaseMutex();
         base.OnExit(e);
+        if (controller == null) return;
+
+        // Everything this app owns is released; only a thread left running by a library could keep
+        // the process (and its GPU memory) alive now. Should that happen, say so and end it.
+        Log.Write("App: exit complete.");
+        new Thread(() =>
+        {
+            Thread.Sleep(3000);
+            Log.Write($"App: still running 3 s after exit ({System.Diagnostics.Process.GetCurrentProcess().Threads.Count} threads); ending the process.");
+            Environment.Exit(e.ApplicationExitCode);
+        }) { IsBackground = true, Name = "Exit watchdog" }.Start();
     }
 }

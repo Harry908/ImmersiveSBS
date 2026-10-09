@@ -245,6 +245,18 @@ internal static unsafe partial class Native
         return pid;
     }
 
+    [LibraryImport("user32.dll")]
+    private static partial void keybd_event(byte vk, byte scan, uint flags, IntPtr extraInfo);
+
+    /// <summary>Presses the media Play/Pause key, which Chrome and Edge obey for the playing video.</summary>
+    public static void PressMediaPlayPause()
+    {
+        const byte VK_MEDIA_PLAY_PAUSE = 0xB3;
+        const uint KEYEVENTF_EXTENDEDKEY = 0x1, KEYEVENTF_KEYUP = 0x2;
+        keybd_event(VK_MEDIA_PLAY_PAUSE, 0, KEYEVENTF_EXTENDEDKEY, IntPtr.Zero);
+        keybd_event(VK_MEDIA_PLAY_PAUSE, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, IntPtr.Zero);
+    }
+
     public static string GetClassName(IntPtr hwnd)
     {
         char* buffer = stackalloc char[256];

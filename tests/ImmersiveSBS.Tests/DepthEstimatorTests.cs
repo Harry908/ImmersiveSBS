@@ -7,14 +7,20 @@ namespace ImmersiveSBS.Tests;
 /// <summary>
 /// Runs the real model on TensorRT for RTX. Needs an NVIDIA RTX GPU, the Windows ML provider
 /// package and the model files; without them the test reports why and returns. The first run
-/// on a machine compiles the engine (about 20 s) and caches it.
+/// of each model on a machine compiles its engine (20–30 s) and caches it, so this also prepares
+/// the app's first use; the output lists each model's time per frame on this GPU.
 /// </summary>
 public class DepthEstimatorTests(ITestOutputHelper output)
 {
-    [Fact]
-    public void BalancedBaseModelRunsAndSeesASlope()
+    [Theory]
+    [InlineData(DepthTier.Small)]
+    [InlineData(DepthTier.Base)]
+    [InlineData(DepthTier.Large)]
+    [InlineData(DepthTier.V2Base)]
+    [InlineData(DepthTier.V2Large)]
+    public void BalancedModelRunsOnTensorRt(DepthTier tier)
     {
-        var model = new DepthModel(DepthTier.Base, DepthPreset.Balanced);
+        var model = new DepthModel(tier, DepthPreset.Balanced);
         if (!model.Exists)
         {
             output.WriteLine($"Skipped: {model.FilePath} is missing.");
@@ -53,7 +59,7 @@ public class DepthEstimatorTests(ITestOutputHelper output)
             var depth = new float[plane];
             estimator.Run(input, depth); // warm-up
             var watch = Stopwatch.StartNew();
-            const int runs = 200;
+            const int runs = 100;
             for (int i = 0; i < runs; i++) estimator.Run(input, depth);
             double ms = watch.Elapsed.TotalMilliseconds / runs;
             output.WriteLine($"{model}: {ms:0.0} ms per frame on TensorRT for RTX {TensorRtRtx.Version}.");

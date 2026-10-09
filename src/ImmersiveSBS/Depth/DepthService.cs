@@ -4,7 +4,10 @@ namespace ImmersiveSBS.Depth;
 
 public enum DepthServiceState
 {
+    /// <summary>Loading a prepared model (about 1–4 s).</summary>
     Loading,
+    /// <summary>First use of this model and size on this GPU: building its engine (about 20 s).</summary>
+    Preparing,
     Ready,
     Failed,
 }
@@ -56,6 +59,7 @@ public sealed class DepthService : IDisposable
     public DepthService(DepthModel model)
     {
         Model = model;
+        Status = $"Loading {model}…";
         thread = new Thread(Run) { Name = "Depth", IsBackground = true, Priority = ThreadPriority.AboveNormal };
         thread.Start();
     }
@@ -83,7 +87,10 @@ public sealed class DepthService : IDisposable
     public DepthServiceState State { get; private set; } = DepthServiceState.Loading;
 
     /// <summary>What the service is doing, for the UI: preparing, an error, or timings.</summary>
-    public string Status { get; private set; } = "Loading the depth model…";
+    public string Status { get; private set; }
+
+    /// <summary>When the model started loading, for the elapsed time while it loads.</summary>
+    public long LoadStarted { get; } = Stopwatch.GetTimestamp();
 
     /// <summary>Raised on the depth thread when <see cref="State"/> or <see cref="Status"/> changes.</summary>
     public event Action? StatusChanged;
@@ -119,7 +126,8 @@ public sealed class DepthService : IDisposable
         lock (gate)
         {
             if (ready == null) return false;
-            spareFrame = frame;
+            // A frame from an earlier model (another size) is not reused.
+            if (frame != null && frame.Width == Model.Width && frame.Height == Model.Height) spareFrame = frame;
             frame = ready;
             ready = null;
             return true;
@@ -130,7 +138,7 @@ public sealed class DepthService : IDisposable
     {
         try
         {
-            estimator = DepthEstimator.Load(Model, s => SetStatus(DepthServiceState.Loading, s));
+            estimator = DepthEstimator.Load(Model, s => SetStatus(DepthServiceState.Preparing, s));
             post = new DepthPostProcessor(Model.Width, Model.Height);
             SetStatus(DepthServiceState.Ready, $"{Model} ready");
         }
@@ -237,12 +245,26 @@ public sealed class DepthService : IDisposable
         StatusChanged?.Invoke();
     }
 
+    /// <summary>
+    /// Stops the worker and unloads the model (its GPU memory). A worker still busy after a few
+    /// seconds (loading, or compiling a first-use engine) keeps its model: unloading it under a
+    /// running inference would crash, and process exit frees it anyway.
+    /// </summary>
     public void Dispose()
     {
         stopping = true;
         wake.Set();
-        thread.Join(2000);
-        estimator?.Dispose();
+        if (!thread.Join(3000))
+        {
+            Log.Write($"Depth: the worker is still busy ({State}); {Model} is left for the process to free.");
+            return;
+        }
+        if (estimator != null)
+        {
+            estimator.Dispose();
+            estimator = null;
+            Log.Write($"Depth: unloaded {Model}.");
+        }
         wake.Dispose();
     }
 }

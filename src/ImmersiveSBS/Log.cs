@@ -15,9 +15,13 @@ public static class Log
     private const long maxBytes = 1024 * 1024;
     private static readonly object fileLock = new();
 
-    public static string FilePath =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "ImmersiveSBS", "ImmersiveSBS.log");
+    /// <summary>
+    /// The app's own log; anything else running this code (the test host) writes beside it, so
+    /// tests never put lines into the app's log that look like the app still running.
+    /// </summary>
+    public static string FilePath { get; } =
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ImmersiveSBS",
+            Path.GetFileNameWithoutExtension(Environment.ProcessPath) is "ImmersiveSBS" ? "ImmersiveSBS.log" : "ImmersiveSBS.tests.log");
 
     public static void Write(string message)
     {

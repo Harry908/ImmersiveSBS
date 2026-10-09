@@ -28,6 +28,7 @@ public sealed class TrayIcon : IDisposable
     private readonly ToolStripMenuItem aiVideoItem;
     private readonly ToolStripMenuItem aiScreenItem;
     private readonly ToolStripMenuItem aiStatusItem;
+    private readonly ToolStripMenuItem theaterItem;
     private readonly ToolStripMenuItem stretchItem;
     private readonly ToolStripMenuItem bufferItem;
     private readonly ToolStripMenuItem duplicationItem;
@@ -66,6 +67,9 @@ public sealed class TrayIcon : IDisposable
         aiItem = new ToolStripMenuItem("AI 3D");
         aiItem.DropDownItems.AddRange([aiOffItem, aiVideoItem, aiScreenItem, new ToolStripSeparator(), aiStatusItem]);
 
+        theaterItem = new ToolStripMenuItem("3D theater (video fills the glasses)");
+        theaterItem.Click += (_, _) => controller.SetTheater(!controller.Theater);
+
         stretchItem = new ToolStripMenuItem("Video stretch");
         foreach ((string text, double factor) in new[] { ("None", 1.0), ("×1.1", 1.1), ("×1.2", 1.2), ("×1.25", 1.25), ("×1.33 (4:3 as 16:9)", 1.3333), ("×1.5", 1.5) })
         {
@@ -101,6 +105,7 @@ public sealed class TrayIcon : IDisposable
             new ToolStripSeparator(),
             pauseItem,
             aiItem,
+            theaterItem,
             stretchItem,
             bufferItem,
             windowItem,
@@ -136,7 +141,8 @@ public sealed class TrayIcon : IDisposable
     public void Refresh()
     {
         // NotifyIcon.Text is limited to 127 characters; keep it to a glance.
-        string text = "ImmersiveSBS - " + controller.StatusText + (controller.AudioStatus is string audio ? "; " + audio : "");
+        string text = "ImmersiveSBS - " + controller.StatusText + (controller.AudioStatus is string audio ? "; " + audio : "") +
+                      (controller.ModelBusy ? "; loading the 3D model" : controller.ModelState == DepthServiceState.Failed ? "; 3D model failed" : "");
         notifyIcon.Text = text.Length > 120 ? text[..117] + "..." : text;
     }
 
@@ -153,11 +159,12 @@ public sealed class TrayIcon : IDisposable
         windowItem.Checked = controller.WindowShown;
         duplicationItem.Checked = controller.Settings.CaptureMethod == CaptureMethod.DesktopDuplication;
         graphicsCaptureItem.Checked = controller.Settings.CaptureMethod == CaptureMethod.GraphicsCapture;
+        theaterItem.Checked = controller.Theater;
         aiOffItem.Checked = controller.Settings.Ai3D == AiTarget.Off;
         aiVideoItem.Checked = controller.Settings.Ai3D == AiTarget.Video;
         aiScreenItem.Checked = controller.Settings.Ai3D == AiTarget.WholeScreen;
         aiItem.ShortcutKeyDisplayString = controller.ShortcutText(ShortcutCommand.ToggleAi3D);
-        aiStatusItem.Text = controller.DepthStatus ?? "Converts 2D video to 3D with a depth model";
+        aiStatusItem.Text = controller.ModelStatus;
         foreach (ToolStripMenuItem item in stretchItem.DropDownItems)
             item.Checked = Math.Abs((double)item.Tag! - controller.Settings.VideoStretch) < 0.01;
         foreach (ToolStripMenuItem item in bufferItem.DropDownItems)

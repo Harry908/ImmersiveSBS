@@ -27,8 +27,11 @@ public enum AiTarget
 /// in the wrong aspect ratio; works with AI 3D off too.</param>
 /// <param name="BufferSeconds">How late the video is shown, in step with the delayed sound; 0 = live.</param>
 /// <param name="Tuning">Fine controls; null = the defaults.</param>
+/// <param name="Theater">The video fills both eyes, the desktop hidden; needs a found video, AI 3D or not.</param>
+/// <param name="FindVideo">Look for a playing video even with nothing else on, to offer the theater button.</param>
 public sealed record StereoSettings(AiTarget Target, double Strength, double Convergence, double FieldOfView,
-    Native3DMode Native3D = Native3DMode.Auto, double Stretch = 1, double BufferSeconds = 0, StereoTuning? Tuning = null)
+    Native3DMode Native3D = Native3DMode.Auto, double Stretch = 1, double BufferSeconds = 0, StereoTuning? Tuning = null,
+    bool Theater = false, bool FindVideo = false)
 {
     public static readonly StereoSettings Off = new(AiTarget.Off, 0.6, 0.35, 50);
 
@@ -93,6 +96,9 @@ public sealed class AiStereo : IDisposable
     /// </summary>
     public Rectangle DelayRegion { get; private set; }
 
+    /// <summary>The video found this frame (source px), or empty; for the on-screen theater button.</summary>
+    public Rectangle FoundRegion { get; private set; }
+
     /// <summary>
     /// Runs the video steps for this frame and returns the eye images to draw over the region, or
     /// null to show the frame flat.
@@ -105,7 +111,8 @@ public sealed class AiStereo : IDisposable
         Size eyeSize, double scale, bool audioDelayed)
     {
         DelayRegion = Rectangle.Empty;
-        if (settings.Target == AiTarget.Off && !settings.Stretches)
+        FoundRegion = Rectangle.Empty;
+        if (settings.Target == AiTarget.Off && !settings.Stretches && !settings.Theater && !settings.FindVideo)
         {
             Forget();
             Status = "AI 3D off";
@@ -134,11 +141,20 @@ public sealed class AiStereo : IDisposable
             target = tracker.Region;
         }
         SetRegion(target, service);
+        FoundRegion = region;
         bool regionMoving = !track || tracker!.State == RegionState.Tracking;
         Rectangle drawn = Stretched(region, settings.Stretch);
         string stretch = (tracker?.Locked == true ? ", locked" : "") + (settings.Stretches ? $", stretched ×{settings.Stretch:0.##}" : "");
 
-        // Stretch alone: the region flat in both eyes, drawn wider.
+        // Nothing to draw: only finding the video, to offer the theater button.
+        if (settings.Target == AiTarget.Off && !settings.Stretches && !settings.Theater)
+        {
+            Status = $"Video {region.Width}×{region.Height} found{stretch}";
+            overlay = null;
+            return null;
+        }
+
+        // Stretch or theater with AI 3D off: the region flat in both eyes.
         if (settings.Target == AiTarget.Off)
         {
             Status = $"Video {region.Width}×{region.Height}{stretch}";
@@ -160,15 +176,21 @@ public sealed class AiStereo : IDisposable
             return Cached((layout, region, drawn), newFrame, () => synth.SplitNative(source, region, layout), drawn);
         }
 
+        // The theater shows its video flat until depth is there (the model loading, the buffer
+        // filling), rather than dropping back to the desktop.
+        StereoOverlay? FlatInTheater() => settings.Theater
+            ? Cached((Native3DLayout.None, region, drawn), newFrame, () => synth.SplitNative(source, region, Native3DLayout.None), drawn)
+            : null;
+
         if (service == null)
         {
             Status = "AI 3D: the depth model is not available";
-            return null;
+            return FlatInTheater();
         }
         if (service.State != DepthServiceState.Ready)
         {
             Status = "AI 3D: " + service.Status;
-            return null;
+            return FlatInTheater();
         }
 
         StereoTuning tuning = settings.Tuning ?? StereoTuning.Default;
@@ -183,7 +205,7 @@ public sealed class AiStereo : IDisposable
 
         if (settings.BufferSeconds > 0 && track) DelayRegion = region;
         if (DelayRegion != Rectangle.Empty && audioDelayed)
-            return Delayed(source, newFrame && regionMoving, settings, service, strength, drawn, stretch);
+            return Delayed(source, newFrame && regionMoving, settings, service, strength, drawn, stretch) ?? FlatInTheater();
 
         if (delayed.Count > 0)
         {
@@ -191,7 +213,7 @@ public sealed class AiStereo : IDisposable
             shownDelayedId = -1;
             overlay = null;
         }
-        return Live(source, newFrame && regionMoving, regionMoving, settings, service, strength, scale, drawn, stretch);
+        return Live(source, newFrame && regionMoving, regionMoving, settings, service, strength, scale, drawn, stretch) ?? FlatInTheater();
     }
 
     /// <summary>The live path: the newest frame with the newest depth there is.</summary>
@@ -218,7 +240,7 @@ public sealed class AiStereo : IDisposable
         if (infer || newDepth || bandsMoved || overlay == null || !key.Equals(overlayKey))
         {
             overlay = new StereoOverlay(
-                synth.Synthesize(source, region, strength, (float)settings.Convergence, (float)bandLeft, (float)bandRight), drawn);
+                synth.Synthesize(source, region, strength, (float)settings.Convergence, (float)bandLeft, (float)bandRight), drawn, region);
             overlayKey = key;
         }
         return overlay;
@@ -271,7 +293,7 @@ public sealed class AiStereo : IDisposable
         }
 
         shownDelayedId = frame.Id;
-        overlay = new StereoOverlay(eyes, drawn);
+        overlay = new StereoOverlay(eyes, drawn, region);
         overlayKey = key;
         return overlay;
     }
@@ -290,7 +312,7 @@ public sealed class AiStereo : IDisposable
     {
         if (newFrame || overlay == null || !key.Equals(overlayKey))
         {
-            overlay = new StereoOverlay(build(), drawn);
+            overlay = new StereoOverlay(build(), drawn, region);
             overlayKey = key;
         }
         return overlay;

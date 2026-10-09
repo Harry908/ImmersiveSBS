@@ -2,7 +2,7 @@ using System.IO;
 
 namespace ImmersiveSBS.Depth;
 
-/// <summary>The model ladder (video-3d-plan.md D3/D4).</summary>
+/// <summary>The model ladder (video-3d-plan.md D3/D4), fastest first within each family.</summary>
 public enum DepthTier
 {
     /// <summary>Depth Anything V2 Small (Apache-2.0): fastest, smoother, loses thin structure.</summary>
@@ -10,6 +10,18 @@ public enum DepthTier
 
     /// <summary>Distill-Any-Depth Base (MIT): the default; close to Large at a fraction of its cost.</summary>
     Base,
+
+    /// <summary>
+    /// Distill-Any-Depth Large (MIT): the sharpest. The available export only takes 518×518 (its
+    /// position embeddings are baked in), so a 16:9 frame is squeezed into it; ~40 ms per frame.
+    /// </summary>
+    Large,
+
+    /// <summary>Depth Anything V2 Base (CC-BY-NC-4.0: personal use only, not to be shipped).</summary>
+    V2Base,
+
+    /// <summary>Depth Anything V2 Large (CC-BY-NC-4.0: personal use only, not to be shipped).</summary>
+    V2Large,
 }
 
 /// <summary>Model input size, 16:9, each side a multiple of the ViT patch (14).</summary>
@@ -27,26 +39,46 @@ public enum DepthPreset
 
 /// <summary>
 /// One static-shape fp16 ONNX export (float32 input NCHW with ImageNet normalisation, output
-/// [1, H, W] relative inverse depth, larger = nearer). TensorRT for RTX needs static shapes for
-/// these exports, so every tier and size is its own file:
-/// %LOCALAPPDATA%\ImmersiveSBS\models\{da2-small|dad-base}_{H}x{W}.onnx.
+/// relative inverse depth, larger = nearer). TensorRT for RTX needs static shapes for these
+/// exports, so every tier and size is its own file:
+/// %LOCALAPPDATA%\ImmersiveSBS\models\{stem}_{H}x{W}.onnx.
 /// </summary>
 public sealed record DepthModel(DepthTier Tier, DepthPreset Preset)
 {
     public static string ModelsDirectory =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ImmersiveSBS", "models");
 
-    public int Width => Preset switch { DepthPreset.Fast => 392, DepthPreset.Quality => 756, _ => 518 };
+    /// <summary>True for a model that exists in one fixed size only, whatever the preset.</summary>
+    public bool FixedSize => Tier == DepthTier.Large;
 
-    public int Height => Preset switch { DepthPreset.Fast => 224, DepthPreset.Quality => 420, _ => 294 };
+    public int Width => FixedSize ? 518 : Preset switch { DepthPreset.Fast => 392, DepthPreset.Quality => 756, _ => 518 };
+
+    public int Height => FixedSize ? 518 : Preset switch { DepthPreset.Fast => 224, DepthPreset.Quality => 420, _ => 294 };
 
     /// <summary>File name without extension, also the engine cache key.</summary>
-    public string Stem => (Tier == DepthTier.Small ? "da2-small" : "dad-base") + $"_{Height}x{Width}";
+    public string Stem => Family + $"_{Height}x{Width}";
+
+    private string Family => Tier switch
+    {
+        DepthTier.Small => "da2-small",
+        DepthTier.Large => "dad-large",
+        DepthTier.V2Base => "da2-base",
+        DepthTier.V2Large => "da2-large",
+        _ => "dad-base",
+    };
 
     public string FilePath => Path.Combine(ModelsDirectory, Stem + ".onnx");
 
     public bool Exists => File.Exists(FilePath);
 
-    public override string ToString() =>
-        (Tier == DepthTier.Small ? "Depth Anything V2 Small" : "Distill-Any-Depth Base") + $" {Width}×{Height}";
+    public static string Name(DepthTier tier) => tier switch
+    {
+        DepthTier.Small => "Depth Anything V2 Small",
+        DepthTier.Large => "Distill-Any-Depth Large",
+        DepthTier.V2Base => "Depth Anything V2 Base",
+        DepthTier.V2Large => "Depth Anything V2 Large",
+        _ => "Distill-Any-Depth Base",
+    };
+
+    public override string ToString() => Name(Tier) + $" {Width}×{Height}";
 }

@@ -22,6 +22,11 @@ public sealed class PointerState
 
     public int Height { get; private set; }
 
+    /// <summary>The hot spot (the pointing pixel) within the shape.</summary>
+    public int HotX { get; private set; }
+
+    public int HotY { get; private set; }
+
     public byte[] Color { get; private set; } = [];
 
     public byte[] Xor { get; private set; } = [];
@@ -33,7 +38,7 @@ public sealed class PointerState
     public int ShapeVersion { get; private set; }
 
     /// <summary>Converts a DXGI_OUTDUPL_POINTER_SHAPE_INFO buffer.</summary>
-    public void SetShape(uint type, int width, int height, int pitch, ReadOnlySpan<byte> buffer)
+    public void SetShape(uint type, int width, int height, int pitch, ReadOnlySpan<byte> buffer, int hotX = 0, int hotY = 0)
     {
         // A monochrome shape stacks the AND mask over the XOR mask, so it is twice as tall.
         if (type == TypeMonochrome) height /= 2;
@@ -93,6 +98,8 @@ public sealed class PointerState
         Color = color;
         Xor = xor;
         HasXor = hasXor;
+        HotX = hotX;
+        HotY = hotY;
         ShapeVersion++;
     }
 }

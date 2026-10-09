@@ -5,6 +5,7 @@ using ImmersiveSBS.Depth;
 using ImmersiveSBS.Displays;
 using ImmersiveSBS.Interop;
 using ImmersiveSBS.Presentation;
+using ImmersiveSBS.Theater;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
@@ -26,7 +27,8 @@ public sealed record SessionStats(
     double PresentLatencyAvgMs, double PresentLatencyMaxMs,
     double DisplayLatencyAvgMs, double DisplayLatencyMaxMs,
     double VideoMemoryMb,
-    string? Ai = null)
+    string? Ai = null,
+    double PrivateMemoryMb = 0, double ManagedMemoryMb = 0)
 {
     public override string ToString() =>
         $"Capture   {Method}, {SourceWidth}×{SourceHeight}, {CaptureFps:0.0} fps, cursor {PointerUpdatesPerSecond:0}/s\n" +
@@ -34,7 +36,7 @@ public sealed record SessionStats(
         $"glasses {(RefreshHz > 0 ? RefreshHz.ToString("0.00") + " Hz" : "refresh unknown")}\n" +
         $"Capture → Present  avg {PresentLatencyAvgMs:0.0} ms, max {PresentLatencyMaxMs:0.0} ms\n" +
         $"Capture → vblank   {(DisplayLatencyAvgMs > 0 ? $"avg {DisplayLatencyAvgMs:0.0} ms, max {DisplayLatencyMaxMs:0.0} ms" : "no frame statistics")}\n" +
-        $"VRAM (this process, render adapter)  {VideoMemoryMb:0} MB" +
+        $"VRAM (this process, render adapter)  {VideoMemoryMb:0} MB; memory {PrivateMemoryMb:0} MB ({ManagedMemoryMb:0} MB managed)" +
         (Ai != null ? "\n" + Ai : "");
 }
 
@@ -52,6 +54,10 @@ public sealed class Session
     private volatile DepthService? depth;
     private volatile int stereoVersion;
     private volatile bool audioDelayed;
+    private volatile bool theaterActive;
+    private readonly TheaterUi theaterUi = new();
+    private Rectangle monitorBounds;
+    private long monitorBoundsTime;
     private readonly object delayLock = new();
     private Rectangle delayRegion;
     private bool pickRequested;
@@ -132,6 +138,30 @@ public sealed class Session
             pickRequested = false;
             return requested;
         }
+    }
+
+    /// <summary>Where on-screen button clicks are caught; set by the controller. Any thread.</summary>
+    public TheaterButtons? Buttons
+    {
+        set => theaterUi.Buttons = value;
+    }
+
+    /// <summary>Theater mode is on and showing a found video. Any thread.</summary>
+    public bool TheaterActive
+    {
+        get => theaterActive;
+        private set => theaterActive = value;
+    }
+
+    /// <summary>The virtual monitor's desktop bounds, re-read once a second (render thread).</summary>
+    private Rectangle MonitorBounds()
+    {
+        if (Stopwatch.GetElapsedTime(monitorBoundsTime).TotalSeconds >= 1 || monitorBounds.IsEmpty)
+        {
+            monitorBounds = DisplayConfigurationService.Resolve(options.Source, retryWhileTargetUnavailable: false)?.Bounds ?? monitorBounds;
+            monitorBoundsTime = Stopwatch.GetTimestamp();
+        }
+        return monitorBounds;
     }
 
     /// <summary>The shared depth model, owned by the controller; null while AI 3D is off.</summary>
@@ -259,6 +289,7 @@ public sealed class Session
         int seenCloseRequests = MirrorWindow.CloseRequests;
         bool redraw = true;
         int seenStereoVersion = stereoVersion;
+        DepthServiceState? seenModelState = null;
         string? aiStatus = null;
 
         while (!stopRequested)
@@ -309,8 +340,12 @@ public sealed class Session
             meter.OnCapture(update);
 
             // New depth or new AI settings change the picture even when the desktop did not.
-            bool aiChanged = Depth?.HasResult == true || stereoVersion != seenStereoVersion;
+            // The model's state shows as a badge in the glasses, and its loading ends a flat picture.
+            DepthServiceState? modelState = Depth?.State;
+            bool aiChanged = Depth?.HasResult == true || stereoVersion != seenStereoVersion || theaterUi.NeedsRedraw
+                             || modelState != seenModelState;
             seenStereoVersion = stereoVersion;
+            seenModelState = modelState;
             if (!update.Any && !redraw && !aiChanged)
             {
                 meter.Publish(this, adapter, renderer, capture, aiStatus);
@@ -325,6 +360,7 @@ public sealed class Session
 
             // AI 3D only exists in side-by-side; in 2D and in the window the frame stays flat.
             StereoOverlay? overlay = null;
+            UiLayer? ui = null;
             StereoSettings stereo = Stereo;
             if (renderer.SideBySide && capture.Texture is { } frame)
             {
@@ -334,15 +370,20 @@ public sealed class Session
                 if (TakePick(out Point? pick)) ai.Pick(pick);
                 overlay = ai.Process(frame, update.Frame || late.Frame, stereo, Depth, eye, scale, AudioDelayed);
                 aiStatus = ai.Status;
+                ui = theaterUi.Build(overlay, ai.FoundRegion, stereo.Theater, MonitorBounds(), eye, new Size((int)fd.Width, (int)fd.Height),
+                    stereo.Target, Depth?.State);
+                TheaterActive = stereo.Theater && overlay != null;
                 SetDelayRegion(ai.DelayRegion);
             }
             else
             {
                 aiStatus = stereo.Target == AiTarget.Off ? null : "AI 3D: works when the glasses are in 3D mode";
                 SetDelayRegion(Rectangle.Empty);
+                theaterUi.Hide();
+                TheaterActive = false;
             }
 
-            renderer.Render(capture.Texture, options.Method == CaptureMethod.DesktopDuplication ? capture.Pointer : null, overlay);
+            renderer.Render(capture.Texture, options.Method == CaptureMethod.DesktopDuplication ? capture.Pointer : null, overlay, ui);
             long presentQpc = Stopwatch.GetTimestamp();
             uint presentCount = renderer.Present();
             meter.OnPresent(presentCount, content, presentQpc);
@@ -435,7 +476,10 @@ public sealed class Session
                 frames / seconds, pointerUpdates / seconds, presents / seconds, refreshHz,
                 presentSum / measured, presentMax,
                 displayCount > 0 ? displaySum / displayCount : 0, displayMax,
-                vram, ai);
+                vram, ai,
+                // A steady climb here over minutes is a leak (Windows flagged one once, at a model load).
+                System.Diagnostics.Process.GetCurrentProcess().PrivateMemorySize64 / (1024.0 * 1024.0),
+                GC.GetTotalMemory(false) / (1024.0 * 1024.0));
             session.stats = s;
 
             if (now >= nextLog)

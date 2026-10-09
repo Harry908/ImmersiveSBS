@@ -2,6 +2,7 @@ using System.Drawing;
 using System.Numerics;
 using ImmersiveSBS.Capture;
 using ImmersiveSBS.Displays;
+using ImmersiveSBS.Theater;
 using SharpGen.Runtime;
 using Vortice;
 using Vortice.D3DCompiler;
@@ -59,6 +60,8 @@ public sealed class Renderer : IDisposable
     private readonly ID3D11Buffer fullQuad;
     private readonly ID3D11Buffer cursorQuad;
     private readonly ID3D11Buffer stereoQuad;
+    private readonly ID3D11Buffer uiQuad;
+    private readonly Dictionary<UiImage, ID3D11ShaderResourceView> uiViews = [];
     private readonly ID3D11SamplerState pointSampler;
     private readonly ID3D11SamplerState linearSampler;
     private readonly ID3D11BlendState alphaBlend;
@@ -115,6 +118,7 @@ public sealed class Renderer : IDisposable
         fullQuad = device.CreateBuffer(in full, new BufferDescription(QuadSize, BindFlags.ConstantBuffer, ResourceUsage.Immutable));
         cursorQuad = device.CreateBuffer(new BufferDescription(QuadSize, BindFlags.ConstantBuffer, ResourceUsage.Dynamic, CpuAccessFlags.Write));
         stereoQuad = device.CreateBuffer(new BufferDescription(QuadSize, BindFlags.ConstantBuffer, ResourceUsage.Dynamic, CpuAccessFlags.Write));
+        uiQuad = device.CreateBuffer(new BufferDescription(QuadSize, BindFlags.ConstantBuffer, ResourceUsage.Dynamic, CpuAccessFlags.Write));
 
         pointSampler = device.CreateSamplerState(SamplerDescription.PointClamp);
         linearSampler = device.CreateSamplerState(SamplerDescription.LinearClamp);
@@ -152,7 +156,8 @@ public sealed class Renderer : IDisposable
     }
 
     /// <param name="stereo">AI 3D eye images of a region; drawn over the desktop in side-by-side only.</param>
-    public void Render(ID3D11Texture2D? source, PointerState? pointer, StereoOverlay? stereo = null)
+    /// <param name="ui">Theater mode and on-screen buttons, in side-by-side only.</param>
+    public void Render(ID3D11Texture2D? source, PointerState? pointer, StereoOverlay? stereo = null, UiLayer? ui = null)
     {
         context.ClearRenderTargetView(target!, new Color4(0, 0, 0, 1));
         if (source == null) return;
@@ -175,52 +180,119 @@ public sealed class Renderer : IDisposable
         bool oneToOne = vw == srcW && vh == srcH;
         ID3D11SamplerState sampler = oneToOne ? pointSampler : linearSampler;
 
-        bool drawCursor = pointer is { Visible: true, Width: > 0 } && UpdateCursor(pointer, srcW, srcH);
+        bool haveCursor = pointer is { Visible: true, Width: > 0 } && UpdateCursor(pointer);
+        bool theater = ui?.Theater is not null && stereo is not null && eyes == 2;
 
         context.OMSetRenderTargets(target!);
         context.IASetPrimitiveTopology(PrimitiveTopology.TriangleStrip);
         context.IASetInputLayout(null);
         context.RSSetState(rasterizer);
         context.VSSetShader(vertexShader);
-        context.PSSetSampler(0, sampler);
 
         for (int eye = 0; eye < eyes; eye++)
         {
-            context.RSSetViewport(eye * eyeW + (eyeW - vw) / 2, (Height - vh) / 2, vw, vh);
+            int eyeX = eye * eyeW;
+            var eyeHalf = new Vector4(eye * 0.5f, 0, eye * 0.5f + 0.5f, 1);
 
-            context.OMSetBlendState(null);
-            context.VSSetConstantBuffer(0, fullQuad);
-            context.PSSetShader(opaqueShader);
-            context.PSSetShaderResource(0, sourceView!);
-            context.Draw(4, 0);
-
-            if (stereo is StereoOverlay s && eyes == 2)
+            if (theater)
             {
-                // The eyes texture holds the left eye in its left half, the right eye in its right.
-                WriteQuad(stereoQuad, s.Region, srcW, srcH, new Vector4(eye * 0.5f, 0, eye * 0.5f + 0.5f, 1));
+                // Theater: only the video, as large as fits in the eye; the desktop stays dark.
+                Rectangle e = ui!.Theater!.Value;
+                context.RSSetViewport(eyeX + e.X, e.Y, e.Width, e.Height);
+                context.PSSetSampler(0, linearSampler);
+                context.OMSetBlendState(null);
+                WriteQuad(stereoQuad, new Vector4(-1, 1, 1, -1), eyeHalf);
                 context.VSSetConstantBuffer(0, stereoQuad);
-                context.PSSetShaderResource(0, s.Eyes);
+                context.PSSetShader(opaqueShader);
+                context.PSSetShaderResource(0, stereo!.Value.Eyes);
                 context.Draw(4, 0);
+
+                if (haveCursor && ui.TheaterCursor is Point c)
+                {
+                    context.RSSetViewport(eyeX, 0, eyeW, Height);
+                    WriteQuad(cursorQuad, EyeNdc(new Rectangle(c.X - pointer!.HotX, c.Y - pointer.HotY, pointer.Width, pointer.Height), eyeW),
+                        new Vector4(0, 0, 1, 1));
+                    DrawCursor(pointer);
+                }
+            }
+            else
+            {
+                context.RSSetViewport(eyeX + (eyeW - vw) / 2, (Height - vh) / 2, vw, vh);
+                context.PSSetSampler(0, sampler);
+
+                context.OMSetBlendState(null);
+                context.VSSetConstantBuffer(0, fullQuad);
+                context.PSSetShader(opaqueShader);
+                context.PSSetShaderResource(0, sourceView!);
+                context.Draw(4, 0);
+
+                if (stereo is StereoOverlay s && eyes == 2)
+                {
+                    // The eyes texture holds the left eye in its left half, the right eye in its right.
+                    WriteQuad(stereoQuad, SourceNdc(s.Region, srcW, srcH), eyeHalf);
+                    context.VSSetConstantBuffer(0, stereoQuad);
+                    context.PSSetShaderResource(0, s.Eyes);
+                    context.Draw(4, 0);
+                }
+
+                if (haveCursor)
+                {
+                    WriteQuad(cursorQuad, SourceNdc(new Rectangle(pointer!.X, pointer.Y, pointer.Width, pointer.Height), srcW, srcH),
+                        new Vector4(0, 0, 1, 1));
+                    DrawCursor(pointer);
+                }
             }
 
-            if (drawCursor)
+            // On-screen buttons, in eye px, on top of everything.
+            if (ui != null && eyes == 2 && ui.Images.Count > 0)
             {
-                context.VSSetConstantBuffer(0, cursorQuad);
+                context.RSSetViewport(eyeX, 0, eyeW, Height);
+                context.PSSetSampler(0, pointSampler);
                 context.PSSetShader(sampleShader);
                 context.OMSetBlendState(alphaBlend);
-                context.PSSetShaderResource(0, cursorColor!);
-                context.Draw(4, 0);
-
-                if (pointer!.HasXor)
+                foreach (var (image, rect) in ui.Images)
                 {
-                    context.OMSetBlendState(invertBlend);
-                    context.PSSetShaderResource(0, cursorXor!);
+                    WriteQuad(uiQuad, EyeNdc(rect, eyeW), new Vector4(0, 0, 1, 1));
+                    context.VSSetConstantBuffer(0, uiQuad);
+                    context.PSSetShaderResource(0, ViewOf(image));
                     context.Draw(4, 0);
                 }
             }
         }
 
         context.PSSetShaderResource(0, null!);
+    }
+
+    private void DrawCursor(PointerState pointer)
+    {
+        context.VSSetConstantBuffer(0, cursorQuad);
+        context.PSSetShader(sampleShader);
+        context.OMSetBlendState(alphaBlend);
+        context.PSSetShaderResource(0, cursorColor!);
+        context.Draw(4, 0);
+
+        if (pointer.HasXor)
+        {
+            context.OMSetBlendState(invertBlend);
+            context.PSSetShaderResource(0, cursorXor!);
+            context.Draw(4, 0);
+        }
+    }
+
+    /// <summary>A rectangle in source px as NDC of the source viewport.</summary>
+    private static Vector4 SourceNdc(Rectangle r, int srcW, int srcH) => new(
+        r.Left * 2f / srcW - 1, 1 - r.Top * 2f / srcH, r.Right * 2f / srcW - 1, 1 - r.Bottom * 2f / srcH);
+
+    /// <summary>A rectangle in eye px as NDC of the whole-eye viewport.</summary>
+    private Vector4 EyeNdc(Rectangle r, int eyeW) => new(
+        r.Left * 2f / eyeW - 1, 1 - r.Top * 2f / Height, r.Right * 2f / eyeW - 1, 1 - r.Bottom * 2f / Height);
+
+    /// <summary>The uploaded texture of a UI image (uploaded on first use, kept).</summary>
+    private ID3D11ShaderResourceView ViewOf(UiImage image)
+    {
+        if (!uiViews.TryGetValue(image, out ID3D11ShaderResourceView? view))
+            uiViews[image] = view = CreateImage(image.Bgra, image.Width, image.Height);
+        return view;
     }
 
     /// <summary>Presents on the next vertical blank. Returns the present count for statistics.</summary>
@@ -234,7 +306,8 @@ public sealed class Renderer : IDisposable
     public bool TryGetFrameStatistics(out FrameStatistics stats) =>
         swapChain.GetFrameStatistics(out stats).Success;
 
-    private unsafe bool UpdateCursor(PointerState pointer, int srcW, int srcH)
+    /// <summary>Uploads the cursor's images when its shape changed.</summary>
+    private bool UpdateCursor(PointerState pointer)
     {
         if (pointer.ShapeVersion != cursorVersion)
         {
@@ -244,25 +317,14 @@ public sealed class Renderer : IDisposable
             cursorXor = CreateImage(pointer.Xor, pointer.Width, pointer.Height);
             cursorVersion = pointer.ShapeVersion;
         }
-
-        // Pixel rectangle of the cursor in the source, as NDC of the eye viewport.
-        WriteQuad(cursorQuad, new Rectangle(pointer.X, pointer.Y, pointer.Width, pointer.Height), srcW, srcH,
-            new Vector4(0, 0, 1, 1));
         return true;
     }
 
-    /// <summary>Writes a quad covering <paramref name="sourceRect"/> (source px) of the eye viewport.</summary>
-    private unsafe void WriteQuad(ID3D11Buffer buffer, Rectangle sourceRect, int srcW, int srcH, Vector4 uv)
+    /// <summary>Writes a quad: where to draw (NDC of the current viewport) and which part of the texture.</summary>
+    private unsafe void WriteQuad(ID3D11Buffer buffer, Vector4 ndc, Vector4 uv)
     {
-        var quad = new Quad(
-            new Vector4(
-                sourceRect.Left * 2f / srcW - 1,
-                1 - sourceRect.Top * 2f / srcH,
-                sourceRect.Right * 2f / srcW - 1,
-                1 - sourceRect.Bottom * 2f / srcH),
-            uv);
         MappedSubresource m = context.Map(buffer, MapMode.WriteDiscard);
-        *(Quad*)m.DataPointer = quad;
+        *(Quad*)m.DataPointer = new Quad(ndc, uv);
         context.Unmap(buffer, 0);
     }
 
@@ -305,6 +367,8 @@ public sealed class Renderer : IDisposable
         pointSampler.Dispose();
         cursorQuad.Dispose();
         stereoQuad.Dispose();
+        uiQuad.Dispose();
+        foreach (var view in uiViews.Values) view.Dispose();
         fullQuad.Dispose();
         sampleShader.Dispose();
         opaqueShader.Dispose();
@@ -313,5 +377,23 @@ public sealed class Renderer : IDisposable
     }
 }
 
-/// <summary>AI 3D eye images (left half, right half) for a region of the source, in source px.</summary>
-public readonly record struct StereoOverlay(ID3D11ShaderResourceView Eyes, Rectangle Region);
+/// <summary>
+/// AI 3D eye images (left half, right half) drawn over <paramref name="Region"/> of the source
+/// (source px); <paramref name="Source"/> is the video region they show, before any stretch.
+/// </summary>
+public readonly record struct StereoOverlay(ID3D11ShaderResourceView Eyes, Rectangle Region, Rectangle Source);
+
+/// <summary>
+/// What is drawn on top in side-by-side: theater mode (the region fitted to the whole eye, the
+/// desktop dark) and the on-screen buttons, all in eye px.
+/// </summary>
+public sealed class UiLayer
+{
+    /// <summary>Theater: where the region's eye images go in each eye; null shows the desktop.</summary>
+    public Rectangle? Theater { get; init; }
+
+    /// <summary>Theater: the cursor's hot spot in each eye; null hides it.</summary>
+    public Point? TheaterCursor { get; init; }
+
+    public IReadOnlyList<(UiImage Image, Rectangle EyeRect)> Images { get; init; } = [];
+}

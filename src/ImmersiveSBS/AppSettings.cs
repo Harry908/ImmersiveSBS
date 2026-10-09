@@ -152,6 +152,9 @@ public sealed class AppSettings
     /// <summary>Lip-sync trim for the delayed sound, ms; positive plays the sound later.</summary>
     public int AudioOffsetMs { get; set; }
 
+    /// <summary>Show a "3D theater" button over a playing video in the glasses (finds the video even with AI 3D off).</summary>
+    public bool OfferTheater { get; set; } = true;
+
     /// <summary>Horizontal stretch of the video around its centre, for content in the wrong aspect ratio.</summary>
     public double VideoStretch { get; set; } = 1;
 

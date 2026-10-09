@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.IO;
 using NAudio.CoreAudioApi;
+using NAudio.CoreAudioApi.Interfaces;
 
 namespace ImmersiveSBS.Audio;
 
@@ -34,43 +35,118 @@ public sealed class SessionAttenuator : IDisposable
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ImmersiveSBS", "attenuated-sessions.txt");
 
     /// <summary>
-    /// The user's own volume of the app's first session, so the delayed copy can be played as loud
-    /// as the app was; 1 before any session was seen.
+    /// The user's own volume of the session that plays (or of the app's first session), so the
+    /// delayed copy can be played as loud as the app was; 1 before any session was seen.
     /// </summary>
     public float OriginalVolume { get; private set; } = 1;
 
-    /// <summary>Turns down any session of the processes not yet turned down (e.g. a new tab's).</summary>
+    /// <summary>
+    /// The output the app is playing on now: the device of one of its active sessions (the default
+    /// output when several are). An app keeps idle sessions on every output it ever used (Chrome
+    /// does), so only an active one says where it is heard. Null while none is active.
+    /// </summary>
+    public string? PlayingDeviceId { get; private set; }
+
+    public string? PlayingDeviceName { get; private set; }
+
+    /// <summary>The default output at the last <see cref="Refresh"/>.</summary>
+    public string? DefaultDeviceId { get; private set; }
+
+    /// <summary>
+    /// The loudest this process's own sound (the delayed copy) was in Windows' meter since the
+    /// last <see cref="TakeOwnPeak"/>, and its session volume and output: proof of what Windows
+    /// actually received from the player.
+    /// </summary>
+    private float ownPeak, ownVolume = float.NaN;
+    private string? ownDevice;
+
+    public (float Peak, float Volume, string? Device) TakeOwnPeak()
+    {
+        var result = (ownPeak, ownVolume, ownDevice);
+        ownPeak = 0;
+        return result;
+    }
+
+    /// <summary>
+    /// Turns down any session of the processes not yet turned down (e.g. a new tab's), and notes
+    /// where the app plays.
+    /// </summary>
     public void Refresh()
     {
         bool changed = false;
-        ForEachSession(session =>
+        string? defaultId = DefaultDevice();
+        string? playingId = null, playingName = null;
+        ForEachSession((device, session) =>
         {
-            if (!processes.Contains(session.GetProcessID)) return;
-            string id = session.GetSessionInstanceIdentifier;
-            SimpleAudioVolume volume = session.SimpleAudioVolume;
-            if (originals.ContainsKey(id))
+            uint pid = session.GetProcessID;
+            if (pid == Environment.ProcessId && session.State == AudioSessionState.AudioSessionStateActive)
             {
-                // The user moved the app's slider meanwhile: keep the live sound silent.
-                if (Math.Abs(volume.Volume - Volume) > 1e-4) volume.Volume = Volume;
+                ownPeak = Math.Max(ownPeak, session.AudioMeterInformation.MasterPeakValue);
+                ownVolume = session.SimpleAudioVolume.Volume;
+                ownDevice = device.FriendlyName;
                 return;
             }
+            if (!processes.Contains(pid)) return;
+            string id = session.GetSessionInstanceIdentifier;
+            SimpleAudioVolume volume = session.SimpleAudioVolume;
+            if (!originals.ContainsKey(id))
+            {
+                // Exactly our level: left turned down by an earlier run that could not restore it
+                // (its output was gone at the time). Its real volume is unknown; full is the default.
+                float original = Math.Abs(volume.Volume - Volume) < 1e-4 ? 1 : volume.Volume;
+                if (originals.Count == 0) OriginalVolume = original;
+                originals[id] = original;
+                changed = true;
+                Log.Write($"Audio: turned down the live sound of process {session.GetProcessID} on {device.FriendlyName} (was {originals[id]:0.00}).");
+            }
+            // Also when the user moved the app's slider meanwhile: keep the live sound silent.
+            if (Math.Abs(volume.Volume - Volume) > 1e-4) volume.Volume = Volume;
 
-            if (originals.Count == 0) OriginalVolume = volume.Volume;
-            originals[id] = volume.Volume;
-            volume.Volume = Volume;
-            changed = true;
-            Log.Write($"Audio: turned down the live sound of process {session.GetProcessID} (was {originals[id]:0.00}).");
+            if (session.State == AudioSessionState.AudioSessionStateActive && (playingId == null || device.ID == defaultId))
+            {
+                playingId = device.ID;
+                playingName = device.FriendlyName;
+                OriginalVolume = originals[id];
+            }
         });
+        DefaultDeviceId = defaultId;
+        PlayingDeviceId = playingId;
+        PlayingDeviceName = playingName;
         if (changed) WriteMarker();
     }
 
-    /// <summary>Puts every session this attenuator changed back to its own volume.</summary>
+    private static string? DefaultDevice()
+    {
+        try
+        {
+            using var enumerator = new MMDeviceEnumerator();
+            if (!enumerator.TryGetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia, out MMDevice? device) || device == null) return null;
+            using (device) return device.ID;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Puts every session this attenuator changed back to its own volume. Sessions that cannot be
+    /// reached now (their output is gone) stay in the marker file for the next start.
+    /// </summary>
     public void Dispose()
     {
         if (originals.Count == 0) return;
         Restore(originals);
-        originals.Clear();
-        try { File.Delete(MarkerPath); } catch { }
+        if (originals.Count == 0)
+        {
+            try { File.Delete(MarkerPath); } catch { }
+        }
+        else
+        {
+            Log.Write($"Audio: {originals.Count} session(s) could not be restored now; kept for the next start.");
+            WriteMarker();
+            originals.Clear();
+        }
     }
 
     /// <summary>Restores what a previous run turned down and could not restore (crash, kill, power loss).</summary>
@@ -88,7 +164,8 @@ public sealed class SessionAttenuator : IDisposable
             }
             int count = Restore(saved);
             File.Delete(MarkerPath);
-            Log.Write($"Audio: restored the volume of {count} session(s) a previous run had turned down.");
+            Log.Write($"Audio: restored the volume of {count} session(s) a previous run had turned down" +
+                      (saved.Count > 0 ? $"; {saved.Count} no longer exist." : "."));
         }
         catch (Exception e)
         {
@@ -109,20 +186,23 @@ public sealed class SessionAttenuator : IDisposable
         }
     }
 
+    /// <summary>Restores the sessions found and removes them from <paramref name="volumes"/>.</summary>
     private static int Restore(Dictionary<string, float> volumes)
     {
         int count = 0;
-        ForEachSession(session =>
+        ForEachSession((_, session) =>
         {
-            if (!volumes.TryGetValue(session.GetSessionInstanceIdentifier, out float v)) return;
+            string id = session.GetSessionInstanceIdentifier;
+            if (!volumes.TryGetValue(id, out float v)) return;
             session.SimpleAudioVolume.Volume = v;
+            volumes.Remove(id);
             count++;
         });
         return count;
     }
 
     /// <summary>Every audio session on every active output, so a device change cannot strand one.</summary>
-    private static void ForEachSession(Action<AudioSessionControl> action)
+    private static void ForEachSession(Action<MMDevice, AudioSessionControl> action)
     {
         using var enumerator = new MMDeviceEnumerator();
         foreach (MMDevice device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
@@ -137,7 +217,7 @@ public sealed class SessionAttenuator : IDisposable
                     for (int i = 0; i < sessions.Count; i++)
                     {
                         using AudioSessionControl session = sessions[i];
-                        action(session);
+                        action(device, session);
                     }
                 }
                 catch (Exception e)

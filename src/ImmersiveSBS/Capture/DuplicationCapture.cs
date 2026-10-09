@@ -106,7 +106,7 @@ public sealed class DuplicationCapture : ICaptureSource
             }
 
             Pointer.SetShape(shape.Type, (int)shape.Width, (int)shape.Height, (int)shape.Pitch,
-                new ReadOnlySpan<byte>(p, (int)used));
+                new ReadOnlySpan<byte>(p, (int)used), shape.HotSpot.X, shape.HotSpot.Y);
         }
     }
 

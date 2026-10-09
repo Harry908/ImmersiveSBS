@@ -27,7 +27,9 @@ public sealed class DepthEstimator : IDisposable
         inputName = session.InputNames[0];
         outputName = session.OutputNames[0];
         inputShape = [1, 3, model.Height, model.Width];
-        outputShape = [1, model.Height, model.Width];
+        // Exports differ in rank ([1, H, W] or [1, 1, H, W]); the element count is H × W either way.
+        outputShape = session.OutputMetadata[outputName].Dimensions.Select(d => d > 0 ? (long)d : 1).ToArray();
+        if (outputShape.Aggregate(1L, (a, b) => a * b) != (long)model.Width * model.Height) outputShape = [1, model.Height, model.Width];
     }
 
     public static string EnginesDirectory =>
