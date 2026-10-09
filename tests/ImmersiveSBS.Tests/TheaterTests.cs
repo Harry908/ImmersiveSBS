@@ -81,6 +81,34 @@ public class TheaterTests
     }
 
     [Fact]
+    public void TheSettingsPanelSitsUnderTheButtonsInsideTheVideo()
+    {
+        var area = new Rectangle(0, 0, 1920, 1080);
+        Rectangle[] buttons = TheaterGeometry.TopRight(area, 3);
+        var rows = TheaterGeometry.PanelRows(area, 7);
+        Assert.All(rows, r =>
+        {
+            Assert.True(area.Contains(r.Minus) && area.Contains(r.Plus), $"{r}");
+            Assert.True(r.Minus.Right < r.Value.Left && r.Value.Right < r.Plus.Left, $"{r}");
+            Assert.All(buttons, b => Assert.False(b.IntersectsWith(r.Minus) || b.IntersectsWith(r.Value) || b.IntersectsWith(r.Plus)));
+        });
+        Assert.Equal(buttons[2].Right, rows[0].Plus.Right);
+        for (int i = 1; i < rows.Length; i++) Assert.True(rows[i].Value.Top > rows[i - 1].Value.Bottom);
+    }
+
+    [Fact]
+    public void PanelLabelsAreDrawnAtTheirWidth()
+    {
+        UiImage value = ButtonImages.Label("Depth:  0.8", TheaterGeometry.ValueSize.Width, hover: false, centred: false);
+        UiImage plus = ButtonImages.Label("+", TheaterGeometry.StepSize.Width, hover: true, centred: true);
+        Assert.Equal(TheaterGeometry.ValueSize.Width, value.Width);
+        Assert.Equal(TheaterGeometry.StepSize.Width, plus.Width);
+        Assert.Equal(value.Width * value.Height * 4, value.Bgra.Length);
+        Assert.Same(value, ButtonImages.Label("Depth:  0.8", TheaterGeometry.ValueSize.Width, hover: false, centred: false));
+        Assert.NotSame(value, ButtonImages.Label("Depth:  0.9", TheaterGeometry.ValueSize.Width, hover: false, centred: false));
+    }
+
+    [Fact]
     public void ModelBadgesSpinWhileLoading()
     {
         UiImage first = ButtonImages.Badge(BadgeKind.Loading, 0);

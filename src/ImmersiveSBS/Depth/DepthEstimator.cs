@@ -26,10 +26,18 @@ public sealed class DepthEstimator : IDisposable
         this.session = session;
         inputName = session.InputNames[0];
         outputName = session.OutputNames[0];
-        inputShape = [1, 3, model.Height, model.Width];
-        // Exports differ in rank ([1, H, W] or [1, 1, H, W]); the element count is H × W either way.
-        outputShape = session.OutputMetadata[outputName].Dimensions.Select(d => d > 0 ? (long)d : 1).ToArray();
-        if (outputShape.Aggregate(1L, (a, b) => a * b) != (long)model.Width * model.Height) outputShape = [1, model.Height, model.Width];
+        // Exports differ in rank (input [1, 3, H, W], or [1, 1, 3, H, W] for an any-view model; output
+        // [1, H, W] or [1, 1, H, W]); the element counts are the same either way.
+        inputShape = ShapeOf(session.InputMetadata[inputName].Dimensions, [1, 3, model.Height, model.Width]);
+        outputShape = ShapeOf(session.OutputMetadata[outputName].Dimensions, [1, model.Height, model.Width]);
+    }
+
+    /// <summary>The model's own static shape when it has as many elements as <paramref name="fallback"/>.</summary>
+    private static long[] ShapeOf(int[] dimensions, long[] fallback)
+    {
+        long[] shape = dimensions.Select(d => d > 0 ? (long)d : 1).ToArray();
+        long count = fallback.Aggregate(1L, (a, b) => a * b);
+        return shape.Aggregate(1L, (a, b) => a * b) == count ? shape : fallback;
     }
 
     public static string EnginesDirectory =>
@@ -137,6 +145,11 @@ public sealed class DepthEstimator : IDisposable
         using OrtValue inValue = OrtValue.CreateTensorValueFromMemory(input, inputShape);
         using OrtValue outValue = OrtValue.CreateTensorValueFromMemory(output, outputShape);
         session.Run(runOptions, [inputName], [inValue], [outputName], [outValue]);
+
+        // Depth → inverse depth, which is what disparity follows and what the post-processor
+        // normalises; the floor keeps sky and far walls finite.
+        if (Model.OutputIsDepth)
+            for (int i = 0; i < output.Length; i++) output[i] = 1 / Math.Max(output[i], 1e-3f);
     }
 
     public void Dispose()

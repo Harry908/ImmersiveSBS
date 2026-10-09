@@ -456,12 +456,92 @@ testing, button images).
 - One stats window showed V2 Base 756×420 at 907 ms per frame (1 depth frame/s); not
   reproduced or explained yet.
 
+## Picture quality pass (2026-10-08, not yet seen in the glasses)
+
+The user saw a shadow outline around people and hair, glitchy captions and, at times, a very
+glitchy picture.
+
+- **"Very glitchy" was a slow GPU, not a bad model.** The log averaged V2 Base 756×420 at
+  825 ms a frame; tested alone its cached engine runs at 19.9 ms (all models now have a speed
+  test at Balanced and Quality, `DepthEstimatorTests`, so a bad engine fails it). The GPU was
+  slow at the time (memory pressure, battery or load). The live path applied that second-old
+  depth to new frames, which tears edges in motion: now depth more than 250 ms behind a moving
+  picture shows the video flat until it is back under 150 ms (`AiStereo.DepthStaleMs`), with a
+  log line each way. The stats line gives VRAM against the process's budget.
+- **The outline was the hole fill.** A hole beside a foreground edge continued reading the source
+  past the background neighbour, i.e. the object's own edge pixels: a second outline. Holes now
+  mirror the background away from the edge, through a 3×3 tent blur. The splat's sub-pixel
+  sample point no longer reaches across a depth edge (a 1 px ghost), and a pixel only writes
+  columns it really covers.
+- **Edge snapping** (new `Snap` pass, full resolution, horizontal radius ≈ 2.5 model px): where
+  the nearness spans a depth edge, a pixel takes the near or far extreme by which side's colour
+  it resembles; a pixel like neither (hair) blends. The guided upsample is guided by colour, not
+  luma. Dilation default 3 → 1 px (wider drags a background sliver along: a halo). Tuning panel:
+  "Snap depth edges" (on).
+- **Captions** (`CaptionLock`, model resolution, CPU): rows in the lower 45 % with ≥ 3 short
+  bright strokes each beside a much darker pixel (outline or shadow), grouped into a wide, short
+  band, are given one depth: the band's 90th-percentile nearness (at least the screen plane)
+  + 0.03, smoothed 0.3 s; the mask rises in 0.1 s and fades over 0.4 s. Tuning panel: "Keep
+  subtitles flat" (on). The old §6.5 static overlays stay for logos.
+- **Depth Anything 3 Small and Base** (Apache-2.0, `onnx-community/depth-anything-v3-*`): an
+  any-view export (input [B, N, 3, H, W]; outputs depth, confidence, camera). Cut to one image
+  and the depth output (the camera head goes), static at the three sizes, kept **fp32**: the
+  fp16 converter mistypes the graph's casts (rotary embedding, then GELU constants). Their output
+  is depth, inverted in `DepthEstimator` (`DepthModel.OutputIsDepth`). Time per frame: Small
+  15 ms Balanced / 46 ms Quality; Base 36 / 109. The originals are in `models\download\da3-*`;
+  the converter script lives in the session scratchpad (not the repo).
+- **Video Depth Anything Small** (Apache-2.0) exists as an ONNX pair (per-frame encoder at
+  518×910 + a 32-frame temporal head); the head needs the last 32 frames' encoder features
+  (~15 MB each) per call, so it needs GPU-resident inputs (ORT IOBinding), not the CPU arrays
+  the estimator uses now. Not done.
+
+Tests: 91 (hole fill from the background, edge snapping, five caption cases, all models at two
+sizes).
+
+## Theater: steadier, mouse kept on the video, settings panel (2026-10-08)
+
+The user saw the theater "glitch in and out" and the mouse "go behind it".
+- **Flat/3D flicker** (the main cause): the stale-depth guard measured wall time since the depth's
+  frame, which grows while the picture is still; the first frame after any still moment looked
+  seconds behind and flipped the video flat for ~100 ms (71 times in one session, including on
+  entering the theater). Now measured in frames handed to the model since the depth's frame
+  (≥ 6 frames and ≥ 250 ms of the video's time to go flat, ≤ 3 frames to come back).
+- **The theater followed the tracker**, so it jumped or dropped to the desktop when the player's
+  controls appeared or the video paused. It now keeps the area it was entered on until exit
+  (`AiStereo` theater region; every new frame counts as moving there). It no longer ends by
+  itself when the video goes; Exit does it.
+- **Mouse**: only the video shows in the theater, but the cursor roamed the whole virtual
+  monitor and clicked unseen windows. While the theater shows, the cursor is confined to the
+  video's desktop rectangle (`ClipCursor`, re-applied every 250 ms, freed on exit, pause and
+  app exit).
+- **3D settings panel** in the theater: a "3D settings" button beside Play/Pause and Exit opens
+  rows of − / + (model, cycling through the models whose files exist at the current resolution;
+  resolution; depth; screen plane; buffer Off/0.5/1/2 s) and two switches (edge snapping, flat
+  subtitles). Changes apply and save at once, like the hotkeys. Clicks anywhere on the panel are
+  caught; it closes after 10 s without mouse movement.
+
+Tests: 93 (panel layout, panel labels). The model tests' speed limits were widened (100 ms
+Balanced, 250 ms Quality): run while the app uses the GPU, times rise 1.5–2×.
+
+**Seen in the glasses (old build, 22:35):** the hair improved a lot; still glitchy at times (the
+wall-time flicker above, 80 flips in that run) and the picture "often split in half, top and
+bottom not matching". Not tearing (the capture copies before releasing, presents wait for
+vsync) and not native-3D detection (none logged): the first `CaptionLock` joined every band of
+text-like rows in the lower 45 %, and a busy scene there (foliage, patterns) became one block
+flattened to one depth, a seam across the picture. Now: strokes need a dark outline on both
+sides and ≥ 4 per row; only the lowest band, plus a line right above it, at most 1/8 of the
+height per line and 1/5 in all, centred; the band must hold still for 0.3 s against where it
+first appeared; "Depth: subtitles found at …" / "gone" in the log. Tests: 96 (busy lower
+picture, texture above a subtitle, a drifting band).
+
 ### Next
 
 1. In the glasses: the theater (enter, exit, Play/Pause, cursor alignment), the buffer again
-   (sound on the right device; the new audio log during a pause), stretch, tuning panel; then
-   tune the defaults; compare the five models.
-2. P6 packaging (installer with the driver, model download, README), or P3 once the hardware
+   (sound on the right device; the new audio log during a pause), stretch, tuning panel; the
+   outline, captions and edge snapping (A/B in the tuning panel); compare the models, DA3
+   included. The user's saved tuning still has dilation 3 (Reset in the tuning panel gives 1).
+2. DA3 in fp16 (2–3× faster) once its casts are fixed; Video Depth Anything with IOBinding.
+3. P6 packaging (installer with the driver, model download, README), or P3 once the hardware
    3D button test with the glasses removed from the desktop is done.
 
 ## Carried over from the DesktopSbS session

@@ -109,12 +109,26 @@ public partial class TuningWindow : Window
         }
         FloatingWindowBox.IsChecked = s.Tuning.FloatingWindow;
         StaticOverlaysBox.IsChecked = s.Tuning.StaticOverlays;
+        EdgeSnapBox.IsChecked = s.Tuning.EdgeSnap;
+        CaptionsBox.IsChecked = s.Tuning.Captions;
         loading = false;
     }
 
     private void OnFloatingWindow(object sender, RoutedEventArgs e)
     {
         working.Tuning = working.Tuning with { FloatingWindow = FloatingWindowBox.IsChecked == true };
+        controller.PreviewSettings(working.Clone());
+    }
+
+    private void OnEdgeSnap(object sender, RoutedEventArgs e)
+    {
+        working.Tuning = working.Tuning with { EdgeSnap = EdgeSnapBox.IsChecked == true };
+        controller.PreviewSettings(working.Clone());
+    }
+
+    private void OnCaptions(object sender, RoutedEventArgs e)
+    {
+        working.Tuning = working.Tuning with { Captions = CaptionsBox.IsChecked == true };
         controller.PreviewSettings(working.Clone());
     }
 

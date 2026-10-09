@@ -191,6 +191,7 @@ public sealed class DepthService : IDisposable
                 post!.AlphaMin = tuning.Smoothing;
                 post.SceneCutThreshold = tuning.SceneCut;
                 post.StaticOverlays = tuning.StaticOverlays;
+                post.Captions = tuning.Captions;
                 post.StaticNearness = Convergence;
                 frame.SceneCut = post.Process(output, luma, dt, frame.Nearness);
                 frame.FrameId = id;

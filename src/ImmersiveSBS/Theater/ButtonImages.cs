@@ -39,6 +39,7 @@ public static class ButtonImages
 
     private static readonly Dictionary<(TheaterAction, bool), UiImage> Cache = [];
     private static readonly Dictionary<(BadgeKind, int), UiImage> Badges = [];
+    private static readonly Dictionary<(string, int, bool, bool), UiImage> Labels = [];
 
     public static UiImage For(TheaterAction action, bool hover)
     {
@@ -48,6 +49,49 @@ public static class ButtonImages
                 Cache[(action, hover)] = image = Draw(action, hover);
             return image;
         }
+    }
+
+    /// <summary>
+    /// A pill of <paramref name="width"/> × the button height with <paramref name="text"/>: the
+    /// panel's value labels (<paramref name="centred"/> false) and its − and + buttons. Cached by
+    /// text, so only the values actually shown are drawn.
+    /// </summary>
+    public static UiImage Label(string text, int width, bool hover, bool centred)
+    {
+        lock (Labels)
+        {
+            if (!Labels.TryGetValue((text, width, hover, centred), out UiImage? image))
+            {
+                if (Labels.Count > 512) Labels.Clear();
+                Labels[(text, width, hover, centred)] = image = DrawLabel(text, width, hover, centred);
+            }
+            return image;
+        }
+    }
+
+    private static UiImage DrawLabel(string text, int width, bool hover, bool centred)
+    {
+        var size = new Size(width, TheaterGeometry.ButtonSize.Height);
+        using var bitmap = new Bitmap(size.Width, size.Height, PixelFormat.Format32bppArgb);
+        using (Graphics g = Graphics.FromImage(bitmap))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+            g.Clear(Color.Transparent);
+            DrawPill(g, size, hover);
+            using var font = new Font("Segoe UI", centred ? 28 : 20, FontStyle.Regular, GraphicsUnit.Pixel);
+            using var white = new SolidBrush(Color.White);
+            var format = new StringFormat
+            {
+                LineAlignment = StringAlignment.Center,
+                Alignment = centred ? StringAlignment.Center : StringAlignment.Near,
+                Trimming = StringTrimming.EllipsisCharacter,
+                FormatFlags = StringFormatFlags.NoWrap,
+            };
+            var area = centred ? new RectangleF(0, -2, size.Width, size.Height) : new RectangleF(22, 0, size.Width - 40, size.Height);
+            g.DrawString(text, font, white, area, format);
+        }
+        return ToImage(bitmap);
     }
 
     /// <summary>The spinner picture due now.</summary>
@@ -123,6 +167,7 @@ public static class ButtonImages
         {
             TheaterAction.EnterTheater => ("", "3D theater"),     // FullScreen
             TheaterAction.ExitTheater => ("", "Exit theater"),    // BackToWindow
+            TheaterAction.Settings => ("", "3D settings"),        // Settings
             _ => ("", "Play / Pause"),                            // Play
         };
 

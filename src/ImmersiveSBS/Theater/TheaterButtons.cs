@@ -13,6 +13,25 @@ public enum TheaterAction
 
     /// <summary>The media Play/Pause key, which browsers obey.</summary>
     PlayPause,
+
+    /// <summary>Opens or closes the 3D settings panel in the theater.</summary>
+    Settings,
+
+    /// <summary>The panel's background and value labels: the click is caught and does nothing.</summary>
+    Panel,
+
+    DepthLess,
+    DepthMore,
+    PlaneBack,
+    PlaneForward,
+    ModelPrevious,
+    ModelNext,
+    SizePrevious,
+    SizeNext,
+    BufferLess,
+    BufferMore,
+    ToggleEdgeSnap,
+    ToggleCaptions,
 }
 
 /// <summary>

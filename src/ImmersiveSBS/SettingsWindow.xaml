@@ -113,6 +113,8 @@
                             <ComboBoxItem Content="Distill-Any-Depth Large (sharpest; always 518×518, about 24 fps)"/>
                             <ComboBoxItem Content="Depth Anything V2 Base (personal use only)"/>
                             <ComboBoxItem Content="Depth Anything V2 Large (personal use only)"/>
+                            <ComboBoxItem Content="Depth Anything 3 Small (newest generation; about 15 ms)"/>
+                            <ComboBoxItem Content="Depth Anything 3 Base (newest generation; about 36 ms, too slow at Quality)"/>
                         </ComboBox>
                         <TextBlock Text="Model resolution" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
                         <ComboBox x:Name="DepthPresetBox">

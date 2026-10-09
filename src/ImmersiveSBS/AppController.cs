@@ -294,6 +294,10 @@ public sealed class AppController : IDisposable
     private readonly TheaterButtons theaterButtons = new();
     private TheaterInput? theaterInput;
     private long theaterWithoutVideoSince;
+    private bool cursorConfined;
+
+    /// <summary>The buffer steps the theater panel goes through, seconds.</summary>
+    private static readonly double[] BufferSteps = [0, 0.5, 1, 2];
 
     /// <summary>The found video fills both eyes in the glasses, the desktop hidden.</summary>
     public bool Theater { get; private set; }
@@ -317,8 +321,47 @@ public sealed class AppController : IDisposable
             case TheaterAction.EnterTheater: SetTheater(true); break;
             case TheaterAction.ExitTheater: SetTheater(false); break;
             case TheaterAction.PlayPause: Native.PressMediaPlayPause(); break;
+            case TheaterAction.Settings: session?.ToggleTheaterPanel(); break;
+            case TheaterAction.DepthLess: Execute(ShortcutCommand.LessDepth); break;
+            case TheaterAction.DepthMore: Execute(ShortcutCommand.MoreDepth); break;
+            case TheaterAction.PlaneBack: Execute(ShortcutCommand.PictureBack); break;
+            case TheaterAction.PlaneForward: Execute(ShortcutCommand.PictureForward); break;
+            case TheaterAction.ModelPrevious or TheaterAction.ModelNext:
+                Adjust(s => s.DepthTier = NextModel(s, action == TheaterAction.ModelNext ? 1 : -1), s => "Model " + DepthModel.Name(s.DepthTier));
+                break;
+            case TheaterAction.SizePrevious or TheaterAction.SizeNext:
+                Adjust(s => s.DepthPreset = (DepthPreset)Math.Clamp((int)s.DepthPreset + (action == TheaterAction.SizeNext ? 1 : -1), 0,
+                    Enum.GetValues<DepthPreset>().Length - 1), s => $"Resolution {s.DepthPreset}");
+                break;
+            case TheaterAction.BufferLess or TheaterAction.BufferMore:
+                Adjust(s =>
+                {
+                    int i = Array.FindIndex(BufferSteps, v => v >= s.BufferSeconds - 0.01);
+                    i = Math.Clamp((i < 0 ? BufferSteps.Length - 1 : i) + (action == TheaterAction.BufferMore ? 1 : -1), 0, BufferSteps.Length - 1);
+                    s.BufferSeconds = BufferSteps[i];
+                }, s => s.BufferSeconds > 0 ? $"Buffer {s.BufferSeconds:0.#} s" : "Buffer off");
+                break;
+            case TheaterAction.ToggleEdgeSnap:
+                Adjust(s => s.Tuning = s.Tuning with { EdgeSnap = !s.Tuning.EdgeSnap }, s => "Edge snapping " + (s.Tuning.EdgeSnap ? "on" : "off"));
+                break;
+            case TheaterAction.ToggleCaptions:
+                Adjust(s => s.Tuning = s.Tuning with { Captions = !s.Tuning.Captions }, s => "Flat subtitles " + (s.Tuning.Captions ? "on" : "off"));
+                break;
         }
     });
+
+    /// <summary>The next (or previous) model whose file exists at the current resolution, wrapping round.</summary>
+    private static DepthTier NextModel(AppSettings s, int step)
+    {
+        DepthTier[] tiers = Enum.GetValues<DepthTier>();
+        int i = Array.IndexOf(tiers, s.DepthTier);
+        for (int k = 1; k <= tiers.Length; k++)
+        {
+            DepthTier t = tiers[((i + step * k) % tiers.Length + tiers.Length) % tiers.Length];
+            if (new DepthModel(t, s.DepthPreset).Exists) return t;
+        }
+        return s.DepthTier;
+    }
 
     /// <summary>
     /// The click hook runs only while the glasses show the virtual monitor; theater mode ends by
@@ -337,6 +380,21 @@ public sealed class AppController : IDisposable
             theaterInput.Dispose();
             theaterInput = null;
             theaterButtons.Clear();
+        }
+
+        // In the theater only the video is visible, so the cursor stays on it: outside it, it would
+        // move over (and click) windows the user cannot see. Re-applied each tick, as Windows
+        // drops a clip on some events (a secure desktop, another app's clip).
+        Rectangle confine = Theater && session is { TheaterActive: true } s0 ? s0.TheaterDesktop : Rectangle.Empty;
+        if (!confine.IsEmpty)
+        {
+            Native.ConfineCursor(confine);
+            cursorConfined = true;
+        }
+        else if (cursorConfined)
+        {
+            Native.ConfineCursor(null);
+            cursorConfined = false;
         }
 
         if (!Theater) return;
@@ -826,6 +884,11 @@ public sealed class AppController : IDisposable
     /// <summary>Releases the hooks, the depth model, the delayed sound and the tray icon; safe to call twice.</summary>
     public void Dispose()
     {
+        if (cursorConfined)
+        {
+            Native.ConfineCursor(null);
+            cursorConfined = false;
+        }
         theaterInput?.Dispose();
         theaterInput = null;
         cursorGuard?.Dispose();

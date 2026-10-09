@@ -29,8 +29,12 @@
             </Grid>
             <CheckBox x:Name="FloatingWindowBox" Margin="0 12 0 0" Click="OnFloatingWindow"
                       Content="Floating window: black band where something in front touches the side edge"/>
+            <CheckBox x:Name="EdgeSnapBox" Margin="0 8 0 0" Click="OnEdgeSnap"
+                      Content="Snap depth edges to the picture (sharper outlines and hair)"/>
+            <CheckBox x:Name="CaptionsBox" Margin="0 8 0 0" Click="OnCaptions"
+                      Content="Keep subtitles flat, just in front of the scene"/>
             <CheckBox x:Name="StaticOverlaysBox" Margin="0 8 0 0" Click="OnStaticOverlays"
-                      Content="Subtitles and logos at the screen plane (experimental)"/>
+                      Content="Logos and other still overlays at the screen plane (experimental)"/>
             <Border Style="{StaticResource Card}" Margin="0 16 0 0">
                 <StackPanel>
                     <TextBlock x:Name="StatusText" TextWrapping="Wrap"/>

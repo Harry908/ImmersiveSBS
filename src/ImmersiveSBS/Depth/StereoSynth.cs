@@ -11,8 +11,9 @@ namespace ImmersiveSBS.Depth;
 /// <summary>
 /// The GPU half of AI 3D, on the render device (video-3d-plan.md §4.1 stages 2–3 and 5–6):
 /// the luma grid for <see cref="RegionTracker"/>, the model input tensor, and from a nearness
-/// map the two eye images of the video region: guided upsample (§6.3), foreground dilation
-/// (§6.4), forward splat with a depth test, hole fill toward the background and gather (§7.3).
+/// map the two eye images of the video region: guided upsample (§6.3), edge snapping,
+/// foreground dilation (§6.4), forward splat with a depth test, hole fill from the background
+/// and gather (§7.3).
 /// Render thread only.
 /// </summary>
 public sealed class StereoSynth : IDisposable
@@ -31,6 +32,9 @@ public sealed class StereoSynth : IDisposable
             int layout;         // native split: 0 the same picture in both eyes, 1 side-by-side, 2 top-bottom
             float bandLeft;     // floating window: black band on the left eye's left edge, px
             float bandRight;    // and on the right eye's right edge
+            int snapRadius;     // edge snapping search radius, px; 0 = off
+            float snapStep;     // nearness range within the radius that counts as a depth edge
+            int2 pad;
         };
 
         Texture2D<float4> Source : register(t0);
@@ -41,6 +45,7 @@ public sealed class StereoSynth : IDisposable
         static const float3 LumaWeights = float3(0.299, 0.587, 0.114);
 
         float LumaAt(float2 sourcePx) { return dot(Source.SampleLevel(Linear, sourcePx / sourceSize, 0).rgb, LumaWeights); }
+        float3 ColourAt(float2 sourcePx) { return Source.SampleLevel(Linear, sourcePx / sourceSize, 0).rgb; }
 
         // --- Model input: crop, 4-tap box downsample, ImageNet normalisation, planar NCHW.
         RWStructuredBuffer<float> Tensor : register(u0);
@@ -80,7 +85,8 @@ public sealed class StereoSynth : IDisposable
             Grid[id.y * cells.x + id.x] = (uint)round(sum / 64 * 255);
         }
 
-        // --- Joint bilateral upsample of nearness to region resolution, guided by luma (§6.3).
+        // --- Joint bilateral upsample of nearness to region resolution, guided by colour (§6.3;
+        // colour rather than luma keeps hair and skin apart from a background of the same brightness).
         RWTexture2D<float> NearOut : register(u0);
         [numthreads(8, 8, 1)]
         void Upsample(uint3 id : SV_DispatchThreadID)
@@ -89,20 +95,62 @@ public sealed class StereoSynth : IDisposable
             float2 toModel = float2(modelSize) / float2(rect.zw);
             float2 m = (id.xy + 0.5) * toModel - 0.5;
             int2 m0 = (int2)floor(m + 0.5);
-            float yc = LumaAt(rect.xy + id.xy + 0.5);
+            float3 cc = ColourAt(rect.xy + id.xy + 0.5);
             float wsum = 0, nsum = 0;
             for (int dy = -2; dy <= 2; dy++)
                 for (int dx = -2; dx <= 2; dx++)
                 {
                     int2 q = clamp(m0 + int2(dx, dy), int2(0, 0), modelSize - 1);
                     float2 d = float2(q) - m;
-                    float yq = LumaAt(rect.xy + (q + 0.5) / toModel);
-                    float dyq = yc - yq;
-                    float w = exp(-0.5 * dot(d, d)) * exp(-dyq * dyq / (2 * rangeSigma * rangeSigma)) + 1e-6;
+                    float3 dc = cc - ColourAt(rect.xy + (q + 0.5) / toModel);
+                    float w = exp(-0.5 * dot(d, d)) * exp(-dot(dc, dc) / (6 * rangeSigma * rangeSigma)) + 1e-6;
                     nsum += w * Depth.Load(int3(q, 0));
                     wsum += w;
                 }
             NearOut[id.xy] = nsum / wsum;
+        }
+
+        // --- Edge snapping at full resolution. The model's depth edges are a few model pixels
+        // soft, so an outline or hair gets an in-between depth and smears. Where the nearness
+        // spans a depth edge within the radius, the pixel takes the near or the far side's depth
+        // (the extremes: the means still hold the soft ramp), whichever side's colour it
+        // resembles; a pixel like neither (hair over the background) gets a blend, a softer edge
+        // where the picture itself is uncertain.
+        [numthreads(64, 1, 1)]
+        void Snap(uint3 id : SV_DispatchThreadID)
+        {
+            if (id.x >= (uint)rect.z || id.y >= (uint)rect.w) return;
+            float n0 = NearIn.Load(int3(id.xy, 0));
+            float lo = n0, hi = n0;
+            for (int d = -snapRadius; d <= snapRadius; d++)
+            {
+                float n = NearIn.Load(int3(clamp((int)id.x + d, 0, rect.z - 1), id.y, 0));
+                lo = min(lo, n);
+                hi = max(hi, n);
+            }
+            if (hi - lo < snapStep) { NearOut[id.xy] = n0; return; }
+
+            float mid = 0.5 * (lo + hi);
+            float sigma2 = 2 * max(1.0, snapRadius * 0.5) * max(1.0, snapRadius * 0.5);
+            float3 cNear = 0, cFar = 0;
+            float wNear = 0, wFar = 0;
+            for (int k = -snapRadius; k <= snapRadius; k++)
+            {
+                int x = clamp((int)id.x + k, 0, rect.z - 1);
+                float n = NearIn.Load(int3(x, id.y, 0));
+                float3 c = ColourAt(rect.xy + float2(x, id.y) + 0.5);
+                float w = exp(-k * k / sigma2);
+                if (n > mid) { cNear += w * c; wNear += w; }
+                else { cFar += w * c; wFar += w; }
+            }
+            if (wNear == 0 || wFar == 0) { NearOut[id.xy] = n0; return; }
+            cNear /= wNear; cFar /= wFar;
+
+            float3 c0 = ColourAt(rect.xy + id.xy + 0.5);
+            float dNear = dot(c0 - cNear, c0 - cNear), dFar = dot(c0 - cFar, c0 - cFar);
+            // +1 like the near side, −1 like the far side; steep, but a pixel like neither blends.
+            float like = (dFar - dNear) / (dNear + dFar + 1e-4);
+            NearOut[id.xy] = lerp(lo, hi, saturate(0.5 + 2 * like));
         }
 
         // --- Horizontal max filter: object borders err onto the background (§6.4).
@@ -136,16 +184,25 @@ public sealed class StereoSynth : IDisposable
                 for (int k = 0; k < 2; k++)
                 {
                     int t = t0 + k;
-                    if (t < 0 || t >= (int)w) continue;
+                    // Only columns this pixel really covers (one landing a hair before a column
+                    // would otherwise claim it and widen an object by a pixel).
+                    if (t < 0 || t >= (int)w || abs(t - xt) > 0.99) continue;
                     float xs = id.x + (t - xt);
+                    // The sample point reaches up to a pixel into a neighbour. Across a depth edge
+                    // that neighbour is another surface (an object's edge pixel when this is the
+                    // background beside it), and reading it draws a 1 px copy of the outline.
+                    int nb = clamp(xs > id.x ? (int)id.x + 1 : (int)id.x - 1, 0, (int)w - 1);
+                    if (abs(NearIn.Load(int3(nb, id.y, 0)) - n) > 0.02) xs = id.x;
                     uint fx = (uint)clamp(round((xs + 2) * 16), 16.0, 65535.0);
                     InterlockedMax(Keys[eye * plane + id.y * w + t], near16 | fx);
                 }
             }
         }
 
-        // --- Gather; a hole is background revealed behind a foreground edge, so it continues
-        // the farther of its two nearest neighbours.
+        // --- Gather. A hole is background revealed behind a foreground edge: what was there is
+        // unknown, so it is filled from the farther of its two nearest neighbours, mirrored away
+        // from the edge and softly blurred. (Continuing past the neighbour instead reads the
+        // foreground's own edge pixels and draws a second outline beside it.)
         RWTexture2D<unorm float4> Eyes : register(u1);
         [numthreads(8, 8, 1)]
         void Resolve(uint3 id : SV_DispatchThreadID)
@@ -157,7 +214,8 @@ public sealed class StereoSynth : IDisposable
             uint row = eye * plane + id.y * w;
             uint key = Keys[row + t];
             float xs;
-            if (key != 0)
+            bool hole = key == 0;
+            if (!hole)
             {
                 xs = (key & 0xFFFF) / 16.0 - 2;
             }
@@ -171,12 +229,18 @@ public sealed class StereoSynth : IDisposable
                     if (r < 0 && t + d < (int)w && Keys[row + t + d] != 0) { r = t + d; kr = Keys[row + r]; }
                 }
                 if (l < 0 && r < 0) xs = t;
-                else if (r < 0 || (l >= 0 && (kl >> 16) <= (kr >> 16))) xs = (kl & 0xFFFF) / 16.0 - 2 + (t - l);
-                else xs = (kr & 0xFFFF) / 16.0 - 2 + (t - r);
+                else if (r < 0 || (l >= 0 && (kl >> 16) <= (kr >> 16))) xs = (kl & 0xFFFF) / 16.0 - 2 - (t - l);
+                else xs = (kr & 0xFFFF) / 16.0 - 2 + (r - t);
             }
             xs = clamp(xs, 0, w - 1);
             float2 p = float2(rect.x + xs + 0.5, rect.y + id.y + 0.5);
             float3 c = Source.SampleLevel(Linear, p / sourceSize, 0).rgb;
+            if (hole)
+            {
+                // Four bilinear taps around the centre: a 3×3 tent, so no streak or texture copy shows.
+                c = 0.4 * c + 0.15 * (ColourAt(p + float2(-1, -1)) + ColourAt(p + float2(1, -1))
+                                    + ColourAt(p + float2(-1, 1)) + ColourAt(p + float2(1, 1)));
+            }
 
             // Floating window (§7.3 step 5): where something in front of the screen touches the
             // video's side edge, a black band moves that edge forward too.
@@ -215,11 +279,14 @@ public sealed class StereoSynth : IDisposable
         public int Layout;
         public float BandLeft;
         public float BandRight;
+        public int SnapRadius;
+        public float SnapStep;
+        public Int2 Pad;
     }
 
     private readonly ID3D11Device device;
     private readonly ID3D11DeviceContext context;
-    private readonly ID3D11ComputeShader preprocess, lumaGrid, upsample, dilate, splat, resolve, nativeSplit;
+    private readonly ID3D11ComputeShader preprocess, lumaGrid, upsample, snap, dilate, splat, resolve, nativeSplit;
     private readonly ID3D11Buffer constants;
     private readonly ID3D11SamplerState linear;
 
@@ -240,6 +307,7 @@ public sealed class StereoSynth : IDisposable
         preprocess = Compile("Preprocess");
         lumaGrid = Compile("LumaGrid");
         upsample = Compile("Upsample");
+        snap = Compile("Snap");
         dilate = Compile("Dilate");
         splat = Compile("Splat");
         resolve = Compile("Resolve");
@@ -252,8 +320,14 @@ public sealed class StereoSynth : IDisposable
     /// <summary>Foreground dilation radius in source px.</summary>
     public int DilateRadius { get; set; } = 3;
 
-    /// <summary>Luma sigma of the guided upsample (luma in 0..1).</summary>
+    /// <summary>Colour sigma of the guided upsample (per channel, 0..1).</summary>
     public float RangeSigma { get; set; } = 0.1f;
+
+    /// <summary>Snaps depth edges to the picture's edges at full resolution (see the Snap shader).</summary>
+    public bool EdgeSnap { get; set; } = true;
+
+    /// <summary>A nearness range at least this wide within the snapping radius is a depth edge.</summary>
+    public const float SnapStep = 0.1f;
 
     private ID3D11ComputeShader Compile(string entry) =>
         device.CreateComputeShader(Compiler.Compile(Hlsl, entry, "stereo.hlsl", "cs_5_0").Span);
@@ -336,12 +410,23 @@ public sealed class StereoSynth : IDisposable
         Dispatch(upsample, nearA!.Uav, gx, gy);
         context.CSSetShaderResource(1, null!);
 
-        context.CSSetShaderResource(2, nearA.Srv);
-        Dispatch(dilate, nearB!.Uav, (region.Width + 63) / 64, region.Height);
+        Texture dilateInput = nearA!;
+        if (EdgeSnap)
+        {
+            context.CSSetShaderResource(2, nearA.Srv);
+            Dispatch(snap, nearB!.Uav, (region.Width + 63) / 64, region.Height);
+            context.CSSetShaderResource(2, null!);
+            dilateInput = nearB;
+        }
+
+        // Ping-pong: dilation reads whichever texture holds the nearness and writes the other.
+        Texture dilated = dilateInput == nearA ? nearB! : nearA;
+        context.CSSetShaderResource(2, dilateInput.Srv);
+        Dispatch(dilate, dilated.Uav, (region.Width + 63) / 64, region.Height);
         context.CSSetShaderResource(2, null!);
 
         context.ClearUnorderedAccessView(keys!.Uav, new Int4(0, 0, 0, 0));
-        context.CSSetShaderResource(2, nearB.Srv);
+        context.CSSetShaderResource(2, dilated.Srv);
         Dispatch(splat, keys.Uav, gx, gy);
         context.CSSetShaderResource(2, null!);
 
@@ -395,6 +480,9 @@ public sealed class StereoSynth : IDisposable
             Layout = layout,
             BandLeft = bandLeft,
             BandRight = bandRight,
+            // The model's soft edges span about two model pixels each way.
+            SnapRadius = model.Width > 0 ? Math.Clamp((int)Math.Round(2.5 * region.Width / model.Width), 2, 16) : 0,
+            SnapStep = SnapStep,
         };
         MappedSubresource m = context.Map(constants, MapMode.WriteDiscard);
         *(Params*)m.DataPointer = p;
@@ -445,7 +533,7 @@ public sealed class StereoSynth : IDisposable
         eyes?.Dispose();
         linear.Dispose();
         constants.Dispose();
-        foreach (var s in new[] { preprocess, lumaGrid, upsample, dilate, splat, resolve, nativeSplit }) s.Dispose();
+        foreach (var s in new[] { preprocess, lumaGrid, upsample, snap, dilate, splat, resolve, nativeSplit }) s.Dispose();
     }
 
     /// <summary>A structured buffer with a UAV and a staging copy for reading back.</summary>

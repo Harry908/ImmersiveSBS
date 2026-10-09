@@ -107,6 +107,23 @@ internal static unsafe partial class Native
     [LibraryImport("user32.dll")]
     public static partial IntPtr SetCursor(IntPtr cursor);
 
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool ClipCursor(in RECT rect);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool ClipCursor(IntPtr none);
+
+    /// <summary>Keeps the cursor inside <paramref name="bounds"/> (desktop px); null frees it.</summary>
+    public static void ConfineCursor(System.Drawing.Rectangle? bounds)
+    {
+        if (bounds is System.Drawing.Rectangle r)
+            ClipCursor(new RECT { Left = r.Left, Top = r.Top, Right = r.Right, Bottom = r.Bottom });
+        else
+            ClipCursor(IntPtr.Zero);
+    }
+
     [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool EnumDisplayDevicesW(string? device, uint index, ref DISPLAY_DEVICEW dd, uint flags);

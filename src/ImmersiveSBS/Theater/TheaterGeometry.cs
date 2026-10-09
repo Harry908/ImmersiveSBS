@@ -15,6 +15,35 @@ public static class TheaterGeometry
     /// <summary>Space between buttons and from the edge, eye px.</summary>
     public const int Margin = 16;
 
+    /// <summary>The settings panel's − and + buttons, and its value labels, eye px.</summary>
+    public static readonly Size StepSize = new(56, 56);
+
+    public static readonly Size ValueSize = new(380, 56);
+
+    /// <summary>Space between a panel row's parts and between rows, eye px.</summary>
+    public const int PanelGap = 8;
+
+    /// <summary>
+    /// The settings panel's rows, right-aligned under the top-right buttons of
+    /// <paramref name="area"/>: each row's −, value and + (a toggle row uses the value place only,
+    /// widened over the whole row).
+    /// </summary>
+    public static (Rectangle Minus, Rectangle Value, Rectangle Plus)[] PanelRows(Rectangle area, int rows)
+    {
+        int width = StepSize.Width + PanelGap + ValueSize.Width + PanelGap + StepSize.Width;
+        int x = area.Right - Margin - width;
+        int y = area.Top + Margin + ButtonSize.Height + Margin;
+        var result = new (Rectangle, Rectangle, Rectangle)[rows];
+        for (int i = 0; i < rows; i++, y += StepSize.Height + PanelGap)
+        {
+            var minus = new Rectangle(new Point(x, y), StepSize);
+            var value = new Rectangle(new Point(minus.Right + PanelGap, y), ValueSize);
+            var plus = new Rectangle(new Point(value.Right + PanelGap, y), StepSize);
+            result[i] = (minus, value, plus);
+        }
+        return result;
+    }
+
     /// <summary><paramref name="content"/>'s shape, as large as fits in <paramref name="area"/>, centred.</summary>
     public static Rectangle Fit(Size content, Size area)
     {

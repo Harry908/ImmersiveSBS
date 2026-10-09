@@ -8,19 +8,29 @@ namespace ImmersiveSBS.Tests;
 /// Runs the real model on TensorRT for RTX. Needs an NVIDIA RTX GPU, the Windows ML provider
 /// package and the model files; without them the test reports why and returns. The first run
 /// of each model on a machine compiles its engine (20–30 s) and caches it, so this also prepares
-/// the app's first use; the output lists each model's time per frame on this GPU.
+/// the app's first use; the output lists each model's time per frame on this GPU. (On this
+/// synthetic picture every model puts the top nearer, so the printed means compare models; they
+/// are not checked.)
 /// </summary>
 public class DepthEstimatorTests(ITestOutputHelper output)
 {
     [Theory]
-    [InlineData(DepthTier.Small)]
-    [InlineData(DepthTier.Base)]
-    [InlineData(DepthTier.Large)]
-    [InlineData(DepthTier.V2Base)]
-    [InlineData(DepthTier.V2Large)]
-    public void BalancedModelRunsOnTensorRt(DepthTier tier)
+    [InlineData(DepthTier.Small, DepthPreset.Balanced)]
+    [InlineData(DepthTier.Base, DepthPreset.Balanced)]
+    [InlineData(DepthTier.Large, DepthPreset.Balanced)]
+    [InlineData(DepthTier.V2Base, DepthPreset.Balanced)]
+    [InlineData(DepthTier.V2Large, DepthPreset.Balanced)]
+    [InlineData(DepthTier.Small, DepthPreset.Quality)]
+    [InlineData(DepthTier.Base, DepthPreset.Quality)]
+    [InlineData(DepthTier.V2Base, DepthPreset.Quality)]
+    [InlineData(DepthTier.V2Large, DepthPreset.Quality)]
+    [InlineData(DepthTier.DA3Small, DepthPreset.Balanced)]
+    [InlineData(DepthTier.DA3Small, DepthPreset.Quality)]
+    [InlineData(DepthTier.DA3Base, DepthPreset.Balanced)]
+    [InlineData(DepthTier.DA3Base, DepthPreset.Quality)]
+    public void ModelRunsOnTensorRt(DepthTier tier, DepthPreset preset)
     {
-        var model = new DepthModel(tier, DepthPreset.Balanced);
+        var model = new DepthModel(tier, preset);
         if (!model.Exists)
         {
             output.WriteLine($"Skipped: {model.FilePath} is missing.");
@@ -66,7 +76,10 @@ public class DepthEstimatorTests(ITestOutputHelper output)
 
             Assert.All(depth, v => Assert.True(float.IsFinite(v)));
             Assert.True(depth.Max() > depth.Min(), "depth is not constant");
-            Assert.True(ms < 50, $"inference took {ms:0.0} ms");
+            // Catches an engine gone badly wrong (V2 Base 756×420 once seemed to run at 825 ms; it is
+            // 20 ms), with room for the GPU being shared with a running app (times rise ~1.5–2×).
+            // DA3 is fp32 (the fp16 converter breaks its graph): Base ~36 ms Balanced, ~110 Quality.
+            Assert.True(ms < (preset == DepthPreset.Quality ? 250 : 100), $"inference took {ms:0.0} ms");
 
             double bottom = depth.Skip((h - 20) * w).Take(10 * w).Average();
             double top = depth.Skip(10 * w).Take(10 * w).Average();

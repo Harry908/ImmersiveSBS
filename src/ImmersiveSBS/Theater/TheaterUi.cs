@@ -6,12 +6,18 @@ using ImmersiveSBS.Presentation;
 
 namespace ImmersiveSBS.Theater;
 
+/// <summary>What the theater's 3D settings panel shows, from the session's current settings.</summary>
+public sealed record TheaterPanel(string Model, string Size, double Depth, double Plane, double Buffer, bool EdgeSnap, bool Captions);
+
 /// <summary>
 /// Builds the on-screen layer each frame on the render thread: in theater mode the region fitted
 /// to the whole eye with Play/Pause and Exit buttons; otherwise a "3D theater" button at the
 /// video's top-right corner while the mouse is over the video. Buttons show while the mouse moves
 /// and fade after <see cref="ShowSeconds"/>, like a video player's controls. Where a click must
 /// land to press each button is published to <see cref="Buttons"/> for <see cref="TheaterInput"/>.
+/// In theater mode a "3D settings" button opens a panel of − / + rows (model, resolution, depth,
+/// screen plane, buffer) and switches; it stays while the mouse moves and closes after
+/// <see cref="PanelSeconds"/> without movement.
 /// While 3D is wanted, a badge at the video's top-left corner shows the depth model's state: a
 /// spinner while it loads, "3D ready" for <see cref="ReadySeconds"/> after, a warning if it failed.
 /// </summary>
@@ -20,12 +26,16 @@ public sealed class TheaterUi
     /// <summary>How long the buttons stay after the mouse last moved.</summary>
     public const double ShowSeconds = 2.5;
 
+    /// <summary>How long the settings panel stays open after the mouse last moved.</summary>
+    public const double PanelSeconds = 10;
+
     /// <summary>How long "3D ready" stays after the model finished loading.</summary>
     public const double ReadySeconds = 2;
 
     private Point lastCursor;
     private long lastMove;
     private bool shown;
+    private volatile bool panelOpen;
     private DepthServiceState? lastModel;
     private long readySince;
     private BadgeKind? drawnBadge;
@@ -39,7 +49,8 @@ public sealed class TheaterUi
     /// due to turn, or "3D ready" due to go.
     /// </summary>
     public bool NeedsRedraw =>
-        (shown && Stopwatch.GetElapsedTime(lastMove).TotalSeconds >= ShowSeconds)
+        (shown && !panelOpen && Stopwatch.GetElapsedTime(lastMove).TotalSeconds >= ShowSeconds)
+        || (panelOpen && Stopwatch.GetElapsedTime(lastMove).TotalSeconds >= PanelSeconds)
         || (drawnBadge is BadgeKind.Loading or BadgeKind.Preparing && ButtonImages.SpinnerFrame() != drawnFrame)
         || (drawnBadge == BadgeKind.Ready && Stopwatch.GetElapsedTime(readySince).TotalSeconds >= ReadySeconds);
 
@@ -51,8 +62,9 @@ public sealed class TheaterUi
     /// <param name="source">The captured frame's size.</param>
     /// <param name="target">What AI 3D converts (the theater's video included).</param>
     /// <param name="model">The depth model's state; null when there is none.</param>
+    /// <param name="panel">The settings panel's values (theater only).</param>
     public UiLayer? Build(StereoOverlay? overlay, Rectangle found, bool theater, Rectangle monitor, Size eye, Size source,
-        AiTarget target, DepthServiceState? model)
+        AiTarget target, DepthServiceState? model, TheaterPanel? panel = null)
     {
         BadgeKind? badge = Badge(target, model);
         Native.GetCursorPos(out Point cursor);
@@ -61,7 +73,9 @@ public sealed class TheaterUi
             lastCursor = cursor;
             lastMove = Stopwatch.GetTimestamp();
         }
-        bool recent = Stopwatch.GetElapsedTime(lastMove).TotalSeconds < ShowSeconds;
+        double idle = Stopwatch.GetElapsedTime(lastMove).TotalSeconds;
+        if (panelOpen && (!theater || idle >= PanelSeconds)) panelOpen = false;
+        bool recent = idle < ShowSeconds || panelOpen;
         var onMonitor = new Point(cursor.X - monitor.X, cursor.Y - monitor.Y);
 
         // Where the video is drawn: the overlay's place (stretch included) or where it was found.
@@ -75,23 +89,52 @@ public sealed class TheaterUi
         }
 
         var buttons = new List<(TheaterAction Action, Rectangle Eye, Rectangle Desktop)>();
+        var labels = new Dictionary<int, Func<bool, UiImage>>();   // button index → its picture, when not a plain button
         UiLayer layer;
         Rectangle badgeArea;
         if (theater && overlay is StereoOverlay o)
         {
             Rectangle e = TheaterGeometry.Fit(o.Region.Size, eye);
             badgeArea = e;
+            void Add(TheaterAction action, Rectangle place, Func<bool, UiImage>? picture = null)
+            {
+                if (picture != null) labels[buttons.Count] = picture;
+                buttons.Add((action, place, ToDesktop(TheaterGeometry.Map(place, e, o.Source))));
+            }
+
             if (recent)
             {
-                Rectangle[] places = TheaterGeometry.TopRight(e, 2);
-                buttons.Add((TheaterAction.PlayPause, places[0], ToDesktop(TheaterGeometry.Map(places[0], e, o.Source))));
-                buttons.Add((TheaterAction.ExitTheater, places[1], ToDesktop(TheaterGeometry.Map(places[1], e, o.Source))));
+                Rectangle[] places = TheaterGeometry.TopRight(e, 3);
+                Add(TheaterAction.Settings, places[0]);
+                Add(TheaterAction.PlayPause, places[1]);
+                Add(TheaterAction.ExitTheater, places[2]);
+            }
+            if (panelOpen && panel != null)
+            {
+                var rows = PanelRows(panel);
+                var places = TheaterGeometry.PanelRows(e, rows.Length);
+                for (int i = 0; i < rows.Length; i++)
+                {
+                    var (text, less, more, toggle) = rows[i];
+                    var (minus, value, plus) = places[i];
+                    if (toggle is TheaterAction t)
+                    {
+                        var wide = Rectangle.FromLTRB(minus.Left, value.Top, plus.Right, value.Bottom);
+                        Add(t, wide, hover => ButtonImages.Label(text, wide.Width, hover, centred: false));
+                        continue;
+                    }
+                    Add(less!.Value, minus, hover => ButtonImages.Label("−", minus.Width, hover, centred: true));
+                    Add(TheaterAction.Panel, value, _ => ButtonImages.Label(text, value.Width, hover: false, centred: false));
+                    Add(more!.Value, plus, hover => ButtonImages.Label("+", plus.Width, hover, centred: true));
+                }
             }
             layer = new UiLayer
             {
                 Theater = e,
                 TheaterCursor = TheaterGeometry.Map(onMonitor, o.Source, e),
-                Images = Images(buttons, cursor),
+                Images = buttons.Select((b, i) => (labels.TryGetValue(i, out var picture)
+                    ? picture(b.Desktop.Contains(cursor))
+                    : ButtonImages.For(b.Action, hover: b.Desktop.Contains(cursor)), b.Eye)).ToList(),
             };
         }
         else
@@ -119,6 +162,26 @@ public sealed class TheaterUi
 
         Rectangle ToDesktop(Rectangle onSource) => new(onSource.X + monitor.X, onSource.Y + monitor.Y, onSource.Width, onSource.Height);
     }
+
+    /// <summary>Opens or closes the theater's settings panel; any thread.</summary>
+    public void TogglePanel()
+    {
+        panelOpen = !panelOpen;
+        lastMove = Stopwatch.GetTimestamp();
+    }
+
+    /// <summary>The panel's rows: a label with its value, and the − / + actions or the switch's action.</summary>
+    private static (string Text, TheaterAction? Less, TheaterAction? More, TheaterAction? Toggle)[] PanelRows(TheaterPanel p) =>
+    [
+        ($"Model:  {p.Model}", TheaterAction.ModelPrevious, TheaterAction.ModelNext, null),
+        ($"Resolution:  {p.Size}", TheaterAction.SizePrevious, TheaterAction.SizeNext, null),
+        ($"Depth:  {p.Depth:0.0}", TheaterAction.DepthLess, TheaterAction.DepthMore, null),
+        ($"Screen plane:  {p.Plane:0.00} ({(p.Plane < 0.5 ? "behind" : p.Plane > 0.5 ? "in front" : "balanced")})",
+            TheaterAction.PlaneBack, TheaterAction.PlaneForward, null),
+        ($"Buffer:  {(p.Buffer > 0 ? $"{p.Buffer:0.#} s" : "off (live)")}", TheaterAction.BufferLess, TheaterAction.BufferMore, null),
+        ($"Snap depth edges to the picture:  {(p.EdgeSnap ? "on" : "off")}", null, null, TheaterAction.ToggleEdgeSnap),
+        ($"Keep subtitles flat:  {(p.Captions ? "on" : "off")}", null, null, TheaterAction.ToggleCaptions),
+    ];
 
     /// <summary>Clears the buttons, e.g. when nothing is shown in side-by-side.</summary>
     public void Hide()

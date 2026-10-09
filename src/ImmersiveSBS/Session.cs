@@ -28,7 +28,7 @@ public sealed record SessionStats(
     double DisplayLatencyAvgMs, double DisplayLatencyMaxMs,
     double VideoMemoryMb,
     string? Ai = null,
-    double PrivateMemoryMb = 0, double ManagedMemoryMb = 0)
+    double PrivateMemoryMb = 0, double ManagedMemoryMb = 0, double VideoMemoryBudgetMb = 0)
 {
     public override string ToString() =>
         $"Capture   {Method}, {SourceWidth}×{SourceHeight}, {CaptureFps:0.0} fps, cursor {PointerUpdatesPerSecond:0}/s\n" +
@@ -36,7 +36,7 @@ public sealed record SessionStats(
         $"glasses {(RefreshHz > 0 ? RefreshHz.ToString("0.00") + " Hz" : "refresh unknown")}\n" +
         $"Capture → Present  avg {PresentLatencyAvgMs:0.0} ms, max {PresentLatencyMaxMs:0.0} ms\n" +
         $"Capture → vblank   {(DisplayLatencyAvgMs > 0 ? $"avg {DisplayLatencyAvgMs:0.0} ms, max {DisplayLatencyMaxMs:0.0} ms" : "no frame statistics")}\n" +
-        $"VRAM (this process, render adapter)  {VideoMemoryMb:0} MB; memory {PrivateMemoryMb:0} MB ({ManagedMemoryMb:0} MB managed)" +
+        $"VRAM (this process, render adapter)  {VideoMemoryMb:0} MB of {VideoMemoryBudgetMb:0} MB budget; memory {PrivateMemoryMb:0} MB ({ManagedMemoryMb:0} MB managed)" +
         (Ai != null ? "\n" + Ai : "");
 }
 
@@ -151,6 +151,35 @@ public sealed class Session
     {
         get => theaterActive;
         private set => theaterActive = value;
+    }
+
+    private Rectangle theaterDesktop;
+
+    /// <summary>
+    /// Where the theater's video is on the desktop (the virtual monitor's part), empty when no
+    /// theater shows; the controller keeps the cursor inside it. Any thread.
+    /// </summary>
+    public Rectangle TheaterDesktop
+    {
+        get { lock (delayLock) return theaterDesktop; }
+        private set { lock (delayLock) theaterDesktop = value; }
+    }
+
+    /// <summary>Opens or closes the 3D settings panel in the theater; any thread.</summary>
+    public void ToggleTheaterPanel()
+    {
+        theaterUi.TogglePanel();
+        Interlocked.Increment(ref stereoVersion);
+    }
+
+    /// <summary>The theater panel's values from the settings and the loaded model.</summary>
+    private TheaterPanel PanelOf(StereoSettings stereo)
+    {
+        DepthModel? m = Depth?.Model;
+        StereoTuning tuning = stereo.Tuning ?? StereoTuning.Default;
+        string size = m == null ? "-" : m.FixedSize ? $"{m.Width}×{m.Height} (fixed)" : $"{m.Preset} ({m.Width}×{m.Height})";
+        return new TheaterPanel(m == null ? "none" : DepthModel.Name(m.Tier), size, stereo.Strength, stereo.Convergence,
+            stereo.BufferSeconds, tuning.EdgeSnap, tuning.Captions);
     }
 
     /// <summary>The virtual monitor's desktop bounds, re-read once a second (render thread).</summary>
@@ -370,9 +399,13 @@ public sealed class Session
                 if (TakePick(out Point? pick)) ai.Pick(pick);
                 overlay = ai.Process(frame, update.Frame || late.Frame, stereo, Depth, eye, scale, AudioDelayed);
                 aiStatus = ai.Status;
-                ui = theaterUi.Build(overlay, ai.FoundRegion, stereo.Theater, MonitorBounds(), eye, new Size((int)fd.Width, (int)fd.Height),
-                    stereo.Target, Depth?.State);
+                Rectangle monitor = MonitorBounds();
+                ui = theaterUi.Build(overlay, ai.FoundRegion, stereo.Theater, monitor, eye, new Size((int)fd.Width, (int)fd.Height),
+                    stereo.Target, Depth?.State, stereo.Theater ? PanelOf(stereo) : null);
                 TheaterActive = stereo.Theater && overlay != null;
+                TheaterDesktop = TheaterActive && overlay is StereoOverlay o
+                    ? new Rectangle(o.Source.X + monitor.X, o.Source.Y + monitor.Y, o.Source.Width, o.Source.Height)
+                    : Rectangle.Empty;
                 SetDelayRegion(ai.DelayRegion);
             }
             else
@@ -381,6 +414,7 @@ public sealed class Session
                 SetDelayRegion(Rectangle.Empty);
                 theaterUi.Hide();
                 TheaterActive = false;
+                TheaterDesktop = Rectangle.Empty;
             }
 
             renderer.Render(capture.Texture, options.Method == CaptureMethod.DesktopDuplication ? capture.Pointer : null, overlay, ui);
@@ -464,8 +498,15 @@ public sealed class Session
             double refreshHz = lastRefresh > firstRefresh && lastSync > firstSync
                 ? (lastRefresh - firstRefresh) * (double)Stopwatch.Frequency / (lastSync - firstSync)
                 : 0;
-            double vram = 0;
-            try { vram = adapter.QueryVideoMemoryInfo(0, MemorySegmentGroup.Local).CurrentUsage / (1024.0 * 1024.0); }
+            double vram = 0, budget = 0;
+            try
+            {
+                var info = adapter.QueryVideoMemoryInfo(0, MemorySegmentGroup.Local);
+                vram = info.CurrentUsage / (1024.0 * 1024.0);
+                // What Windows lets this process keep in VRAM now; above it, memory pages out and
+                // everything on the GPU slows down (the depth model first).
+                budget = info.Budget / (1024.0 * 1024.0);
+            }
             catch { }
 
             var src = capture.Texture?.Description;
@@ -479,7 +520,7 @@ public sealed class Session
                 vram, ai,
                 // A steady climb here over minutes is a leak (Windows flagged one once, at a model load).
                 System.Diagnostics.Process.GetCurrentProcess().PrivateMemorySize64 / (1024.0 * 1024.0),
-                GC.GetTotalMemory(false) / (1024.0 * 1024.0));
+                GC.GetTotalMemory(false) / (1024.0 * 1024.0), budget);
             session.stats = s;
 
             if (now >= nextLog)

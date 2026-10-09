@@ -15,6 +15,7 @@ public sealed class DepthPostProcessor
     private readonly float[] sample;
     private readonly float[] staticTime;
     private readonly float[] staticWeight;
+    private readonly CaptionLock captions;
     private double globalChange;
     private bool hasHistory;
     private double low;
@@ -30,6 +31,11 @@ public sealed class DepthPostProcessor
         sample = new float[(count + SampleStride - 1) / SampleStride];
         staticTime = new float[count];
         staticWeight = new float[count];
+        captions = new CaptionLock(width, height);
+        // In the log, so a wrong lock (a flattened block of scene) can be told from a right one.
+        captions.Changed += box => Log.Write(box is System.Drawing.Rectangle b
+            ? $"Depth: subtitles found at {b.X},{b.Y} {b.Width}×{b.Height} (of {width}×{height}); kept flat."
+            : "Depth: subtitles gone.");
     }
 
     /// <summary>Every n-th value enters the percentile estimate.</summary>
@@ -60,7 +66,13 @@ public sealed class DepthPostProcessor
     /// </summary>
     public bool StaticOverlays { get; set; }
 
-    /// <summary>The nearness static overlays are pulled to: the convergence c.</summary>
+    /// <summary>Subtitles kept flat just in front of the scene (<see cref="CaptionLock"/>).</summary>
+    public bool Captions { get; set; }
+
+    /// <summary>The caption box found in the last frame (model px), if any.</summary>
+    public System.Drawing.Rectangle? CaptionBox => Captions ? captions.Found : null;
+
+    /// <summary>The nearness static overlays are pulled to, and below which captions never go: the convergence c.</summary>
     public double StaticNearness { get; set; } = 0.35;
 
     /// <summary>How long a pixel must stay unchanged to count as static, seconds (plan: 1 s).</summary>
@@ -166,6 +178,9 @@ public sealed class DepthPostProcessor
             nearness[i] = (float)n;
             previousLuma[i] = luma[i];
         }
+
+        // Like the static overlays, only the output: the temporal state keeps the model's value.
+        if (Captions) captions.Apply(luma, nearness, dt, StaticNearness);
 
         hasHistory = true;
         return cut;

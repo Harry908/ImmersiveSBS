@@ -56,6 +56,21 @@ public sealed class AiStereo : IDisposable
     /// <summary>From choosing a frame to it being on the glasses: about one refresh plus scan-out.</summary>
     private static readonly long PresentLatencyTicks = Stopwatch.Frequency * 20 / 1000;
 
+    /// <summary>
+    /// Live path: when the picture has moved on this far past the frame its depth was computed
+    /// on (at least <see cref="DepthStaleFrames"/> video frames and this long of the video's own
+    /// time), that depth no longer fits and tears the edges; the video is shown flat until depth
+    /// is back within <see cref="DepthFreshFrames"/> frames. A busy or memory-starved GPU once
+    /// took 825 ms a frame. Counted in video frames, not wall time: after a still moment (a
+    /// static shot, a pause) the first new frame is one frame on, not seconds; measuring wall
+    /// time flipped the picture flat and back on every such moment.
+    /// </summary>
+    public const double DepthStaleMs = 250;
+
+    public const int DepthStaleFrames = 6;
+
+    public const int DepthFreshFrames = 3;
+
     private readonly StereoSynth synth;
     private readonly VideoDelayBuffer delayed;
     private readonly Native3DDetector native = new();
@@ -76,6 +91,10 @@ public sealed class AiStereo : IDisposable
     private double lastBandTime;
     private double bandLeft, bandRight, bandLeftTarget, bandRightTarget;
     private long shownDelayedId = -1;
+    private Rectangle theaterRegion;
+    /// <summary>When each recent frame id was handed to the model, to know how old its depth is.</summary>
+    private readonly long[] submitTicks = new long[64];
+    private bool depthStale;
     private bool floatingWindow = true;
     private StereoOverlay? overlay;
     private object? overlayKey;
@@ -124,11 +143,21 @@ public sealed class AiStereo : IDisposable
         bool track = settings.Target != AiTarget.WholeScreen;
         if (newFrame || grid.Length == 0) ReadGrid(source, sourceSize, track);
 
-        // The region: the whole frame, or the tracked video.
+        // The theater keeps the area it was entered on. Following the tracker there made it jump
+        // or drop back to the desktop whenever the player's controls appeared or the video paused.
+        if (!settings.Theater) theaterRegion = Rectangle.Empty;
+        else if (theaterRegion.IsEmpty && track && tracker is { State: not RegionState.None }) theaterRegion = tracker.Region;
+        bool theaterLocked = settings.Theater && !theaterRegion.IsEmpty;
+
+        // The region: the whole frame, the theater's, or the tracked video.
         Rectangle target;
         if (!track)
         {
             target = new Rectangle(Point.Empty, sourceSize);
+        }
+        else if (theaterLocked)
+        {
+            target = theaterRegion;
         }
         else if (tracker == null || tracker.State == RegionState.None)
         {
@@ -142,7 +171,8 @@ public sealed class AiStereo : IDisposable
         }
         SetRegion(target, service);
         FoundRegion = region;
-        bool regionMoving = !track || tracker!.State == RegionState.Tracking;
+        // In the theater every new frame counts (the tracker may be watching something else).
+        bool regionMoving = !track || theaterLocked || tracker!.State == RegionState.Tracking;
         Rectangle drawn = Stretched(region, settings.Stretch);
         string stretch = (tracker?.Locked == true ? ", locked" : "") + (settings.Stretches ? $", stretched ×{settings.Stretch:0.##}" : "");
 
@@ -196,6 +226,7 @@ public sealed class AiStereo : IDisposable
         StereoTuning tuning = settings.Tuning ?? StereoTuning.Default;
         synth.DilateRadius = tuning.DilateRadius;
         synth.RangeSigma = (float)tuning.EdgeSoftness;
+        synth.EdgeSnap = tuning.EdgeSnap;
         floatingWindow = tuning.FloatingWindow;
         if (!floatingWindow) bandLeftTarget = bandRightTarget = 0;
 
@@ -234,6 +265,19 @@ public sealed class AiStereo : IDisposable
         string what = settings.Target == AiTarget.WholeScreen ? "whole screen" : $"video {region.Width}×{region.Height}";
         Status = $"AI 3D: {what}{(regionMoving ? "" : ", paused")}{stretch}; {service.Status}";
         if (!haveNearness) return null;
+
+        // How far the picture has moved on past the depth's frame, in frames and in video time.
+        (long frames, double ms) = DepthLag();
+        bool stale = depthStale ? frames > DepthFreshFrames : frames >= DepthStaleFrames && ms > DepthStaleMs;
+        if (stale)
+        {
+            if (!depthStale) Log.Write($"AI 3D: depth is {frames} frames ({ms:0} ms) behind the picture; showing the video flat until it catches up.");
+            depthStale = true;
+            Status = $"AI 3D: {what}: depth too slow ({ms:0} ms behind), shown flat{stretch}; {service.Status}";
+            return Cached((Native3DLayout.None, region, drawn), infer, () => synth.SplitNative(source, region, Native3DLayout.None), drawn);
+        }
+        if (depthStale) Log.Write($"AI 3D: depth caught up ({frames} frames behind).");
+        depthStale = false;
 
         bool bandsMoved = SmoothBands();
         object key = (settings, scale, region);
@@ -305,6 +349,20 @@ public sealed class AiStereo : IDisposable
         if (input.Length != length) input = new float[length];
         synth.ReadModelInput(source, region, new Size(model.Width, model.Height), input);
         service.Submit(input, ++frameId, clock.Elapsed.TotalSeconds);
+        submitTicks[frameId % submitTicks.Length] = Stopwatch.GetTimestamp();
+    }
+
+    /// <summary>
+    /// Frames handed to the model since the one behind the current depth, and the time between
+    /// the two hand-overs (the video's time, which stands still while the picture does).
+    /// </summary>
+    private (long Frames, double Ms) DepthLag()
+    {
+        if (depth == null) return (long.MaxValue, double.PositiveInfinity);
+        long frames = frameId - depth.FrameId;
+        if (frames >= submitTicks.Length) return (frames, double.PositiveInfinity);
+        long ticks = submitTicks[frameId % submitTicks.Length] - submitTicks[depth.FrameId % submitTicks.Length];
+        return (frames, ticks * 1000.0 / Stopwatch.Frequency);
     }
 
     /// <summary>Rebuilds a flat or native overlay only on a new frame or a new key.</summary>

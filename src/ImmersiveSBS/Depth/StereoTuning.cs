@@ -6,10 +6,19 @@ namespace ImmersiveSBS.Depth;
 /// </summary>
 public sealed record StereoTuning
 {
-    /// <summary>Foreground dilation radius, px (§6.4): pushes edge errors onto the background.</summary>
-    public int DilateRadius { get; init; } = 3;
+    /// <summary>
+    /// Foreground dilation radius, px (§6.4): pushes edge errors onto the background. 1 since edge
+    /// snapping: wider drags a sliver of background along with every object, a visible halo.
+    /// </summary>
+    public int DilateRadius { get; init; } = 1;
 
-    /// <summary>Luma sigma of the guided upsample (§6.3): smaller keeps depth edges tighter on picture edges.</summary>
+    /// <summary>Snap the model's soft depth edges to the picture's own edges (outlines, hair).</summary>
+    public bool EdgeSnap { get; init; } = true;
+
+    /// <summary>Find subtitles and keep them flat, just in front of the scene (<see cref="CaptionLock"/>).</summary>
+    public bool Captions { get; init; } = true;
+
+    /// <summary>Colour sigma of the guided upsample (§6.3): smaller keeps depth edges tighter on picture edges.</summary>
     public double EdgeSoftness { get; init; } = 0.1;
 
     /// <summary>Per-frame blend where nothing moves, at 30 fps (§6.2): smaller is steadier, slower.</summary>

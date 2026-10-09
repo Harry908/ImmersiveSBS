@@ -22,6 +22,16 @@ public enum DepthTier
 
     /// <summary>Depth Anything V2 Large (CC-BY-NC-4.0: personal use only, not to be shipped).</summary>
     V2Large,
+
+    /// <summary>
+    /// Depth Anything 3 Small (Apache-2.0), the 2025 generation. Exported any-view; used here with
+    /// one image and its depth output only (the camera head is cut off), and its output is depth,
+    /// not inverse depth (<see cref="DepthModel.OutputIsDepth"/>).
+    /// </summary>
+    DA3Small,
+
+    /// <summary>Depth Anything 3 Base (Apache-2.0); as <see cref="DA3Small"/>.</summary>
+    DA3Base,
 }
 
 /// <summary>Model input size, 16:9, each side a multiple of the ViT patch (14).</summary>
@@ -51,6 +61,9 @@ public sealed record DepthModel(DepthTier Tier, DepthPreset Preset)
     /// <summary>True for a model that exists in one fixed size only, whatever the preset.</summary>
     public bool FixedSize => Tier == DepthTier.Large;
 
+    /// <summary>The model outputs depth (larger = farther), not relative inverse depth: the estimator inverts it.</summary>
+    public bool OutputIsDepth => Tier is DepthTier.DA3Small or DepthTier.DA3Base;
+
     public int Width => FixedSize ? 518 : Preset switch { DepthPreset.Fast => 392, DepthPreset.Quality => 756, _ => 518 };
 
     public int Height => FixedSize ? 518 : Preset switch { DepthPreset.Fast => 224, DepthPreset.Quality => 420, _ => 294 };
@@ -64,6 +77,8 @@ public sealed record DepthModel(DepthTier Tier, DepthPreset Preset)
         DepthTier.Large => "dad-large",
         DepthTier.V2Base => "da2-base",
         DepthTier.V2Large => "da2-large",
+        DepthTier.DA3Small => "da3-small",
+        DepthTier.DA3Base => "da3-base",
         _ => "dad-base",
     };
 
@@ -77,6 +92,8 @@ public sealed record DepthModel(DepthTier Tier, DepthPreset Preset)
         DepthTier.Large => "Distill-Any-Depth Large",
         DepthTier.V2Base => "Depth Anything V2 Base",
         DepthTier.V2Large => "Depth Anything V2 Large",
+        DepthTier.DA3Small => "Depth Anything 3 Small",
+        DepthTier.DA3Base => "Depth Anything 3 Base",
         _ => "Distill-Any-Depth Base",
     };
 
