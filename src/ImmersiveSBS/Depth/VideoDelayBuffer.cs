@@ -8,8 +8,11 @@ namespace ImmersiveSBS.Depth;
 /// <summary>
 /// Holds the video region's recent frames on the GPU so the picture can be shown a fixed delay
 /// late, in step with the delayed sound (video-3d-plan.md §4.4, P5). Only the region is held,
-/// never the desktop, so the cursor and typing stay live. Each frame keeps the depth computed for
-/// it when that arrives, so the frame shown can use depth from frames on both sides of it. The
+/// never the desktop, so the cursor and typing stay live. Each frame keeps the crop it was taken
+/// from and the depth computed for it when that arrives, so the frame shown can use depth from
+/// frames on both sides of it, and a region that moves or resizes (the player's controls
+/// appearing, the tracker refining its box) does not empty the buffer: the first version did,
+/// and the picture then stood still for the whole delay while the sound went on. The
 /// GPU memory is capped: when the cap cannot hold the whole delay at the frame rate, fewer frames
 /// are kept (a lower frame rate for the delayed video) rather than a shorter delay. Render
 /// thread only.
@@ -24,6 +27,9 @@ public sealed class VideoDelayBuffer : IDisposable
 
         public long Id { get; internal set; }
 
+        /// <summary>Where on the source the frame was cropped from, px.</summary>
+        public Rectangle Region { get; internal set; }
+
         /// <summary>Nearness at model resolution, once the depth for this frame has arrived.</summary>
         public float[]? Nearness { get; internal set; }
 
@@ -32,7 +38,7 @@ public sealed class VideoDelayBuffer : IDisposable
 
     private readonly ID3D11Device device;
     private readonly List<Frame> frames = []; // oldest first
-    private readonly Stack<ID3D11Texture2D> free = new();
+    private readonly Stack<ID3D11Texture2D> free = new(); // textures of the current size
     private Size size;
     private long lastPush = long.MinValue;
 
@@ -46,12 +52,10 @@ public sealed class VideoDelayBuffer : IDisposable
 
     public int Count => frames.Count;
 
-    /// <summary>Forgets the held frames (a new region); their textures are reused if the size matches.</summary>
+    /// <summary>Forgets the held frames (the delay stopped); their textures are reused if the size matches.</summary>
     public void Clear()
     {
-        foreach (Frame f in frames)
-            if (f.Texture != null) free.Push(f.Texture);
-        frames.Clear();
+        while (frames.Count > 0) Recycle(0);
         lastPush = long.MinValue;
     }
 
@@ -63,7 +67,7 @@ public sealed class VideoDelayBuffer : IDisposable
     {
         if (region.Size != size)
         {
-            Clear();
+            // Held frames keep their textures; spare ones of the old size are no use any more.
             while (free.Count > 0) free.Pop().Dispose();
             size = region.Size;
         }
@@ -93,7 +97,7 @@ public sealed class VideoDelayBuffer : IDisposable
         device.ImmediateContext.CopySubresourceRegion(texture, 0, 0, 0, 0, source, 0,
             new Box(region.Left, region.Top, 0, region.Right, region.Bottom, 1));
 
-        frames.Add(new Frame { Texture = texture, Time = time, Id = id });
+        frames.Add(new Frame { Texture = texture, Time = time, Id = id, Region = region });
         lastPush = time;
         return true;
     }
@@ -126,16 +130,19 @@ public sealed class VideoDelayBuffer : IDisposable
 
     /// <summary>
     /// Nearness for frame <paramref name="index"/> averaged with its neighbours that have depth,
-    /// weights 1-2-3-2-1: look-ahead smoothing the delay makes possible. False when none has depth.
+    /// weights 1-2-3-2-1: look-ahead smoothing the delay makes possible. Only neighbours cropped
+    /// the same way count (another crop's depth would not line up). False when none has depth.
     /// </summary>
     public bool SmoothedNearness(int index, float[] output)
     {
         Array.Clear(output);
         float total = 0;
+        Rectangle crop = frames[index].Region;
         for (int d = -2; d <= 2; d++)
         {
             int i = index + d;
-            if (i < 0 || i >= frames.Count || frames[i].Nearness is not float[] n || n.Length != output.Length) continue;
+            if (i < 0 || i >= frames.Count || frames[i].Region != crop) continue;
+            if (frames[i].Nearness is not float[] n || n.Length != output.Length) continue;
             float w = 3 - Math.Abs(d);
             for (int k = 0; k < output.Length; k++) output[k] += w * n[k];
             total += w;
@@ -147,7 +154,13 @@ public sealed class VideoDelayBuffer : IDisposable
 
     private void Recycle(int index)
     {
-        if (frames[index].Texture is { } t) free.Push(t);
+        Frame f = frames[index];
+        if (f.Texture is { } t)
+        {
+            if (f.Region.Size == size) free.Push(t);
+            else t.Dispose();
+            f.Texture = null;
+        }
         frames.RemoveAt(index);
     }
 

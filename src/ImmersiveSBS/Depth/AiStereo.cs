@@ -96,6 +96,11 @@ public sealed class AiStereo : IDisposable
     private readonly long[] submitTicks = new long[64];
     private bool depthStale;
     private bool floatingWindow = true;
+    private bool gridTracks;
+    /// <summary>The model input queued on the GPU this frame, handed to the service after the present.</summary>
+    private QueuedInput? queuedInput;
+
+    private readonly record struct QueuedInput(DepthService Service, long FrameId, double Time);
     private StereoOverlay? overlay;
     private object? overlayKey;
 
@@ -141,7 +146,7 @@ public sealed class AiStereo : IDisposable
         var d = source.Description;
         var sourceSize = new Size((int)d.Width, (int)d.Height);
         bool track = settings.Target != AiTarget.WholeScreen;
-        if (newFrame || grid.Length == 0) ReadGrid(source, sourceSize, track);
+        if (newFrame || grid.Length == 0) QueueGrid(source, sourceSize, track);
 
         // The theater keeps the area it was entered on. Following the tracker there made it jump
         // or drop back to the desktop whenever the player's controls appeared or the video paused.
@@ -301,11 +306,11 @@ public sealed class AiStereo : IDisposable
         long now = Stopwatch.GetTimestamp();
         if (infer && delayed.Push(source, region, now, frameId + 1, delay, Stopwatch.Frequency)) Submit(source, service);
 
+        // Depth belongs to the frame it was computed for, whatever the region is now.
         bool newDepth = false;
         while (service.TryTake(ref depth))
         {
-            if (depth!.FrameId <= regionStartId) continue;
-            delayed.Attach(depth);
+            delayed.Attach(depth!);
             newDepth = true;
         }
 
@@ -313,10 +318,12 @@ public sealed class AiStereo : IDisposable
         int index = delayed.Select(now + PresentLatencyTicks - (long)(delay.TotalSeconds * Stopwatch.Frequency));
         if (index < 0) return null;
 
+        // Each frame is shown where it was on the screen when it was taken.
         VideoDelayBuffer.Frame frame = delayed[index];
-        var local = new Rectangle(Point.Empty, region.Size);
+        var local = new Rectangle(Point.Empty, frame.Region.Size);
+        Rectangle frameDrawn = frame.Region == region ? drawn : Stretched(frame.Region, settings.Stretch);
         bool bandsMoved = SmoothBands();
-        object key = (frame.Id, settings, region);
+        object key = (frame.Id, settings, frame.Region);
         if (frame.Id == shownDelayedId && !newDepth && !bandsMoved && overlay != null && key.Equals(overlayKey)) return overlay;
 
         DepthModel model = service.Model;
@@ -337,19 +344,47 @@ public sealed class AiStereo : IDisposable
         }
 
         shownDelayedId = frame.Id;
-        overlay = new StereoOverlay(eyes, drawn, region);
+        overlay = new StereoOverlay(eyes, frameDrawn, frame.Region);
         overlayKey = key;
         return overlay;
     }
 
+    /// <summary>Queues this frame's model input; <see cref="CollectReadbacks"/> hands it to the service.</summary>
     private void Submit(ID3D11Texture2D source, DepthService service)
     {
         DepthModel model = service.Model;
-        int length = 3 * model.Width * model.Height;
-        if (input.Length != length) input = new float[length];
-        synth.ReadModelInput(source, region, new Size(model.Width, model.Height), input);
-        service.Submit(input, ++frameId, clock.Elapsed.TotalSeconds);
+        synth.QueueModelInput(source, region, new Size(model.Width, model.Height));
+        queuedInput = new QueuedInput(service, ++frameId, clock.Elapsed.TotalSeconds);
         submitTicks[frameId % submitTicks.Length] = Stopwatch.GetTimestamp();
+    }
+
+    /// <summary>
+    /// Render thread, after the present: reads what <see cref="Process"/> queued on the GPU. The
+    /// luma grid feeds the tracker (so the region follows one frame late, which nobody sees) and
+    /// the model input goes to the depth service. By now the GPU has made the copies, so this
+    /// rarely waits, and when it does, it is not in front of a present.
+    /// </summary>
+    public void CollectReadbacks()
+    {
+        if (synth.ReadQueuedLumaGrid(grid))
+        {
+            double now = clock.Elapsed.TotalSeconds;
+            gridDt = Math.Clamp(now - lastGridTime, 1.0 / 240, 1.0);
+            lastGridTime = now;
+            if (gridTracks)
+            {
+                tracker ??= new RegionTracker(gridCells.Width, gridCells.Height, 8, gridSource);
+                tracker.Update(grid, gridDt);
+            }
+        }
+
+        if (queuedInput is { } q)
+        {
+            queuedInput = null;
+            int length = synth.QueuedModelInputLength;
+            if (input.Length != length) input = new float[length];
+            if (synth.ReadQueuedModelInput(input)) q.Service.Submit(input, q.FrameId, q.Time);
+        }
     }
 
     /// <summary>
@@ -403,8 +438,8 @@ public sealed class AiStereo : IDisposable
         return new Rectangle(region.Left + (region.Width - width) / 2, region.Top, width, region.Height);
     }
 
-    /// <summary>Reads the luma grid; feeds the tracker when following a video.</summary>
-    private void ReadGrid(ID3D11Texture2D source, Size sourceSize, bool track)
+    /// <summary>Queues the luma grid; <see cref="CollectReadbacks"/> reads it and feeds the tracker when following a video.</summary>
+    private void QueueGrid(ID3D11Texture2D source, Size sourceSize, bool track)
     {
         if (gridSource != sourceSize || grid.Length == 0)
         {
@@ -415,14 +450,8 @@ public sealed class AiStereo : IDisposable
             lastGridTime = clock.Elapsed.TotalSeconds;
         }
 
-        synth.ReadLumaGrid(source, grid, out _);
-        double now = clock.Elapsed.TotalSeconds;
-        gridDt = Math.Clamp(now - lastGridTime, 1.0 / 240, 1.0);
-        lastGridTime = now;
-        if (!track) return;
-
-        tracker ??= new RegionTracker(gridCells.Width, gridCells.Height, 8, sourceSize);
-        tracker.Update(grid, gridDt);
+        synth.QueueLumaGrid(source);
+        gridTracks = track;
     }
 
     /// <summary>
@@ -460,7 +489,10 @@ public sealed class AiStereo : IDisposable
         return moved;
     }
 
-    /// <summary>A different region invalidates the depth and the held frames.</summary>
+    /// <summary>
+    /// A different region invalidates the live depth. Held frames stay: each keeps its own crop
+    /// and depth, so the delayed picture runs on through the change.
+    /// </summary>
     private void SetRegion(Rectangle target, DepthService? service)
     {
         if (target == region) return;
@@ -470,8 +502,6 @@ public sealed class AiStereo : IDisposable
         overlay = null;
         bandLeft = bandRight = bandLeftTarget = bandRightTarget = 0;
         native.Reset();
-        delayed.Clear();
-        shownDelayedId = -1;
         service?.ResetHistory();
     }
 

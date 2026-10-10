@@ -191,7 +191,10 @@ public sealed class DepthPostProcessor
         int n = 0;
         for (int i = 0; i < count; i += SampleStride) sample[n++] = raw[i];
         Span<float> s = sample.AsSpan(0, n);
-        s.Sort();
-        return (s[(int)(0.02 * (n - 1))], s[(int)(0.98 * (n - 1))]);
+        int low = (int)(0.02 * (n - 1)), high = (int)(0.98 * (n - 1));
+        float p2 = Selection.Nth(s, low);
+        // Everything after the 2nd percentile is at least it: the 98th is found among those.
+        float p98 = high == low ? p2 : Selection.Nth(s[(low + 1)..], high - low - 1);
+        return (p2, p98);
     }
 }

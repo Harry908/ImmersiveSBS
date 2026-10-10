@@ -420,6 +420,7 @@ public sealed class Session
             renderer.Render(capture.Texture, options.Method == CaptureMethod.DesktopDuplication ? capture.Pointer : null, overlay, ui);
             long presentQpc = Stopwatch.GetTimestamp();
             uint presentCount = renderer.Present();
+            ai.CollectReadbacks();
             meter.OnPresent(presentCount, content, presentQpc);
             if (renderer.TryGetFrameStatistics(out FrameStatistics fs)) meter.OnFrameStatistics(fs);
             redraw = false;

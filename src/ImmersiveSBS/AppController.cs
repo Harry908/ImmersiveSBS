@@ -110,11 +110,19 @@ public sealed class AppController : IDisposable
 
     #region Delayed sound
 
+    /// <summary>
+    /// A video lost for less than this (the tracker finding it again, the model reloading) keeps
+    /// its delayed sound and picture running: stopping meant the sound jumped ahead and then went
+    /// silent for the whole delay, and the picture froze as long, on every such moment.
+    /// </summary>
+    private const long DelayGraceMs = 5000;
+
     private readonly DispatcherTimer audioTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private AudioDelay? audioDelay;
     private bool audioStarting;
     private uint audioFailedProcess;
     private long audioFailedAt;
+    private long delayWantedAt = long.MinValue / 2;
 
     /// <summary>"Sound 1 s behind" while the delayed sound runs; null otherwise.</summary>
     public string? AudioStatus => audioDelay == null ? null : $"sound {audioDelay.Delay.TotalSeconds:0.#} s behind";
@@ -127,20 +135,34 @@ public sealed class AppController : IDisposable
     private void UpdateAudioDelay()
     {
         Session? s = session;
-        Rectangle region = s?.DelayRegion ?? Rectangle.Empty;
-        uint process = 0;
-        if (s is { Windowed: false } && Settings.BufferSeconds > 0 && !region.IsEmpty && VirtualMonitor != null && !shuttingDown)
+        bool on = s is { Windowed: false } && Settings.BufferSeconds > 0 && VirtualMonitor != null && !shuttingDown;
+        Rectangle region = on ? s!.DelayRegion : Rectangle.Empty;
+        long now = Environment.TickCount64;
+        if (!region.IsEmpty)
         {
-            var center = new System.Drawing.Point(VirtualMonitor.Bounds.X + region.X + region.Width / 2,
-                                   VirtualMonitor.Bounds.Y + region.Y + region.Height / 2);
-            process = Native.ProcessAt(center);
-            if (process == (uint)Environment.ProcessId) process = 0;
+            delayWantedAt = now;
+        }
+        else if (on && audioDelay != null && now - delayWantedAt < DelayGraceMs)
+        {
+            return; // lost for a moment: everything runs on as it is
+        }
+        else
+        {
+            audioFailedProcess = 0;
+            StopAudioDelay();
+            if (s != null) s.AudioDelayed = false;
+            return;
         }
 
+        var center = new System.Drawing.Point(VirtualMonitor!.Bounds.X + region.X + region.Width / 2,
+                               VirtualMonitor.Bounds.Y + region.Y + region.Height / 2);
+        uint process = Native.ProcessAt(center);
+        if (process == (uint)Environment.ProcessId) process = 0;
         if (process == 0)
         {
             audioFailedProcess = 0;
             StopAudioDelay();
+            s!.AudioDelayed = false;
             return;
         }
 
@@ -154,6 +176,7 @@ public sealed class AppController : IDisposable
         if (audioStarting || (process == audioFailedProcess && Environment.TickCount64 - audioFailedAt < 5000)) return;
 
         StopAudioDelay();
+        s!.AudioDelayed = false;
         _ = StartAudioDelayAsync(process, delay);
     }
 
@@ -187,8 +210,8 @@ public sealed class AppController : IDisposable
 
     private void StopAudioDelay()
     {
-        if (session != null) session.AudioDelayed = false;
         if (audioDelay == null) return;
+        if (session != null) session.AudioDelayed = false;
         audioDelay.Dispose();
         audioDelay = null;
         Notify();

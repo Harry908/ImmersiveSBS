@@ -197,7 +197,7 @@ internal static unsafe partial class Native
     public static IntPtr MonitorFromPoint(System.Drawing.Point pt, uint flags) =>
         MonitorFromPointNative(new POINT { X = pt.X, Y = pt.Y }, flags);
 
-    [LibraryImport("shcore.dll")]
+    [LibraryImport("user32.dll")]
     public static partial int GetDpiForMonitor(IntPtr monitor, int dpiType, out uint dpiX, out uint dpiY);
 
     [LibraryImport("user32.dll", EntryPoint = "GetCursorPos")]

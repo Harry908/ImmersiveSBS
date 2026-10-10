@@ -5,9 +5,12 @@ namespace ImmersiveSBS.Audio;
 /// captured packet is written where its capture time says it belongs, and playback reads the
 /// samples captured exactly <see cref="Delay"/> before the time they will be heard. Gaps (a
 /// silent app sends no packets) play as silence, packet jitter within a few milliseconds is
-/// absorbed by writing and reading contiguously, and anything further off resynchronises. Times
-/// are in 100 ns units on the QPC clock, as WASAPI reports them. Thread-safe: one writer (the
-/// capture thread) and one reader (the render thread). Pure: no audio devices.
+/// absorbed by writing contiguously, and playback reads contiguously, following the render
+/// clock's smoothed error one frame at a time: the clock reading in each render callback jitters
+/// by milliseconds, and jumping to every reading (as the first version did, 13 to 17 times a
+/// session) is a click each time. Only a real jump of the clock resynchronises. Times are in
+/// 100 ns units on the QPC clock, as WASAPI reports them. Thread-safe: one writer (the capture
+/// thread) and one reader (the render thread). Pure: no audio devices.
 /// </summary>
 public sealed class AudioDelayLine
 {
@@ -15,10 +18,13 @@ public sealed class AudioDelayLine
     private readonly float[] ring;
     private readonly long capacityFrames;
     private readonly long toleranceFrames;
+    private readonly long resyncFrames;
+    private readonly double correctionFrames;
     private long origin = long.MinValue;  // time of frame 0, 100 ns
     private long writeHead;               // next frame to write
     private long oldest;                  // oldest frame still in the ring
     private long readHead = long.MinValue;
+    private double readError;             // smoothed (where reading should be − where it is), frames
 
     /// <param name="sampleRate">Frames per second.</param>
     /// <param name="channels">Interleaved channels per frame.</param>
@@ -31,6 +37,8 @@ public sealed class AudioDelayLine
         capacityFrames = (long)((delay.TotalSeconds + 2) * sampleRate);
         ring = new float[capacityFrames * channels];
         toleranceFrames = sampleRate * 5 / 1000;
+        resyncFrames = sampleRate * 40 / 1000;
+        correctionFrames = sampleRate * 1.5 / 1000;
     }
 
     public int SampleRate { get; }
@@ -41,6 +49,18 @@ public sealed class AudioDelayLine
 
     /// <summary>How many times the read side jumped to stay on time; for diagnostics.</summary>
     public int Resyncs { get; private set; }
+
+    /// <summary>Frames skipped or repeated to follow the render clock smoothly; for diagnostics.</summary>
+    public int Corrections { get; private set; }
+
+    /// <summary>
+    /// Makes the next read start exactly where the clock says, in one jump: for a deliberate
+    /// change of timing (the lip-sync trim), which following a frame at a time would take seconds.
+    /// </summary>
+    public void Restart()
+    {
+        lock (gate) readHead = long.MinValue;
+    }
 
     /// <summary>Writes a packet captured at <paramref name="time100ns"/>.</summary>
     public void Write(ReadOnlySpan<float> samples, long time100ns)
@@ -88,10 +108,25 @@ public sealed class AudioDelayLine
             }
 
             long ideal = ToFrame(playTime100ns - Delay.Ticks);
-            if (readHead == long.MinValue || Math.Abs(ideal - readHead) > toleranceFrames)
+            if (readHead == long.MinValue || Math.Abs(ideal - readHead) > resyncFrames)
             {
                 if (readHead != long.MinValue) Resyncs++;
                 readHead = ideal;
+                readError = 0;
+            }
+            else
+            {
+                // Capture and playback share the device clock, so the error is reading jitter
+                // around a constant: follow its average by a frame per block (at most 0.2 % speed,
+                // inaudible) instead of jumping.
+                readError += (ideal - readHead - readError) * 0.1;
+                if (Math.Abs(readError) > correctionFrames)
+                {
+                    int step = Math.Sign(readError);
+                    readHead += step;   // skip a frame, or play one twice
+                    readError -= step;
+                    Corrections++;
+                }
             }
 
             for (int f = 0; f < frames; f++)

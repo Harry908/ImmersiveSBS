@@ -18,6 +18,7 @@ public sealed class CaptionLock
     private readonly int width, height;
     private readonly float[] mask;
     private readonly bool[] inBox;
+    private readonly float[] boxValues;
     private double target = double.NaN;
     private Rectangle candidate;
     private double candidateSeconds;
@@ -28,6 +29,7 @@ public sealed class CaptionLock
         this.height = height;
         mask = new float[width * height];
         inBox = new bool[width * height];
+        boxValues = new float[width * height];
     }
 
     /// <summary>Captions are looked for below this fraction of the height.</summary>
@@ -70,19 +72,19 @@ public sealed class CaptionLock
         if ((was == null) != (Found == null)) Changed?.Invoke(Found);
 
         Array.Clear(inBox);
-        if (Found is Rectangle box)
+        if (Found is Rectangle box && box.Width > 0 && box.Height > 0)
         {
             // In front of the nearest of what is behind it (its 90th percentile), at least at the
             // screen plane; smoothed so a caption does not pump with the scene.
-            var values = new List<float>(box.Width * box.Height);
+            int n = 0;
             for (int y = box.Top; y < box.Bottom; y++)
                 for (int x = box.Left; x < box.Right; x++)
                 {
-                    values.Add(nearness[y * width + x]);
+                    boxValues[n++] = nearness[y * width + x];
                     inBox[y * width + x] = true;
                 }
-            values.Sort();
-            double wanted = Math.Min(1, Math.Max(values[(int)(0.9 * (values.Count - 1))], screenPlane) + Margin);
+            float p90 = Selection.Nth(boxValues.AsSpan(0, n), (int)(0.9 * (n - 1)));
+            double wanted = Math.Min(1, Math.Max(p90, screenPlane) + Margin);
             target = double.IsNaN(target) ? wanted : target + (wanted - target) * (1 - Math.Exp(-dt / 0.3));
         }
         if (double.IsNaN(target)) return;

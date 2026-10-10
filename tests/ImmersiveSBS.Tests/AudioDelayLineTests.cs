@@ -89,6 +89,74 @@ public class AudioDelayLineTests
     }
 
     [Fact]
+    public void RenderClockJitterIsFollowedSmoothlyNotByJumps()
+    {
+        var line = new AudioDelayLine(Rate, Channels, TimeSpan.FromMilliseconds(500));
+
+        // Capture runs 0.6 s ahead; render callbacks every 10 ms read clocks jittering by ±8 ms.
+        var random = new Random(2);
+        var output = new float[480 * Channels];
+        float last = float.NaN;
+        int blocks = 0;
+        for (int i = 0; i < 600; i++)
+        {
+            line.Write(Packet(i * 480L, 480), TimeOf(i * 480L));
+            int j = i - 60;
+            if (j < 0) continue;
+            long jitter = random.Next(-8, 9) * Ms;
+            line.Read(output, TimeOf(j * 480L) + 500 * Ms + jitter);
+            blocks++;
+            for (int k = 0; k < 480; k++)
+            {
+                float v = output[k * Channels];
+                // Contiguous, but for a single frame skipped or repeated now and then.
+                if (!float.IsNaN(last)) Assert.InRange(v - last, 0, 2);
+                last = v;
+            }
+        }
+        Assert.Equal(0, line.Resyncs);
+        // And on time on average: within a few ms of where the clock says.
+        Assert.InRange(last - (blocks * 480 - 1), -4 * 48, 4 * 48);
+    }
+
+    [Fact]
+    public void ASteadyOffsetIsCaughtUpGradually()
+    {
+        var line = new AudioDelayLine(Rate, Channels, TimeSpan.FromMilliseconds(500));
+        var output = new float[480 * Channels];
+        float last = float.NaN;
+        int j = 0;
+        for (int i = 0; i < 2000; i++)
+        {
+            line.Write(Packet(i * 480L, 480), TimeOf(i * 480L));
+            j = i - 60;
+            if (j < 0) continue;
+            // After the first read the clock reads 20 ms later than the samples played: under the
+            // resync threshold, so reading catches up a frame at a time.
+            line.Read(output, TimeOf(j * 480L) + (j == 0 ? 500 : 520) * Ms);
+            if (!float.IsNaN(last)) Assert.InRange(output[0] - last, 1, 2);
+            last = output[^Channels];
+        }
+        Assert.Equal(0, line.Resyncs);
+        Assert.InRange(output[0] - (j * 480 + 20 * 48), -2 * 48, 2 * 48);
+    }
+
+    [Fact]
+    public void ARestartTakesANewTimingAtOnce()
+    {
+        // The lip-sync trim moved by 20 ms: under the resync threshold, but wanted now.
+        var line = new AudioDelayLine(Rate, Channels, TimeSpan.FromMilliseconds(100));
+        for (long f = 0; f < Rate; f += 480) line.Write(Packet(f, 480), TimeOf(f));
+
+        var output = new float[480 * Channels];
+        line.Read(output, TimeOf(9600) + 100 * Ms);
+        line.Restart();
+        line.Read(output, TimeOf(10080) + 80 * Ms);   // AudioDelay subtracts the trim from the play time
+        Assert.Equal(10080 - 20 * 48, output[0]);
+        Assert.Equal(0, line.Resyncs);
+    }
+
+    [Fact]
     public void ReadingFarOffTimeResynchronises()
     {
         var line = new AudioDelayLine(Rate, Channels, TimeSpan.FromMilliseconds(100));

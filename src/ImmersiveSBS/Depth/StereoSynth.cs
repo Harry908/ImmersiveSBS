@@ -299,6 +299,8 @@ public sealed class StereoSynth : IDisposable
     private Size depthSize;
     private Texture? nearA, nearB, eyes;
     private Size regionSize;
+    private uint[] gridValues = [];
+    private int gridCount, tensorCount;
 
     public StereoSynth(ID3D11Device device)
     {
@@ -332,33 +334,63 @@ public sealed class StereoSynth : IDisposable
     private ID3D11ComputeShader Compile(string entry) =>
         device.CreateComputeShader(Compiler.Compile(Hlsl, entry, "stereo.hlsl", "cs_5_0").Span);
 
-    /// <summary>Mean luma per 8×8 cell of the frame, 0..255; <paramref name="cells"/> gets the grid size.</summary>
-    public void ReadLumaGrid(ID3D11Texture2D source, byte[] destination, out Size cells)
+    // Read-backs are split in two: the work and a copy to a staging buffer are queued while the
+    // frame is built, and read after it is presented, when the GPU has long finished the copy.
+    // Reading at once made the render thread wait for the GPU twice a frame, in front of the
+    // present, and the GPU is shared with the depth model.
+
+    /// <summary>
+    /// Queues the mean luma per 8×8 cell of the frame for <see cref="ReadQueuedLumaGrid"/>;
+    /// returns the grid size.
+    /// </summary>
+    public Size QueueLumaGrid(ID3D11Texture2D source)
     {
         Size src = BindSource(source);
-        cells = new Size((src.Width + 7) / 8, (src.Height + 7) / 8);
-        int count = cells.Width * cells.Height;
-        if (destination.Length < count) throw new ArgumentException("Grid buffer too small.");
-
-        EnsureBuffer(ref grid, count, 4);
+        var cells = new Size((src.Width + 7) / 8, (src.Height + 7) / 8);
+        gridCount = cells.Width * cells.Height;
+        EnsureBuffer(ref grid, gridCount, 4);
         SetParams(Rectangle.Empty, Size.Empty, src, 0, 0, 0);
         Dispatch(lumaGrid, grid!.Uav, (cells.Width + 7) / 8, (cells.Height + 7) / 8);
-
-        var values = new uint[count];
-        grid.Read(context, MemoryMarshal.AsBytes(values.AsSpan()));
-        for (int i = 0; i < count; i++) destination[i] = (byte)Math.Min(values[i], 255u);
+        grid.QueueRead(context);
+        return cells;
     }
 
-    /// <summary>The model input for <paramref name="region"/>: planar RGB, ImageNet-normalised.</summary>
-    public void ReadModelInput(ID3D11Texture2D source, Rectangle region, Size modelSize, float[] destination)
+    /// <summary>The queued luma grid, 0..255; false when none is queued. Waits for the GPU if it is not done.</summary>
+    public bool ReadQueuedLumaGrid(byte[] destination)
+    {
+        if (grid is not { Pending: true }) return false;
+        if (destination.Length < gridCount)
+        {
+            grid.Discard();   // the caller started over meanwhile
+            return false;
+        }
+        if (gridValues.Length < gridCount) gridValues = new uint[gridCount];
+        grid.ReadQueued(context, MemoryMarshal.AsBytes(gridValues.AsSpan(0, gridCount)));
+        for (int i = 0; i < gridCount; i++) destination[i] = (byte)Math.Min(gridValues[i], 255u);
+        return true;
+    }
+
+    /// <summary>Queues the model input for <paramref name="region"/> (planar RGB, ImageNet-normalised).</summary>
+    public void QueueModelInput(ID3D11Texture2D source, Rectangle region, Size modelSize)
     {
         Size src = BindSource(source);
-        int count = 3 * modelSize.Width * modelSize.Height;
-        EnsureBuffer(ref tensor, count, 4);
+        tensorCount = 3 * modelSize.Width * modelSize.Height;
+        EnsureBuffer(ref tensor, tensorCount, 4);
         SetParams(region, modelSize, src, 0, 0, 0);
         Dispatch(preprocess, tensor!.Uav, (modelSize.Width + 7) / 8, (modelSize.Height + 7) / 8);
-        tensor.Read(context, MemoryMarshal.AsBytes(destination.AsSpan(0, count)));
+        tensor.QueueRead(context);
     }
+
+    /// <summary>The queued model input; false when none is queued. Waits for the GPU if it is not done.</summary>
+    public bool ReadQueuedModelInput(float[] destination)
+    {
+        if (tensor is not { Pending: true }) return false;
+        tensor.ReadQueued(context, MemoryMarshal.AsBytes(destination.AsSpan(0, tensorCount)));
+        return true;
+    }
+
+    /// <summary>The queued model input's length in floats.</summary>
+    public int QueuedModelInputLength => tensorCount;
 
     /// <summary>Uploads a post-processed nearness map (model resolution).</summary>
     public unsafe void UploadNearness(DepthFrame frame)
@@ -536,19 +568,24 @@ public sealed class StereoSynth : IDisposable
         foreach (var s in new[] { preprocess, lumaGrid, upsample, snap, dilate, splat, resolve, nativeSplit }) s.Dispose();
     }
 
-    /// <summary>A structured buffer with a UAV and a staging copy for reading back.</summary>
+    /// <summary>
+    /// A structured buffer with a UAV, and a staging copy for reading back made on the first read
+    /// (the splat's 16 MB key buffer is never read).
+    /// </summary>
     private sealed class GpuBuffer : IDisposable
     {
+        private readonly ID3D11Device device;
         private readonly ID3D11Buffer buffer;
-        private readonly ID3D11Buffer staging;
+        private readonly uint size;
+        private ID3D11Buffer? staging;
 
         public GpuBuffer(ID3D11Device device, int elements, int stride)
         {
+            this.device = device;
             Elements = elements;
-            uint size = (uint)(elements * stride);
+            size = (uint)(elements * stride);
             buffer = device.CreateBuffer(new BufferDescription(size, BindFlags.UnorderedAccess | BindFlags.ShaderResource,
                 ResourceUsage.Default, CpuAccessFlags.None, ResourceOptionFlags.BufferStructured, (uint)stride));
-            staging = device.CreateBuffer(new BufferDescription(size, BindFlags.None, ResourceUsage.Staging, CpuAccessFlags.Read));
             Uav = device.CreateUnorderedAccessView(buffer, new UnorderedAccessViewDescription
             {
                 Format = Format.Unknown,
@@ -561,19 +598,33 @@ public sealed class StereoSynth : IDisposable
 
         public ID3D11UnorderedAccessView Uav { get; }
 
-        /// <summary>Copies to staging and reads; waits for the GPU (small buffers only).</summary>
-        public unsafe void Read(ID3D11DeviceContext context, Span<byte> destination)
+        /// <summary>A copy queued by <see cref="QueueRead"/> waits to be read.</summary>
+        public bool Pending { get; private set; }
+
+        /// <summary>Queues a copy of the buffer as it will be after the work queued so far.</summary>
+        public void QueueRead(ID3D11DeviceContext context)
         {
+            staging ??= device.CreateBuffer(new BufferDescription(size, BindFlags.None, ResourceUsage.Staging, CpuAccessFlags.Read));
             context.CopyResource(staging, buffer);
-            MappedSubresource m = context.Map(staging, MapMode.Read);
+            Pending = true;
+        }
+
+        /// <summary>Forgets the queued copy.</summary>
+        public void Discard() => Pending = false;
+
+        /// <summary>Reads the queued copy, waiting for the GPU only if it has not made it yet.</summary>
+        public unsafe void ReadQueued(ID3D11DeviceContext context, Span<byte> destination)
+        {
+            MappedSubresource m = context.Map(staging!, MapMode.Read);
             new ReadOnlySpan<byte>((void*)m.DataPointer, destination.Length).CopyTo(destination);
-            context.Unmap(staging, 0);
+            context.Unmap(staging!, 0);
+            Pending = false;
         }
 
         public void Dispose()
         {
             Uav.Dispose();
-            staging.Dispose();
+            staging?.Dispose();
             buffer.Dispose();
         }
     }

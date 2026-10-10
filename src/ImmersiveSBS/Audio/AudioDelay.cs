@@ -33,6 +33,7 @@ public sealed class AudioDelay : IDisposable
     private float peak;
     private long statsStart = Stopwatch.GetTimestamp();
     private long elsewhereSince;
+    private long offsetTicks;
     private volatile bool needsRestart;
     private bool disposed;
 
@@ -62,8 +63,15 @@ public sealed class AudioDelay : IDisposable
 
     public TimeSpan Delay { get; }
 
-    /// <summary>Lip-sync trim: positive plays the sound later.</summary>
-    public TimeSpan Offset { get; set; }
+    /// <summary>Lip-sync trim: positive plays the sound later. A change applies at once (one jump).</summary>
+    public TimeSpan Offset
+    {
+        get => new(Interlocked.Read(ref offsetTicks));
+        set
+        {
+            if (Interlocked.Exchange(ref offsetTicks, value.Ticks) != value.Ticks) line.Restart();
+        }
+    }
 
     public int Resyncs => line.Resyncs;
 
@@ -192,7 +200,7 @@ public sealed class AudioDelay : IDisposable
               $"(volume {own.Volume:0.00}) on {own.Device}";
         Log.Write($"Audio: last {seconds:0} s: captured {capturedFrames / (double)rate:0.0} s of sound " +
                   $"({silentFrames / (double)rate:0.0} s silent, {level}, {loudPackets} unattenuated packets), " +
-                  $"played {Interlocked.Exchange(ref playedFrames, 0) / (double)rate:0.0} s on {player.DeviceFriendlyName}; {heard}; resyncs {line.Resyncs}.");
+                  $"played {Interlocked.Exchange(ref playedFrames, 0) / (double)rate:0.0} s on {player.DeviceFriendlyName}; {heard}; resyncs {line.Resyncs}, frame corrections {line.Corrections}.");
         capturedFrames = silentFrames = loudPackets = 0;
         peak = 0;
         statsStart = Stopwatch.GetTimestamp();

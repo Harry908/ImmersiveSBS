@@ -534,12 +534,47 @@ height per line and 1/5 in all, centred; the band must hold still for 0.3 s agai
 first appeared; "Depth: subtitles found at …" / "gone" in the log. Tests: 96 (busy lower
 picture, texture above a subtitle, a drifting band).
 
+## Buffer: no more freezes, and a bug and performance pass (2026-10-09)
+
+The user found the buffer unusable: poor sound, and constant pauses and lag. Their guess, a
+"transition between recordings", was close: there are no recordings, but both delay lines were
+being reset or jumped.
+- **Picture froze for the whole delay** whenever the found region changed by a pixel (the
+  player's controls appearing, the tracker refining its box): `SetRegion` emptied
+  `VideoDelayBuffer`, which then held its first frame until it covered the delay again. Each
+  held frame now keeps its own crop and is shown where it was; depth is smoothed only over
+  frames cut the same way.
+- **Sound restarted** whenever the region went missing for a moment (silence for the delay,
+  after the live sound jumped ahead): the controller now keeps the delayed sound and picture
+  running through a 5 s gap.
+- **Clicks**: `AudioDelayLine` resynchronised whenever the render callback's clock reading was
+  more than 5 ms off (13–17 times a session, each a jump). It now reads contiguously and follows
+  the smoothed error a frame at a time; only a jump over 40 ms resynchronises, and a lip-sync
+  trim change applies at once. The `Audio:` line shows the frame corrections.
+- **Render thread no longer waits for the GPU in front of a present.** The luma grid and the
+  model input (up to 3.8 MB of floats) were read back at once, twice a frame, between the swap
+  chain's wait and the present, on a GPU shared with the depth model. They are now queued while
+  the frame is built and read after the present (`AiStereo.CollectReadbacks`); the tracker
+  follows one frame later, which nobody sees.
+- **Large-object-heap churn:** the luma grid read allocated a 130 KB array per captured frame,
+  and `CaptionLock` a list the size of the caption box per depth frame (up to 250 KB): Gen 2
+  collections and hitches. Both reuse buffers now.
+- **Depth thread:** the depth range's percentiles sorted a quarter of the map (38k–79k values)
+  per depth frame, in series with the model; `CaptionLock` sorted its box. Both use quickselect
+  (`Depth/Selection`), linear and in place.
+- GPU buffers make their staging copy only when read back (the splat's key buffer, 16 MB at
+  1080p, never is).
+- `IsIconic` was imported from shcore.dll (it is in user32.dll), which would have thrown in
+  `StrayWindowGuard`.
+
+Tests: 110 (delay line jitter, catch-up and restart; held frames across a region change;
+quickselect against a sort).
+
 ### Next
 
-1. In the glasses: the theater (enter, exit, Play/Pause, cursor alignment), the buffer again
-   (sound on the right device; the new audio log during a pause), stretch, tuning panel; the
-   outline, captions and edge snapping (A/B in the tuning panel); compare the models, DA3
-   included. The user's saved tuning still has dilation 3 (Reset in the tuning panel gives 1).
+1. In the glasses: the buffer (sound quality, no freezes; the `Audio:` line), the theater (enter, exit, Play/Pause, cursor alignment), stretch, tuning
+   panel; the outline, captions and edge snapping (A/B in the tuning panel); compare the models,
+   DA3 included. The user's saved tuning still has dilation 3 (Reset in the tuning panel gives 1).
 2. DA3 in fp16 (2–3× faster) once its casts are fixed; Video Depth Anything with IOBinding.
 3. P6 packaging (installer with the driver, model download, README), or P3 once the hardware
    3D button test with the glasses removed from the desktop is done.

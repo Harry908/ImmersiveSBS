@@ -59,8 +59,8 @@ per file. Source files mix CRLF and LF line endings; keep each file's own.
   static-shape files `{stem}_{H}x{W}.onnx` (`DepthModel`).
 - **Buffer** (delayed picture and sound): the session reports a `DelayRegion`; the controller
   finds the process under it and starts `Audio/AudioDelay`; only once that runs is the session
-  told `AudioDelayed`, and `VideoDelayBuffer` then shows frames that late with depth averaged
-  over neighbours.
+  told `AudioDelayed`, and `VideoDelayBuffer` then shows frames that late (each with its own
+  crop) with depth averaged over neighbours.
 - **Theater**: the video fills both eyes; buttons exist only in the glasses, so the render
   thread publishes their desktop rectangles (`TheaterButtons`) and `TheaterInput`, a low-level
   mouse hook, swallows clicks on them.
@@ -77,6 +77,9 @@ per file. Source files mix CRLF and LF line endings; keep each file's own.
   `CreateBlendState` fails with E_INVALIDARG.
 - `DepthService.TryTake` swaps frames with the caller; frames from another model size must not
   be recycled.
+- Never reset a delay line on a passing change: emptying `VideoDelayBuffer` freezes the picture
+  for the whole delay, restarting the delayed sound silences it as long, and jumping the audio
+  read position is a click.
 
 ## Rules carried over from DesktopSbS
 
