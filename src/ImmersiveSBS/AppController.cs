@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
 using ImmersiveSBS.Audio;
+using ImmersiveSBS.Browser;
 using ImmersiveSBS.Capture;
 using ImmersiveSBS.Depth;
 using ImmersiveSBS.Displays;
@@ -99,6 +100,7 @@ public sealed class AppController : IDisposable
         displayMonitor.Changed += reason => Evaluate(reason, force: false);
         // A previous run that crashed while delaying sound left the app's sessions turned down.
         SessionAttenuator.RecoverAfterCrash();
+        StartBrowserLink();
         audioTimer.Tick += (_, _) =>
         {
             UpdateAudioDelay();
@@ -124,17 +126,66 @@ public sealed class AppController : IDisposable
     private long audioFailedAt;
     private long delayWantedAt = long.MinValue / 2;
 
+    private BrowserLink? browserLink;
+    private int browserCount;
+    /// <summary>The browser video under the found region, followed from tick to tick.</summary>
+    private BrowserVideo? browserVideo;
+    /// <summary>The browser whose pages play their sound late now, or null.</summary>
+    private BrowserConnection? browserDelaying;
+    /// <summary>Media (connection, id) the extension cannot delay; their sound is captured instead.</summary>
+    private readonly HashSet<(int Connection, string Id)> browserRefused = [];
+    private long browserLogAt;
+
+    /// <param name="Window">The browser's top-level window.</param>
+    /// <param name="Screen">Where the picture is on the desktop, px.</param>
+    private sealed record BrowserVideo(BrowserConnection Connection, BrowserMedia Media, IntPtr Window, Rectangle Screen);
+
     /// <summary>"Sound 1 s behind" while the delayed sound runs; null otherwise.</summary>
-    public string? AudioStatus => audioDelay == null ? null : $"sound {audioDelay.Delay.TotalSeconds:0.#} s behind";
+    public string? AudioStatus => browserDelaying != null
+        ? $"sound {Settings.BufferSeconds:0.#} s behind (in the browser)"
+        : audioDelay == null ? null : $"sound {audioDelay.Delay.TotalSeconds:0.#} s behind";
+
+    /// <summary>Where the extension is, to load it unpacked: copied next to the app.</summary>
+    public static string ExtensionFolder => Path.Combine(AppContext.BaseDirectory, "extension");
+
+    public bool BrowserConnected => browserLink is { Connections.Count: > 0 };
+
+    /// <summary>The browser extension's state, for the settings window.</summary>
+    public string BrowserStatus =>
+        browserLink == null ? "The browser extension cannot connect: another program uses its port (see the log)."
+        : browserLink.Connections.Count == 0 ? "Browser extension not connected. It delays a video's sound inside the page, at full quality."
+        : "Browser extension connected: " + string.Join(", ", browserLink.Connections.Select(c => c.ToString()))
+          + (browserDelaying != null ? "; the sound is delayed in the page." : ".");
+
+    private void StartBrowserLink()
+    {
+        var link = new BrowserLink();
+        if (!link.Start())
+        {
+            link.Dispose();
+            return;
+        }
+        browserLink = link;
+        link.Changed += () => dispatcher.BeginInvoke(() =>
+        {
+            if (browserLink == null || browserLink.Connections.Count == browserCount) return;
+            browserCount = browserLink.Connections.Count;
+            browserRefused.RemoveWhere(r => browserLink.Connections.All(c => c.Number != r.Connection));
+            Notify();
+        });
+    }
 
     /// <summary>
     /// Keeps the delayed sound in step with what the session asks for: while it reports a video
-    /// region to delay, the app under that region has its sound delayed, and only once that runs is
-    /// the session told to delay the picture too.
+    /// region to delay, that video's sound is played late, and only once it is does the session
+    /// delay the picture too. A browser with the extension delays the sound inside the page; any
+    /// other app (or media the page cannot delay) has its sound captured and played late here.
     /// </summary>
     private void UpdateAudioDelay()
     {
         Session? s = session;
+        UpdateBrowserVideo(s);
+
         bool on = s is { Windowed: false } && Settings.BufferSeconds > 0 && VirtualMonitor != null && !shuttingDown;
         Rectangle region = on ? s!.DelayRegion : Rectangle.Empty;
         long now = Environment.TickCount64;
@@ -142,17 +193,31 @@ public sealed class AppController : IDisposable
         {
             delayWantedAt = now;
         }
-        else if (on && audioDelay != null && now - delayWantedAt < DelayGraceMs)
+        else if (on && (audioDelay != null || browserDelaying != null) && now - delayWantedAt < DelayGraceMs)
         {
             return; // lost for a moment: everything runs on as it is
         }
         else
         {
             audioFailedProcess = 0;
+            StopBrowserDelay();
             StopAudioDelay();
             if (s != null) s.AudioDelayed = false;
             return;
         }
+
+        if (browserVideo is { } video && BrowserCanDelay(video))
+        {
+            StopAudioDelay();
+            double seconds = Math.Round(Settings.BufferSeconds + Settings.AudioOffsetMs / 1000.0, 3);
+            StartBrowserDelay(video.Connection, seconds);
+            // The picture waits until the page says this video's sound is that late (it is taken
+            // into the delay once it plays).
+            s!.AudioDelayed = Math.Abs(video.Media.Delay - seconds) < 0.002;
+            LogBrowserDelay(video);
+            return;
+        }
+        StopBrowserDelay();
 
         var center = new System.Drawing.Point(VirtualMonitor!.Bounds.X + region.X + region.Width / 2,
                                VirtualMonitor.Bounds.Y + region.Y + region.Height / 2);
@@ -186,7 +251,8 @@ public sealed class AppController : IDisposable
         try
         {
             AudioDelay started = await AudioDelay.StartAsync(process, delay);
-            if (shuttingDown)
+            // The page took over meanwhile: two delays would play the sound twice.
+            if (shuttingDown || browserDelaying != null)
             {
                 started.Dispose();
                 return;
@@ -215,6 +281,130 @@ public sealed class AppController : IDisposable
         audioDelay.Dispose();
         audioDelay = null;
         Notify();
+    }
+
+    /// <summary>
+    /// Follows the video the extension reports under the session's found region: the same element
+    /// from tick to tick while it stays on top in its window, else the one whose picture best
+    /// covers the region. The session gets its exact place; a seek clears the depth history.
+    /// </summary>
+    private void UpdateBrowserVideo(Session? s)
+    {
+        BrowserVideo? found = null;
+        Rectangle region = Rectangle.Empty;
+        if (browserLink is { Connections.Count: > 0 } link && s is { Windowed: false } && VirtualMonitor is { } vm && !shuttingDown)
+        {
+            region = s.VideoRegion;
+            if (!region.IsEmpty) region.Offset(vm.Bounds.Location);
+            if (browserVideo is { } previous) found = FollowBrowserVideo(link, previous, region);
+            if (found == null && !region.IsEmpty) found = FindBrowserVideo(link, region);
+        }
+
+        BrowserVideo? was = browserVideo;
+        if (found?.Connection != was?.Connection || found?.Media.Id != was?.Media.Id)
+        {
+            Log.Write(found == null
+                ? "Browser: no longer following a video in the browser."
+                : $"Browser: following a {found.Media.VideoWidth}×{found.Media.VideoHeight} video in {found.Connection}, " +
+                  $"at {found.Screen} on the desktop (found at {region}).");
+        }
+        else if (found != null && found.Media.Seeks != was!.Media.Seeks)
+        {
+            // A jump in the video: depth smoothed over the old frames would smear into the new.
+            depthService?.ResetHistory();
+        }
+        browserVideo = found;
+
+        if (s == null) return;
+        if (found == null || VirtualMonitor is not { } monitor)
+        {
+            s.BrowserVideo = null;
+            return;
+        }
+        Rectangle local = found.Screen;
+        local.Offset(-monitor.Bounds.X, -monitor.Bounds.Y);
+        s.BrowserVideo = new VideoHint(local, found.Media.Playing);
+    }
+
+    private static System.Drawing.Point Center(Rectangle r) => new(r.X + r.Width / 2, r.Y + r.Height / 2);
+
+    /// <summary>The followed video again, if it is still there, visible and on top where it was seen.</summary>
+    private static BrowserVideo? FollowBrowserVideo(BrowserLink link, BrowserVideo previous, Rectangle region)
+    {
+        if (!link.Connections.Contains(previous.Connection) || !Native.IsWindow(previous.Window) || Native.IsIconic(previous.Window))
+            return null;
+        BrowserMedia? media = previous.Connection.Media.FirstOrDefault(m => m.Id == previous.Media.Id);
+        if (media is not { Visible: true } || media.ScreenRect(Native.ClientBounds(previous.Window)) is not Rectangle screen) return null;
+        if (Native.RootWindowAt(Center(screen)) != previous.Window) return null;
+        // The tracker found something else: the user moved on to another video.
+        if (!region.IsEmpty && BrowserMedia.Overlap(screen, region) < 0.3) return null;
+        return previous with { Media = media, Screen = screen };
+    }
+
+    /// <summary>The reported video whose picture covers <paramref name="region"/> (desktop px) in the window there.</summary>
+    private static BrowserVideo? FindBrowserVideo(BrowserLink link, Rectangle region)
+    {
+        IntPtr window = Native.RootWindowAt(Center(region));
+        if (window == IntPtr.Zero) return null;
+        Rectangle client = Native.ClientBounds(window);
+        if (client.IsEmpty) return null;
+        var media = link.Connections.SelectMany(c => c.Media.Select(m => (c, m)));
+        return BrowserMedia.Match(media, client, region) is var (connection, m, screen)
+            ? new BrowserVideo(connection, m, window, screen)
+            : null;
+    }
+
+    /// <summary>
+    /// Whether the page can delay this video's sound and that of everything else audible in its
+    /// tab. Media it cannot delay (protected, from another site without CORS, audio not allowed to
+    /// start before a click) are remembered, so the choice does not flip back and forth.
+    /// </summary>
+    private bool BrowserCanDelay(BrowserVideo video)
+    {
+        foreach (BrowserMedia m in video.Connection.Media)
+        {
+            if (m.Tab != video.Media.Tab || (m.Id != video.Media.Id && !(m.Playing && m.Audible))) continue;
+            var key = (video.Connection.Number, m.Id);
+            if (!m.Delayable && browserRefused.Add(key))
+                Log.Write($"Browser: {video.Connection} cannot delay a {m.Kind}'s sound in the page ({m.Reason}); capturing the browser's sound instead.");
+            if (browserRefused.Contains(key)) return false;
+        }
+        return true;
+    }
+
+    private void StartBrowserDelay(BrowserConnection connection, double seconds)
+    {
+        if (browserDelaying != connection)
+        {
+            StopBrowserDelay();
+            browserDelaying = connection;
+            browserLogAt = 0;
+            Notify();
+        }
+        browserLink!.SetDelay(connection, seconds);
+    }
+
+    private void StopBrowserDelay()
+    {
+        if (browserDelaying == null) return;
+        browserLink?.SetDelay(browserDelaying, 0);
+        Log.Write($"Browser: {browserDelaying} plays the sound live again.");
+        browserDelaying = null;
+        if (session != null) session.AudioDelayed = false;
+        Notify();
+    }
+
+    /// <summary>Every 10 s while the page delays the sound: the evidence from a run in the glasses.</summary>
+    private void LogBrowserDelay(BrowserVideo video)
+    {
+        long now = Environment.TickCount64;
+        if (now - browserLogAt < 10000) return;
+        browserLogAt = now;
+        IReadOnlyList<BrowserMedia> media = video.Connection.Media;
+        int late = media.Count(m => m.Delay > 0);
+        Log.Write($"Audio: {video.Connection} plays the page's sound {video.Media.Delay:0.00#} s late " +
+                  $"(asked {video.Connection.RequestedDelay:0.00#} s; {late} of {media.Count} media elements delayed; " +
+                  $"video {(video.Media.Playing ? "playing" : "paused")}; Web Audio output latency {video.Media.Latency?.ToString() ?? "-"} ms).");
     }
 
     #endregion
@@ -343,7 +533,11 @@ public sealed class AppController : IDisposable
         {
             case TheaterAction.EnterTheater: SetTheater(true); break;
             case TheaterAction.ExitTheater: SetTheater(false); break;
-            case TheaterAction.PlayPause: Native.PressMediaPlayPause(); break;
+            case TheaterAction.PlayPause:
+                // The followed video itself; else the media key, which the browser gives to the video it chooses.
+                if (browserVideo is { } video) browserLink!.TogglePlay(video.Connection, video.Media.Id);
+                else Native.PressMediaPlayPause();
+                break;
             case TheaterAction.Settings: session?.ToggleTheaterPanel(); break;
             case TheaterAction.DepthLess: Execute(ShortcutCommand.LessDepth); break;
             case TheaterAction.DepthMore: Execute(ShortcutCommand.MoreDepth); break;
@@ -883,6 +1077,7 @@ public sealed class AppController : IDisposable
         tuningWindow?.Close();
         retryTimer.Stop();
         audioTimer.Stop();
+        StopBrowserDelay();
         StopAudioDelay();
         if (session != null)
         {
@@ -923,6 +1118,8 @@ public sealed class AppController : IDisposable
         keyboard?.Dispose();
         audioDelay?.Dispose();
         audioDelay = null;
+        browserLink?.Dispose();
+        browserLink = null;
         depthService?.Dispose();
         depthService = null;
         keyboard = null;

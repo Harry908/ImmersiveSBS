@@ -36,4 +36,9 @@
     <Resource Include="ImmersiveSBS.ico" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The browser extension, next to the app, for "Load unpacked" from the settings window. -->
+    <None Include="..\..\extension\**\*" LinkBase="extension" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

@@ -54,12 +54,14 @@ public sealed class Session
     private volatile DepthService? depth;
     private volatile int stereoVersion;
     private volatile bool audioDelayed;
+    private volatile VideoHint? browserVideo;
     private volatile bool theaterActive;
     private readonly TheaterUi theaterUi = new();
     private Rectangle monitorBounds;
     private long monitorBoundsTime;
     private readonly object delayLock = new();
     private Rectangle delayRegion;
+    private Rectangle videoRegion;
     private bool pickRequested;
     private Point? pickPoint;
     private readonly object boundsLock = new();
@@ -113,6 +115,23 @@ public sealed class Session
     private void SetDelayRegion(Rectangle r)
     {
         lock (delayLock) delayRegion = r;
+    }
+
+    /// <summary>
+    /// The video found on the virtual monitor (its px), or empty; the controller matches it with
+    /// what the browser extension reports. Any thread.
+    /// </summary>
+    public Rectangle VideoRegion
+    {
+        get { lock (delayLock) return videoRegion; }
+        private set { lock (delayLock) videoRegion = value; }
+    }
+
+    /// <summary>The video's exact place from the browser extension (virtual monitor px), or null. Any thread.</summary>
+    public VideoHint? BrowserVideo
+    {
+        get => browserVideo;
+        set => browserVideo = value;
     }
 
     /// <summary>
@@ -397,7 +416,7 @@ public sealed class Session
                 var eye = new Size(renderer.Width / 2, renderer.Height);
                 double scale = Math.Min((double)eye.Width / fd.Width, (double)eye.Height / fd.Height);
                 if (TakePick(out Point? pick)) ai.Pick(pick);
-                overlay = ai.Process(frame, update.Frame || late.Frame, stereo, Depth, eye, scale, AudioDelayed);
+                overlay = ai.Process(frame, update.Frame || late.Frame, stereo, Depth, eye, scale, AudioDelayed, BrowserVideo);
                 aiStatus = ai.Status;
                 Rectangle monitor = MonitorBounds();
                 ui = theaterUi.Build(overlay, ai.FoundRegion, stereo.Theater, monitor, eye, new Size((int)fd.Width, (int)fd.Height),
@@ -407,11 +426,13 @@ public sealed class Session
                     ? new Rectangle(o.Source.X + monitor.X, o.Source.Y + monitor.Y, o.Source.Width, o.Source.Height)
                     : Rectangle.Empty;
                 SetDelayRegion(ai.DelayRegion);
+                VideoRegion = ai.FoundRegion;
             }
             else
             {
                 aiStatus = stereo.Target == AiTarget.Off ? null : "AI 3D: works when the glasses are in 3D mode";
                 SetDelayRegion(Rectangle.Empty);
+                VideoRegion = Rectangle.Empty;
                 theaterUi.Hide();
                 TheaterActive = false;
                 TheaterDesktop = Rectangle.Empty;

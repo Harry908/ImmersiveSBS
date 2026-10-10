@@ -15,6 +15,8 @@ picture.
 - Requirements (planned): Windows 10 2004 or later (Windows 11 recommended), a DirectX 11 GPU;
   an NVIDIA RTX GPU for AI 3D.
 - Protected video (Netflix, Disney+, Prime and similar) is not supported.
+- Optional: the browser extension in [extension/](extension/) (Chrome, Edge) delays a video's
+  sound inside the page when the buffer is on, at full quality.
 
 ## Building
 

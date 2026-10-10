@@ -121,7 +121,21 @@ public partial class SettingsWindow : Window
         ModelIcon.Text = ready ? "" : "";   // CheckMark, Warning
         ModelIcon.SetResourceReference(TextBlock.ForegroundProperty, ready ? "AccentFillBrush" : "CautionBrush");
         MainDisplayWarning.Visibility = controller.VirtualMonitor is { IsPrimary: true } ? Visibility.Visible : Visibility.Collapsed;
+        BrowserText.Text = controller.BrowserStatus;
+        BrowserHelp.Visibility = controller.BrowserConnected ? Visibility.Collapsed : Visibility.Visible;
         StatsText.Text = controller.Session?.Stats?.ToString() ?? string.Empty;
+    }
+
+    private void OnOpenExtensionFolder(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{AppController.ExtensionFolder}\"") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Log.Write("Settings: could not open the extension folder: " + ex.Message);
+        }
     }
 
     private void OnSave(object sender, RoutedEventArgs e)

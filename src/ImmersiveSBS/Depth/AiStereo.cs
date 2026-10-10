@@ -39,6 +39,12 @@ public sealed record StereoSettings(AiTarget Target, double Strength, double Con
 }
 
 /// <summary>
+/// Where the video is, exactly, as the browser extension reports it (source px), and whether it
+/// plays. It stands in for the tracker's box, which shifts when the player's controls show.
+/// </summary>
+public sealed record VideoHint(Rectangle Region, bool Playing);
+
+/// <summary>
 /// Per-session driver of the video features on the render thread: finds the region, stretches
 /// it, recognises video that is already 3D, feeds the depth service and builds the eye images —
 /// live, or a fixed delay late from <see cref="VideoDelayBuffer"/> while the sound is delayed
@@ -131,8 +137,9 @@ public sealed class AiStereo : IDisposable
     /// <param name="eyeSize">One eye's size on the glasses, px.</param>
     /// <param name="scale">Eye px per source px (1 when the virtual monitor matches the eye).</param>
     /// <param name="audioDelayed">The app's sound is being played <see cref="StereoSettings.BufferSeconds"/> late.</param>
+    /// <param name="hint">The video's exact place from the browser extension, if it reports one.</param>
     public StereoOverlay? Process(ID3D11Texture2D source, bool newFrame, StereoSettings settings, DepthService? service,
-        Size eyeSize, double scale, bool audioDelayed)
+        Size eyeSize, double scale, bool audioDelayed, VideoHint? hint = null)
     {
         DelayRegion = Rectangle.Empty;
         FoundRegion = Rectangle.Empty;
@@ -148,9 +155,20 @@ public sealed class AiStereo : IDisposable
         bool track = settings.Target != AiTarget.WholeScreen;
         if (newFrame || grid.Length == 0) QueueGrid(source, sourceSize, track);
 
+        // The extension's box, when the tracker sees the same video (or nothing) and the user has
+        // not picked one: exact, and steady while the player's controls come and go.
+        Rectangle exact = Rectangle.Empty;
+        if (track && hint is { } h && tracker?.Locked != true)
+        {
+            Rectangle r = Rectangle.Intersect(h.Region, new Rectangle(Point.Empty, sourceSize));
+            bool agrees = tracker is not { State: not RegionState.None } || Browser.BrowserMedia.Overlap(r, tracker.Region) >= 0.5;
+            if (r.Width >= 16 && r.Height >= 16 && agrees) exact = r;
+        }
+
         // The theater keeps the area it was entered on. Following the tracker there made it jump
         // or drop back to the desktop whenever the player's controls appeared or the video paused.
         if (!settings.Theater) theaterRegion = Rectangle.Empty;
+        else if (theaterRegion.IsEmpty && track && !exact.IsEmpty) theaterRegion = exact;
         else if (theaterRegion.IsEmpty && track && tracker is { State: not RegionState.None }) theaterRegion = tracker.Region;
         bool theaterLocked = settings.Theater && !theaterRegion.IsEmpty;
 
@@ -164,6 +182,10 @@ public sealed class AiStereo : IDisposable
         {
             target = theaterRegion;
         }
+        else if (!exact.IsEmpty)
+        {
+            target = exact;
+        }
         else if (tracker == null || tracker.State == RegionState.None)
         {
             Status = (settings.Target == AiTarget.Off ? "Stretch" : "AI 3D") + ": looking for a playing video";
@@ -176,10 +198,12 @@ public sealed class AiStereo : IDisposable
         }
         SetRegion(target, service);
         FoundRegion = region;
-        // In the theater every new frame counts (the tracker may be watching something else).
-        bool regionMoving = !track || theaterLocked || tracker!.State == RegionState.Tracking;
+        // In the theater every new frame counts (the tracker may be watching something else); a
+        // video the browser says is playing counts too, even in a still shot.
+        bool regionMoving = !track || theaterLocked || tracker?.State == RegionState.Tracking || (!exact.IsEmpty && hint!.Playing);
         Rectangle drawn = Stretched(region, settings.Stretch);
-        string stretch = (tracker?.Locked == true ? ", locked" : "") + (settings.Stretches ? $", stretched ×{settings.Stretch:0.##}" : "");
+        string stretch = (tracker?.Locked == true ? ", locked" : "") + (!exact.IsEmpty && !theaterLocked ? ", exact from the browser" : "")
+                         + (settings.Stretches ? $", stretched ×{settings.Stretch:0.##}" : "");
 
         // Nothing to draw: only finding the video, to offer the theater button.
         if (settings.Target == AiTarget.Off && !settings.Stretches && !settings.Theater)

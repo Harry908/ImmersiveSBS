@@ -252,6 +252,32 @@ internal static unsafe partial class Native
     [LibraryImport("user32.dll", EntryPoint = "WindowFromPoint")]
     private static partial IntPtr WindowFromPointNative(POINT point);
 
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool ClientToScreen(IntPtr hwnd, ref POINT point);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool IsWindow(IntPtr hwnd);
+
+    /// <summary>The top-level window at a desktop point; zero for none.</summary>
+    public static IntPtr RootWindowAt(System.Drawing.Point point)
+    {
+        IntPtr hwnd = WindowFromPointNative(new POINT { X = point.X, Y = point.Y });
+        if (hwnd == IntPtr.Zero) return IntPtr.Zero;
+        IntPtr root = GetAncestor(hwnd, GA_ROOT);
+        return root != IntPtr.Zero ? root : hwnd;
+    }
+
+    /// <summary>A window's client area in desktop px; empty when it is gone.</summary>
+    public static System.Drawing.Rectangle ClientBounds(IntPtr hwnd)
+    {
+        if (!GetClientRect(hwnd, out RECT r)) return System.Drawing.Rectangle.Empty;
+        var origin = new POINT();
+        if (!ClientToScreen(hwnd, ref origin)) return System.Drawing.Rectangle.Empty;
+        return new System.Drawing.Rectangle(origin.X, origin.Y, r.Right - r.Left, r.Bottom - r.Top);
+    }
+
     /// <summary>The process owning the top-level window at a desktop point; 0 for none.</summary>
     public static uint ProcessAt(System.Drawing.Point point)
     {

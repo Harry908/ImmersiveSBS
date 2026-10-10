@@ -570,9 +570,44 @@ being reset or jumped.
 Tests: 110 (delay line jitter, catch-up and restart; held frames across a region change;
 quickselect against a sort).
 
+## Browser extension for the buffer (2026-10-09, branch `browser-extension`)
+
+- **Browser extension** (`extension/`, Chrome and Edge, MV3): the page script routes every
+  video and audio element through Web Audio, element → `DelayNode` → output, when the app asks.
+  The sound never leaves the browser, so there is no capture, no turning down, no boost and no
+  clock to follow, and a pause or seek stays in step by itself. The app runs a WebSocket server
+  on 127.0.0.1:47391 (`Browser/BrowserLink`) that accepts only the extension's origin (its ID,
+  `dopaoaefmhhmpbdgpnkgpkjhbndebmnl`, is fixed by the public key in the manifest; the private
+  key is not needed for an unpacked extension and is not kept).
+- It also reports where each video's picture is (CSS px in the top viewport, through nested
+  frames, inside the element's letterbox) and the app places it on the desktop: Chromium puts
+  the page at the bottom-left of its client area, so the viewport's size × devicePixelRatio
+  places it. That exact box replaces the tracker's while the two agree, so the region no longer
+  moves with the player's controls; seeks clear the depth history; the theater's Play/Pause
+  plays or pauses that very element.
+- **Fallback**: media the page cannot delay (DRM, another origin without CORS, or audio not yet
+  allowed to start before a click) are reported, remembered, and their sound goes through
+  process loopback as before. Other apps use loopback too. A loopback start that finishes after
+  the page took over is dropped.
+- Pages measure and report nothing while the app is not connected, and walk shadow roots every
+  30 s then (5 s while connected; only shown pages). An element removed from the page while
+  delayed is played live again first.
+- Install: Settings → Buffer → "Open extension folder" (copied next to the exe), then
+  edge://extensions or chrome://extensions → Developer mode → Load unpacked.
+
+Not yet seen in the glasses or in a browser. Open questions for the first run: the page's
+volume control and mute with the sound in Web Audio (expected to keep working, to confirm);
+the lip sync (Web Audio adds its own output latency, in the `Audio:` line; the sound offset
+trims it); the exact box on a normal (not maximised) window, where the client area's borders
+could shift it a few px (both boxes are in the log).
+
+Tests: 119 (the link's handshake, origin check and messages; placing and matching a page's
+video).
+
 ### Next
 
-1. In the glasses: the buffer (sound quality, no freezes; the `Audio:` line), the theater (enter, exit, Play/Pause, cursor alignment), stretch, tuning
+1. In the glasses: the buffer with the extension (sound quality, no freezes; the `Audio:` and
+   `Browser:` lines), the theater (enter, exit, Play/Pause, cursor alignment), stretch, tuning
    panel; the outline, captions and edge snapping (A/B in the tuning panel); compare the models,
    DA3 included. The user's saved tuning still has dilation 3 (Reset in the tuning panel gives 1).
 2. DA3 in fp16 (2–3× faster) once its casts are fixed; Video Depth Anything with IOBinding.

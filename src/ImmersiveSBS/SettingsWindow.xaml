@@ -170,7 +170,13 @@
                             <ComboBoxItem Content="2 s" Tag="2"/>
                         </ComboBox>
                         <TextBlock Style="{StaticResource CaptionText}" Margin="0 4 0 0"
-                                   Text="Shows the video this late and plays its app's sound just as late, for steadier depth. Only while AI 3D follows a video; the rest of the desktop stays live. Not for calls or live streams."/>
+                                   Text="Shows the video this late and plays its sound just as late, for steadier depth. Only while AI 3D follows a video; the rest of the desktop stays live. Not for calls or live streams. In Chrome or Edge, the ImmersiveSBS extension delays the sound inside the page at full quality; otherwise the app's sound is captured and played late."/>
+                        <TextBlock x:Name="BrowserText" Style="{StaticResource CaptionText}" Margin="0 8 0 0"/>
+                        <StackPanel x:Name="BrowserHelp" Margin="0 4 0 0">
+                            <TextBlock Style="{StaticResource CaptionText}"
+                                       Text="To add it: open edge://extensions or chrome://extensions, turn on Developer mode, choose Load unpacked and pick the extension folder."/>
+                            <Button Content="Open extension folder" HorizontalAlignment="Left" Margin="0 6 0 0" Padding="12 4" Click="OnOpenExtensionFolder"/>
+                        </StackPanel>
                         <TextBlock Text="Sound offset" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
                         <ComboBox x:Name="AudioOffsetBox">
                             <ComboBoxItem Content="Sound 80 ms earlier" Tag="-80"/>

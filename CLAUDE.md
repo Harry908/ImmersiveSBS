@@ -58,9 +58,13 @@ per file. Source files mix CRLF and LF line endings; keep each file's own.
   (`DepthPostProcessor`); `StereoSynth` builds both eyes with compute shaders. Models are
   static-shape files `{stem}_{H}x{W}.onnx` (`DepthModel`).
 - **Buffer** (delayed picture and sound): the session reports a `DelayRegion`; the controller
-  finds the process under it and starts `Audio/AudioDelay`; only once that runs is the session
-  told `AudioDelayed`, and `VideoDelayBuffer` then shows frames that late (each with its own
-  crop) with depth averaged over neighbours.
+  delays that video's sound and only once it is late tells the session `AudioDelayed`, and
+  `VideoDelayBuffer` then shows frames that late (each with its own crop) with depth averaged
+  over neighbours. In Chrome/Edge with the extension (`extension/`, talking to
+  `Browser/BrowserLink` over a WebSocket on 127.0.0.1:47391) the page delays the sound itself
+  through Web Audio; otherwise `Audio/AudioDelay` captures the app's process tree and plays it
+  late. The extension also reports each video's exact place, which the controller matches with
+  the session's `VideoRegion` and hands back as `BrowserVideo` (it replaces the tracker's box).
 - **Theater**: the video fills both eyes; buttons exist only in the glasses, so the render
   thread publishes their desktop rectangles (`TheaterButtons`) and `TheaterInput`, a low-level
   mouse hook, swallows clicks on them.
@@ -80,6 +84,9 @@ per file. Source files mix CRLF and LF line endings; keep each file's own.
 - Never reset a delay line on a passing change: emptying `VideoDelayBuffer` freezes the picture
   for the whole delay, restarting the delayed sound silences it as long, and jumping the audio
   read position is a click.
+- `createMediaElementSource` reroutes an element for good, and through a suspended
+  `AudioContext` it goes silent: the extension attaches only playing elements, only once its
+  context runs, and never cross-origin or protected media (Web Audio gets silence from them).
 
 ## Rules carried over from DesktopSbS
 
