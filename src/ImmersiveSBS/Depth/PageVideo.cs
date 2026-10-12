@@ -4,7 +4,7 @@ using System.Drawing;
 namespace ImmersiveSBS.Depth;
 
 /// <summary>
-/// What the page draws over the followed video, in model px (improvement-plan.md §7.4).
+/// What the theater's player draws over the video, in model px (improvement-plan.md §7.4).
 /// </summary>
 /// <param name="Overlays">Player controls, titles, logos: held at the screen plane.</param>
 /// <param name="Captions">The page's captions: these replace the subtitle detection while there are any.</param>
@@ -37,9 +37,9 @@ public sealed record PageBoxes(IReadOnlyList<Rectangle> Overlays, IReadOnlyList<
 }
 
 /// <summary>
-/// The followed video as its page reports it with the extension's protocol 2
-/// (improvement-plan.md §5): each presented frame (its counter, its time in the video, when it
-/// was shown, already on the app's clock), and whether it is paused or seeking. The browser link
+/// The theater's video as its player reports it (improvement-plan.md §5): each frame it draws
+/// (its counter, its time in the video, when it is shown, already on the app's clock), and
+/// whether it is paused or seeking. The browser link
 /// writes it as messages arrive, the render thread reads it every frame: frame events come 24–60
 /// times a second and must not wait for the controller's tick. Thread-safe.
 /// </summary>
@@ -97,47 +97,6 @@ public sealed class PageVideo
             this.seeks = seeks;
             lastMessage = Stopwatch.GetTimestamp();
         }
-    }
-
-    /// <summary>
-    /// Records where the video is, its length (NaN while unknown or live) and whether it is muted:
-    /// for the theater's controls (extension 1.2.3; older ones send none).
-    /// </summary>
-    public void SetPosition(double time, double duration, bool muted)
-    {
-        lock (gate)
-        {
-            stateTime = time;
-            this.duration = duration;
-            this.muted = muted;
-        }
-    }
-
-    private double stateTime = double.NaN, duration = double.NaN;
-    private bool muted;
-
-    /// <summary>Where the video is, seconds: its newest frame's time while it plays, else the last state's; NaN while unknown.</summary>
-    public double Time
-    {
-        get
-        {
-            lock (gate)
-            {
-                if (!paused && count > 0) return frames[(head + Ring - 1) % Ring].MediaTime;
-                return stateTime;
-            }
-        }
-    }
-
-    /// <summary>The video's length, seconds; NaN while unknown, or for a live stream.</summary>
-    public double Duration
-    {
-        get { lock (gate) return duration; }
-    }
-
-    public bool Muted
-    {
-        get { lock (gate) return muted; }
     }
 
     /// <summary>The page's clock sync: at most this far off, ms (half the best round trip).</summary>

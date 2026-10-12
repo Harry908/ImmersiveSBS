@@ -102,10 +102,11 @@
                                    Text="Turns 2D video into real 3D with a depth model, while the glasses are in 3D mode. Needs an NVIDIA RTX GPU."/>
                         <TextBlock Text="Convert" Style="{StaticResource FieldLabel}"/>
                         <ComboBox x:Name="AiTargetBox">
-                            <ComboBoxItem Content="Off"/>
-                            <ComboBoxItem Content="The browser video only (needs the extension)"/>
+                            <ComboBoxItem Content="Off: browser video in the 3D theater only"/>
                             <ComboBoxItem Content="The whole screen (text shimmers a little)"/>
                         </ComboBox>
+                        <TextBlock Style="{StaticResource CaptionText}" Margin="0 4 0 0"
+                                   Text="Browser video is converted in the 3D theater: the button the extension shows over a video while the glasses are in 3D mode."/>
                         <TextBlock Text="Depth model" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
                         <ComboBox x:Name="DepthTierBox">
                             <ComboBoxItem Content="Depth Anything V2 Small (fastest)"/>
@@ -132,13 +133,14 @@
                             <ComboBoxItem Content="Half in front, half behind" Tag="0.5"/>
                             <ComboBoxItem Content="More in front" Tag="0.65"/>
                         </ComboBox>
-                        <TextBlock Text="Video that is already 3D" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
+                        <TextBlock Text="The video is" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
                         <ComboBox x:Name="Native3DBox">
-                            <ComboBoxItem Content="Detect side-by-side and top-bottom, show as is"/>
-                            <ComboBoxItem Content="Always convert with depth"/>
-                            <ComboBoxItem Content="Always side-by-side"/>
-                            <ComboBoxItem Content="Always top-bottom"/>
+                            <ComboBoxItem Content="2D: convert with depth"/>
+                            <ComboBoxItem Content="Side-by-side 3D: show as is"/>
+                            <ComboBoxItem Content="Top-bottom 3D: show as is"/>
                         </ComboBox>
+                        <TextBlock Style="{StaticResource CaptionText}" Margin="0 4 0 0"
+                                   Text="The theater's 3D panel switches it too."/>
                         <TextBlock x:Name="ModelsText" Style="{StaticResource CaptionText}" Margin="0 12 0 0"/>
                     </StackPanel>
                 </Border>
@@ -147,7 +149,7 @@
                     <StackPanel>
                         <TextBlock Text="Video" Style="{StaticResource SectionText}"/>
                         <CheckBox x:Name="OfferTheaterBox" Margin="0 0 0 16"
-                                  Content="Show a &quot;3D theater&quot; button over a video (fills the glasses with it, always in 3D); with the browser extension, only over the videos it reports"/>
+                                  Content="Show a &quot;3D theater&quot; button over browser videos (the extension's full-screen player, always in 3D) while the glasses are in 3D mode"/>
                         <TextBlock Text="Stretch" Style="{StaticResource FieldLabel}"/>
                         <ComboBox x:Name="StretchBox">
                             <ComboBoxItem Content="None" Tag="1.0"/>
@@ -158,21 +160,17 @@
                             <ComboBoxItem Content="×1.5" Tag="1.5"/>
                         </ComboBox>
                         <TextBlock Style="{StaticResource CaptionText}" Margin="0 4 0 0"
-                                   Text="Widens the browser video around its centre, for content in the wrong aspect ratio. Works with AI 3D off too; needs the extension."/>
+                                   Text="Widens the theater's picture, for content in the wrong aspect ratio; its 3D panel changes it too."/>
                         <TextBlock Text="Timing" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
                         <ComboBox x:Name="TimingBox"/>
                         <TextBlock Style="{StaticResource CaptionText}" Margin="0 4 0 0"
-                                   Text="Live shows the newest picture with the newest depth; with a slow model, moving edges tear. Matched shows the video just late enough (typically 50–250 ms) that every frame has its own depth. A buffer shows it seconds late, for the steadiest depth. Delays apply only to the video AI 3D follows; the rest of the desktop stays live. Not for calls or live streams. The sound is delayed with the picture only inside the page, by the ImmersiveSBS extension in Chrome or Edge: without it there is no buffer, and matched timing stays within 90 ms with the sound live."/>
+                                   Text="Live shows the newest picture with the newest depth; with a slow model, moving edges tear. Matched shows the video just late enough (typically 50–250 ms) that every frame has its own depth. A buffer shows it seconds late, for the steadiest depth. Delays apply only to the video AI 3D follows; the rest of the desktop stays live. Not for calls or live streams. The sound is delayed with the picture inside the page, by the ImmersiveSBS extension; for protected or cross-site media it cannot be, and then there is no buffer and matched timing stays within 90 ms with the sound live."/>
                         <TextBlock x:Name="BrowserText" Style="{StaticResource CaptionText}" Margin="0 8 0 0"/>
                         <StackPanel x:Name="BrowserHelp" Margin="0 4 0 0">
                             <TextBlock Style="{StaticResource CaptionText}"
                                        Text="To add it: open edge://extensions or chrome://extensions, turn on Developer mode, choose Load unpacked and pick the extension folder."/>
                             <Button Content="Open extension folder" HorizontalAlignment="Left" Margin="0 6 0 0" Padding="12 4" Click="OnOpenExtensionFolder"/>
                         </StackPanel>
-                        <CheckBox x:Name="UsePageDataBox" Margin="0 8 0 0"
-                                  Content="Use what the extension tells about the playback (frames, pause, captions and controls)"/>
-                        <TextBlock Style="{StaticResource CaptionText}" Margin="0 4 0 0"
-                                   Text="The video's place is always used: the extension is how the video is found. Turn off if a page reports its playback wrongly; the extension still delays the sound."/>
                         <TextBlock Text="Sound offset (with the extension's delayed sound)" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
                         <ComboBox x:Name="AudioOffsetBox">
                             <ComboBoxItem Content="Sound 80 ms earlier" Tag="-80"/>

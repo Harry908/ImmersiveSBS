@@ -64,7 +64,7 @@ public partial class SettingsWindow : Window
         StartWithWindowsBox.IsChecked = AppSettings.StartWithWindows;
         BuildShortcutRows(s);
 
-        AiTargetBox.SelectedIndex = (int)s.Ai3D;
+        AiTargetBox.SelectedIndex = s.Ai3D == AiTarget.WholeScreen ? 1 : 0;
         DepthTierBox.SelectedIndex = (int)s.DepthTier;
         DepthPresetBox.SelectedIndex = (int)s.DepthPreset;
         Native3DBox.SelectedIndex = (int)s.Native3D;
@@ -75,7 +75,6 @@ public partial class SettingsWindow : Window
         for (int i = 0; i < AppController.TimingChoices.Length; i++) TimingBox.Items.Add(new ComboBoxItem());
         UpdateTimingChoices();
         TimingBox.SelectedIndex = AppController.TimingIndex(s);
-        UsePageDataBox.IsChecked = s.UsePageData;
         SelectClosest(AudioOffsetBox, s.AudioOffsetMs);
         ModelsText.Text = $"Model files: {DepthModel.ModelsDirectory}. The first use of a model on this PC prepares it for the GPU (about 20 s).";
 
@@ -186,9 +185,7 @@ public partial class SettingsWindow : Window
         settings.ShowInWindowWhenNotOnGlasses = ShowInWindowBox.IsChecked == true;
         settings.MoveWindowsOffVirtualMonitorOnExit = EvacuateBox.IsChecked == true;
         settings.Shortcuts = shortcuts;
-        var target = (AiTarget)Math.Max(0, AiTargetBox.SelectedIndex);
-        if (target != AiTarget.Off) settings.Ai3DLastTarget = target;
-        settings.Ai3D = target;
+        settings.Ai3D = AiTargetBox.SelectedIndex == 1 ? AiTarget.WholeScreen : AiTarget.Off;
         settings.DepthTier = (DepthTier)Math.Max(0, DepthTierBox.SelectedIndex);
         settings.DepthPreset = (DepthPreset)Math.Max(0, DepthPresetBox.SelectedIndex);
         settings.Native3D = (Native3DMode)Math.Max(0, Native3DBox.SelectedIndex);
@@ -197,7 +194,6 @@ public partial class SettingsWindow : Window
         if (StretchBox.SelectedItem is ComboBoxItem stretch) settings.VideoStretch = TagValue(stretch);
         settings.OfferTheater = OfferTheaterBox.IsChecked == true;
         if (TimingBox.SelectedIndex >= 0) AppController.SetTiming(settings, TimingBox.SelectedIndex);
-        settings.UsePageData = UsePageDataBox.IsChecked == true;
         if (AudioOffsetBox.SelectedItem is ComboBoxItem offset) settings.AudioOffsetMs = (int)TagValue(offset);
 
         try

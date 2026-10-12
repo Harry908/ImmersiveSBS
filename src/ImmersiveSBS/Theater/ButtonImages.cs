@@ -28,133 +28,15 @@ public enum BadgeKind
 }
 
 /// <summary>
-/// The on-screen buttons' pictures: a dark rounded pill with a Segoe Fluent icon and a label,
-/// and a brighter variant for hover. Drawn once with System.Drawing at the button size. Also the
-/// model badges, the same pill with a spinner (<see cref="SpinnerFrames"/> pre-drawn turns) or an icon.
+/// The model badges' pictures: a dark rounded pill with a spinner (<see cref="SpinnerFrames"/>
+/// pre-drawn turns) or a Segoe Fluent icon, and a label. Drawn once with System.Drawing.
 /// </summary>
 public static class ButtonImages
 {
     /// <summary>Spinner pictures per turn; one turn a second.</summary>
     public const int SpinnerFrames = 12;
 
-    private static readonly Dictionary<(TheaterAction, bool), UiImage> Cache = [];
     private static readonly Dictionary<(BadgeKind, int), UiImage> Badges = [];
-    private static readonly Dictionary<(string, int, bool, bool), UiImage> Labels = [];
-
-    public static UiImage For(TheaterAction action, bool hover)
-    {
-        lock (Cache)
-        {
-            if (!Cache.TryGetValue((action, hover), out UiImage? image))
-                Cache[(action, hover)] = image = Draw(action, hover);
-            return image;
-        }
-    }
-
-    /// <summary>
-    /// A pill of <paramref name="width"/> × the button height with <paramref name="text"/>: the
-    /// panel's value labels (<paramref name="centred"/> false) and its − and + buttons. Cached by
-    /// text, so only the values actually shown are drawn.
-    /// </summary>
-    public static UiImage Label(string text, int width, bool hover, bool centred)
-    {
-        lock (Labels)
-        {
-            if (!Labels.TryGetValue((text, width, hover, centred), out UiImage? image))
-            {
-                if (Labels.Count > 512) Labels.Clear();
-                Labels[(text, width, hover, centred)] = image = DrawLabel(text, width, hover, centred);
-            }
-            return image;
-        }
-    }
-
-    private static UiImage DrawLabel(string text, int width, bool hover, bool centred)
-    {
-        var size = new Size(width, TheaterGeometry.ButtonSize.Height);
-        using var bitmap = new Bitmap(size.Width, size.Height, PixelFormat.Format32bppArgb);
-        using (Graphics g = Graphics.FromImage(bitmap))
-        {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-            g.Clear(Color.Transparent);
-            DrawPill(g, size, hover);
-            using var font = new Font("Segoe UI", centred ? 28 : 20, FontStyle.Regular, GraphicsUnit.Pixel);
-            using var white = new SolidBrush(Color.White);
-            var format = new StringFormat
-            {
-                LineAlignment = StringAlignment.Center,
-                Alignment = centred ? StringAlignment.Center : StringAlignment.Near,
-                Trimming = StringTrimming.EllipsisCharacter,
-                FormatFlags = StringFormatFlags.NoWrap,
-            };
-            var area = centred ? new RectangleF(0, -2, size.Width, size.Height) : new RectangleF(22, 0, size.Width - 40, size.Height);
-            g.DrawString(text, font, white, area, format);
-        }
-        return ToImage(bitmap);
-    }
-
-    private static readonly Dictionary<(string, bool), UiImage> Icons = [];
-    private static readonly Dictionary<int, UiImage> Solids = [];
-
-    /// <summary>Segoe icons of the theater's bottom bar.</summary>
-    public const string PlayGlyph = "", PauseGlyph = "", BackGlyph = "", ForwardGlyph = "",
-        VolumeGlyph = "", MutedGlyph = "";
-
-    /// <summary>A round button of <see cref="TheaterGeometry.IconSize"/> with one icon.</summary>
-    public static UiImage Icon(string glyph, bool hover)
-    {
-        lock (Icons)
-        {
-            if (!Icons.TryGetValue((glyph, hover), out UiImage? image))
-            {
-                Size size = TheaterGeometry.IconSize;
-                using var bitmap = new Bitmap(size.Width, size.Height, PixelFormat.Format32bppArgb);
-                using (Graphics g = Graphics.FromImage(bitmap))
-                {
-                    g.SmoothingMode = SmoothingMode.AntiAlias;
-                    g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                    g.Clear(Color.Transparent);
-                    DrawPill(g, size, hover);
-                    using var icon = new Font(IconFont(), 22, GraphicsUnit.Pixel);
-                    using var white = new SolidBrush(Color.White);
-                    var centre = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                    g.DrawString(glyph, icon, white, new RectangleF(0, 1, size.Width, size.Height), centre);
-                }
-                Icons[(glyph, hover)] = image = ToImage(bitmap);
-            }
-            return image;
-        }
-    }
-
-    /// <summary>One pixel of a colour, which the renderer stretches over a rectangle (the seek bar, the backdrop).</summary>
-    public static UiImage Solid(Color colour)
-    {
-        lock (Solids)
-        {
-            if (!Solids.TryGetValue(colour.ToArgb(), out UiImage? image))
-                Solids[colour.ToArgb()] = image = new UiImage([colour.B, colour.G, colour.R, colour.A], 1, 1);
-            return image;
-        }
-    }
-
-    private static UiImage? knob;
-
-    /// <summary>The seek bar's round handle.</summary>
-    public static UiImage Knob()
-    {
-        if (knob != null) return knob;
-        const int d = 22;
-        using var bitmap = new Bitmap(d, d, PixelFormat.Format32bppArgb);
-        using (Graphics g = Graphics.FromImage(bitmap))
-        {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.Clear(Color.Transparent);
-            using var white = new SolidBrush(Color.White);
-            g.FillEllipse(white, 1, 1, d - 2, d - 2);
-        }
-        return knob = ToImage(bitmap);
-    }
 
     /// <summary>The spinner picture due now.</summary>
     public static int SpinnerFrame() =>
@@ -182,7 +64,7 @@ public static class ButtonImages
             BadgeKind.Failed => "3D unavailable: see Settings",
             _ => "3D model missing: see Settings",
         };
-        int height = TheaterGeometry.ButtonSize.Height;
+        int height = TheaterGeometry.BadgeHeight;
         using var text = new Font("Segoe UI", 20, FontStyle.Regular, GraphicsUnit.Pixel);
         int width;
         using (var measure = new Bitmap(1, 1))
@@ -195,7 +77,7 @@ public static class ButtonImages
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
             g.Clear(Color.Transparent);
-            DrawPill(g, new Size(width, height), hover: false);
+            DrawPill(g, new Size(width, height));
 
             using var white = new SolidBrush(Color.White);
             var center = new StringFormat { LineAlignment = StringAlignment.Center };
@@ -212,8 +94,8 @@ public static class ButtonImages
             else
             {
                 (string glyph, Color colour) = kind == BadgeKind.Ready
-                    ? ("\uE73E", accent)                          // CheckMark
-                    : ("\uE7BA", Color.FromArgb(255, 255, 196, 64)); // Warning
+                    ? ("", accent)                          // CheckMark
+                    : ("", Color.FromArgb(255, 255, 196, 64)); // Warning
                 using var icon = new Font(IconFont(), 18, GraphicsUnit.Pixel);
                 using var brush = new SolidBrush(colour);
                 g.DrawString(glyph, icon, brush, new RectangleF(24, 0, 32, height), center);
@@ -223,43 +105,12 @@ public static class ButtonImages
         return ToImage(bitmap);
     }
 
-    private static UiImage Draw(TheaterAction action, bool hover)
-    {
-        (string glyph, string label) = action switch
-        {
-            TheaterAction.EnterTheater => ("", "3D theater"),     // FullScreen
-            TheaterAction.ExitTheater => ("", "Exit theater"),    // BackToWindow
-            TheaterAction.Settings => ("", "3D settings"),        // Settings
-            _ => ("", "Play / Pause"),                            // Play
-        };
-
-        Size size = TheaterGeometry.ButtonSize;
-        using var bitmap = new Bitmap(size.Width, size.Height, PixelFormat.Format32bppArgb);
-        using (Graphics g = Graphics.FromImage(bitmap))
-        {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-            g.Clear(Color.Transparent);
-
-            DrawPill(g, size, hover);
-
-            using var icon = new Font(IconFont(), 18, GraphicsUnit.Pixel);
-            using var text = new Font("Segoe UI", 20, FontStyle.Regular, GraphicsUnit.Pixel);
-            using var white = new SolidBrush(Color.White);
-            var center = new StringFormat { LineAlignment = StringAlignment.Center };
-            g.DrawString(glyph, icon, white, new RectangleF(22, 0, 32, size.Height), center);
-            g.DrawString(label, text, white, new RectangleF(56, 0, size.Width - 60, size.Height), center);
-        }
-
-        return ToImage(bitmap);
-    }
-
-    private static void DrawPill(Graphics g, Size size, bool hover)
+    private static void DrawPill(Graphics g, Size size)
     {
         var rect = new Rectangle(1, 1, size.Width - 3, size.Height - 3);
         using GraphicsPath pill = RoundedRect(rect, size.Height / 2 - 2);
-        using var fill = new SolidBrush(hover ? Color.FromArgb(235, 70, 70, 74) : Color.FromArgb(200, 24, 24, 26));
-        using var border = new Pen(hover ? Color.FromArgb(255, 96, 205, 255) : Color.FromArgb(120, 255, 255, 255), 2);
+        using var fill = new SolidBrush(Color.FromArgb(200, 24, 24, 26));
+        using var border = new Pen(Color.FromArgb(120, 255, 255, 255), 2);
         g.FillPath(fill, pill);
         g.DrawPath(border, pill);
     }

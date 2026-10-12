@@ -11,7 +11,7 @@ namespace ImmersiveSBS.Depth;
 /// never the desktop, so the cursor and typing stay live. Each frame keeps the crop it was taken
 /// from and the depth computed for it when that arrives, so the frame shown can use depth from
 /// frames on both sides of it, and a region that moves or resizes (the player's controls
-/// appearing, the tracker refining its box) does not empty the buffer: the first version did,
+/// appearing, the player going full screen) does not empty the buffer: the first version did,
 /// and the picture then stood still for the whole delay while the sound went on. The
 /// GPU memory is capped: when the cap cannot hold the whole delay at the frame rate, fewer frames
 /// are kept (a lower frame rate for the delayed video) rather than a shorter delay. Render

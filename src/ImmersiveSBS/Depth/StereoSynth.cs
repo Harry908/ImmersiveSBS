@@ -10,8 +10,7 @@ namespace ImmersiveSBS.Depth;
 
 /// <summary>
 /// The GPU half of AI 3D, on the render device (video-3d-plan.md §4.1 stages 2–3 and 5–6):
-/// the luma grid (which frames changed, already-3D video), the model input tensor, and from a nearness
-/// map the two eye images of the video region: guided upsample (§6.3), edge snapping,
+/// the model input tensor, and from a nearness map the two eye images of the video region: guided upsample (§6.3), edge snapping,
 /// foreground dilation (§6.4), forward splat with a depth test, hole fill from the background
 /// and gather (§7.3).
 /// Render thread only.
@@ -68,23 +67,6 @@ public sealed class StereoSynth : IDisposable
             Tensor[i] = c.r;
             Tensor[plane + i] = c.g;
             Tensor[2 * plane + i] = c.b;
-        }
-
-        // --- Mean luma per 8×8 cell of the whole frame, 0..255.
-        RWStructuredBuffer<uint> Grid : register(u0);
-        [numthreads(8, 8, 1)]
-        void LumaGrid(uint3 id : SV_DispatchThreadID)
-        {
-            uint2 cells = (uint2(sourceSize) + 7) / 8;
-            if (id.x >= cells.x || id.y >= cells.y) return;
-            float sum = 0;
-            for (int y = 0; y < 8; y++)
-                for (int x = 0; x < 8; x++)
-                {
-                    int2 p = min(int2(id.xy * 8) + int2(x, y), sourceSize - 1);
-                    sum += dot(Source.Load(int3(p, 0)).rgb, LumaWeights);
-                }
-            Grid[id.y * cells.x + id.x] = (uint)round(sum / 64 * 255);
         }
 
         // --- Joint bilateral upsample of nearness to region resolution, guided by colour (§6.3;
@@ -447,7 +429,7 @@ public sealed class StereoSynth : IDisposable
 
     private readonly ID3D11Device device;
     private readonly ID3D11DeviceContext context;
-    private readonly ID3D11ComputeShader preprocess, lumaGrid, upsample, snap, dilate, slopeLimit, splat, resolve, blockMaxima, lookup, nativeSplit;
+    private readonly ID3D11ComputeShader preprocess, upsample, snap, dilate, slopeLimit, splat, resolve, blockMaxima, lookup, nativeSplit;
     private readonly ID3D11Buffer constants;
     private readonly ID3D11SamplerState linear;
     /// <summary>Signalled when the GPU has made the queued model input's copy.</summary>
@@ -456,14 +438,13 @@ public sealed class StereoSynth : IDisposable
     private IntPtr sourceKey;
     private ID3D11ShaderResourceView? sourceView;
 
-    private GpuBuffer? tensor, grid, keys, holes;
+    private GpuBuffer? tensor, keys, holes;
     private ID3D11Texture2D? depthTexture;
     private ID3D11ShaderResourceView? depthView;
     private Size depthSize;
     private Texture? nearA, nearB, eyes, blocks;
     private Size regionSize;
-    private uint[] gridValues = [];
-    private int gridCount, tensorCount;
+    private int tensorCount;
     private long holePixels, queuedHolePixels;
 
     public StereoSynth(ID3D11Device device)
@@ -471,7 +452,6 @@ public sealed class StereoSynth : IDisposable
         this.device = device;
         context = device.ImmediateContext;
         preprocess = Compile("Preprocess");
-        lumaGrid = Compile("LumaGrid");
         upsample = Compile("Upsample");
         snap = Compile("Snap");
         dilate = Compile("Dilate");
@@ -528,38 +508,6 @@ public sealed class StereoSynth : IDisposable
     // Reading at once made the render thread wait for the GPU twice a frame, in front of the
     // present, and the GPU is shared with the depth model.
 
-    /// <summary>
-    /// Queues the mean luma per 8×8 cell of the frame for <see cref="ReadQueuedLumaGrid"/>;
-    /// returns the grid size.
-    /// </summary>
-    public Size QueueLumaGrid(ID3D11Texture2D source)
-    {
-        Size src = BindSource(source);
-        var cells = new Size((src.Width + 7) / 8, (src.Height + 7) / 8);
-        gridCount = cells.Width * cells.Height;
-        EnsureBuffer(ref grid, gridCount, 4);
-        SetParams(Rectangle.Empty, Size.Empty, src, 0, 0, 0);
-        Dispatch(lumaGrid, grid!.Uav, (cells.Width + 7) / 8, (cells.Height + 7) / 8);
-        grid.QueueRead(context);
-        Timer?.Mark("grid");
-        return cells;
-    }
-
-    /// <summary>The queued luma grid, 0..255; false when none is queued. Waits for the GPU if it is not done.</summary>
-    public bool ReadQueuedLumaGrid(byte[] destination)
-    {
-        if (grid is not { Pending: true }) return false;
-        if (destination.Length < gridCount)
-        {
-            grid.Discard();   // the caller started over meanwhile
-            return false;
-        }
-        if (gridValues.Length < gridCount) gridValues = new uint[gridCount];
-        grid.ReadQueued(context, MemoryMarshal.AsBytes(gridValues.AsSpan(0, gridCount)));
-        for (int i = 0; i < gridCount; i++) destination[i] = (byte)Math.Min(gridValues[i], 255u);
-        return true;
-    }
-
     /// <summary>Queues the model input for <paramref name="region"/> (planar RGB, ImageNet-normalised).</summary>
     public void QueueModelInput(ID3D11Texture2D source, Rectangle region, Size modelSize)
     {
@@ -597,9 +545,6 @@ public sealed class StereoSynth : IDisposable
 
     /// <summary>The queued model input's length in floats.</summary>
     public int QueuedModelInputLength => tensorCount;
-
-    /// <summary>Forgets the queued model input without reading it.</summary>
-    public void DiscardQueuedModelInput() => tensor?.Discard();
 
     /// <summary>
     /// Queues the count of hole pixels (filled, not warped) since the last call, for
@@ -838,7 +783,6 @@ public sealed class StereoSynth : IDisposable
     {
         sourceView?.Dispose();
         tensor?.Dispose();
-        grid?.Dispose();
         keys?.Dispose();
         holes?.Dispose();
         depthView?.Dispose();
@@ -850,7 +794,7 @@ public sealed class StereoSynth : IDisposable
         linear.Dispose();
         inputDone.Dispose();
         constants.Dispose();
-        foreach (var s in new[] { preprocess, lumaGrid, upsample, snap, dilate, slopeLimit, splat, resolve, blockMaxima, lookup, nativeSplit }) s.Dispose();
+        foreach (var s in new[] { preprocess, upsample, snap, dilate, slopeLimit, splat, resolve, blockMaxima, lookup, nativeSplit }) s.Dispose();
     }
 
     /// <summary>

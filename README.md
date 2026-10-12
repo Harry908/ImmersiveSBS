@@ -17,20 +17,19 @@ picture.
 - **The desktop in 3D mode:** the virtual monitor in both eyes; the cursor and stray windows
   are kept where the glasses can show them.
 - **AI 3D:** a depth model (Depth Anything V2 Small, Distill-Any-Depth Base, Depth Anything 3
-  Small or Base, run by TensorRT for RTX) converts either the browser video or the whole
-  screen. Video that is already side-by-side or top-bottom 3D is shown as it is.
-- **The browser extension** ([extension/](extension/), Chrome and Edge) is how a video is
-  found: it reports exactly where the video is, its frames, pauses, and the captions and
-  controls over it. It also delays the video's sound inside the page, at full quality, so the
-  picture can be shown later than live with depth for every frame. Without it, only the whole
-  screen is converted, and there is no buffer or theater. It sends nothing that says what you
+  Small or Base, run by TensorRT for RTX) converts browser video in the 3D theater, and, as a
+  setting, the whole screen. Video that is already side-by-side or top-bottom 3D is shown as it
+  is when you say so.
+- **3D theater**, in the browser extension ([extension/](extension/), Chrome and Edge), which is
+  part of the app: while the glasses are in 3D mode, a "3D theater" button shows over a browser
+  video. It opens the video in a full-screen player in the page, drawn at the video's own
+  resolution and shown in 3D in the glasses. The player has a seek bar, the time, 10 s back and
+  forward, play/pause, mute, full screen and a 3D settings panel. Keys: Space or K play/pause,
+  ←/→ or J/L skip 10 s, M mute, F full screen, Esc leaves; a double click switches full screen.
+  The extension also delays the video's sound inside the page, at full quality, so the picture
+  can be shown later than live with depth for every frame. It sends nothing that says what you
   watch (no titles, addresses or names).
-- **Timing:** live, matched (the video just late enough for its depth), or a 0.5–2 s buffer
-  (needs the extension).
-- **3D theater:** a "3D theater" button over a browser video opens it in a player that fills
-  the glasses. The player has a seek bar, the time, 10 s back and forward, play/pause, mute,
-  and a 3D settings panel. Keys: Space or K play/pause, ←/→ or J/L skip 10 s, Esc or a double
-  click leave.
+- **Timing:** live, matched (the video just late enough for its depth), or a 0.5–2 s buffer.
 
 ## Requirements
 
@@ -43,11 +42,11 @@ picture.
 
 1. Open `edge://extensions` (or `chrome://extensions`) and turn on **Developer mode**.
 2. **Load unpacked** and pick the `extension` folder next to `ImmersiveSBS.exe`
-   (Settings → Buffer → **Open extension folder**).
+   (Settings → **Open extension folder**).
 3. After an update, reload the extension and the tabs that play video.
 
-Its badge says **off** (app not reachable), **on** (connected) or **3D** (the app follows the
-video in this tab). See [extension/README.md](extension/README.md).
+Its badge says **off** (app not reachable), **on** (connected) or **3D** (this tab's video is in the
+theater). See [extension/README.md](extension/README.md).
 
 ## Building
 

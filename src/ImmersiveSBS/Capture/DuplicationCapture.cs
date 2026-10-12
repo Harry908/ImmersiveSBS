@@ -23,16 +23,6 @@ public sealed class DuplicationCapture : ICaptureSource
     private long nextRetry;
     private int lastOpenError;
 
-    /// <summary>The image's changed areas since <see cref="ResetChanges"/>, from the frames' dirty and move rectangles.</summary>
-    private readonly List<System.Drawing.Rectangle> changes = [];
-    /// <summary>Something changed that the rectangles do not describe: treat everything as changed.</summary>
-    private bool changedAll = true;
-    private Vortice.RawRect[] dirtyRects = new Vortice.RawRect[64];
-    private OutduplMoveRect[] moveRects = new OutduplMoveRect[16];
-
-    /// <summary>More changed areas than this are taken as the whole image.</summary>
-    private const int MaxChanges = 256;
-
     public DuplicationCapture(ID3D11Device device, Func<string?> resolveGdiName)
     {
         this.device = device;
@@ -43,20 +33,6 @@ public sealed class DuplicationCapture : ICaptureSource
     public ID3D11Texture2D? Texture => texture;
 
     public PointerState Pointer { get; } = new();
-
-    public bool? Changed(System.Drawing.Rectangle area)
-    {
-        if (changedAll) return true;
-        foreach (System.Drawing.Rectangle r in changes)
-            if (r.IntersectsWith(area)) return true;
-        return false;
-    }
-
-    public void ResetChanges()
-    {
-        changes.Clear();
-        changedAll = false;
-    }
 
     public CaptureUpdate Acquire(int timeoutMs)
     {
@@ -90,7 +66,6 @@ public sealed class DuplicationCapture : ICaptureSource
                 device.ImmediateContext.CopyResource(texture!, desktop);
                 frame = true;
                 qpc = info.LastPresentTime;
-                CollectChanges(info.TotalMetadataBufferSize);
             }
 
             if (info.LastMouseUpdateTime != 0)
@@ -115,49 +90,6 @@ public sealed class DuplicationCapture : ICaptureSource
         }
 
         return new CaptureUpdate(frame, pointer, qpc);
-    }
-
-    /// <summary>
-    /// Adds the frame's move and dirty rectangles to the changed areas. A frame that comes
-    /// without them, or whose rectangles cannot be read, counts as changed all over.
-    /// </summary>
-    private void CollectChanges(uint metadataBytes)
-    {
-        if (changedAll) return;
-        if (metadataBytes == 0)
-        {
-            changedAll = true;
-            return;
-        }
-
-        int needed = (int)(metadataBytes / 16) + 1;   // a RawRect is 16 bytes, a move rect 24
-        if (moveRects.Length < needed) moveRects = new OutduplMoveRect[needed];
-        Result r = duplication!.GetFrameMoveRects((uint)(moveRects.Length * Marshal.SizeOf<OutduplMoveRect>()), moveRects, out uint moveBytes);
-        if (r.Failure)
-        {
-            changedAll = true;
-            return;
-        }
-        for (int i = 0; i < moveBytes / Marshal.SizeOf<OutduplMoveRect>(); i++)
-        {
-            Vortice.RawRect d = moveRects[i].DestinationRect;
-            changes.Add(System.Drawing.Rectangle.FromLTRB(d.Left, d.Top, d.Right, d.Bottom));
-        }
-
-        if (dirtyRects.Length < needed) dirtyRects = new Vortice.RawRect[needed];
-        r = duplication.GetFrameDirtyRects((uint)(dirtyRects.Length * 16), dirtyRects, out uint dirtyBytes);
-        if (r.Failure)
-        {
-            changedAll = true;
-            return;
-        }
-        for (int i = 0; i < dirtyBytes / 16; i++)
-        {
-            Vortice.RawRect d = dirtyRects[i];
-            changes.Add(System.Drawing.Rectangle.FromLTRB(d.Left, d.Top, d.Right, d.Bottom));
-        }
-
-        if (changes.Count > MaxChanges) changedAll = true;
     }
 
     private unsafe void ReadShape(uint size)
@@ -248,7 +180,6 @@ public sealed class DuplicationCapture : ICaptureSource
     {
         duplication?.Dispose();
         duplication = null;
-        changedAll = true;   // the first frame after reopening says nothing about what changed
     }
 
     public void Dispose()

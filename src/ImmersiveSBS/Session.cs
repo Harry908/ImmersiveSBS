@@ -58,10 +58,7 @@ public sealed class Session
     private volatile int stereoVersion;
     private double soundDelay;
     private volatile VideoHint? browserVideo;
-    private volatile bool theaterActive;
     private readonly TheaterUi theaterUi = new();
-    private Rectangle monitorBounds;
-    private long monitorBoundsTime;
     private readonly object delayLock = new();
     private Rectangle delayRegion;
     private double delaySeconds;
@@ -118,19 +115,6 @@ public sealed class Session
     private bool pageCanDelay;
 
     /// <summary>
-    /// Set by the controller: the videos the browser extension reports visible on the virtual
-    /// monitor (its px), where the "3D theater" button is offered; null while no browser is
-    /// connected (no button then). Any thread.
-    /// </summary>
-    public IReadOnlyList<Rectangle>? PageVideos
-    {
-        get => Volatile.Read(ref pageVideos);
-        set => Volatile.Write(ref pageVideos, value);
-    }
-
-    private IReadOnlyList<Rectangle>? pageVideos;
-
-    /// <summary>
     /// The video region (virtual monitor px) whose sound should be delayed, or empty; read by the
     /// controller to find the app playing it. Any thread.
     /// </summary>
@@ -167,47 +151,13 @@ public sealed class Session
         set => browserVideo = value;
     }
 
-    /// <summary>Where on-screen button clicks are caught; set by the controller. Any thread.</summary>
-    public TheaterButtons? Buttons
-    {
-        set => theaterUi.Buttons = value;
-    }
-
-    /// <summary>Theater mode is on and showing a found video. Any thread.</summary>
-    public bool TheaterActive
-    {
-        get => theaterActive;
-        private set => theaterActive = value;
-    }
-
-    private Rectangle theaterDesktop;
-
     /// <summary>
-    /// Where the theater's video is on the desktop (the virtual monitor's part), empty when no
-    /// theater shows; the controller keeps the cursor inside it. Any thread.
+    /// What the theater's 3D settings panel shows (the extension draws it): the settings now and
+    /// the loaded model. Any thread.
     /// </summary>
-    public Rectangle TheaterDesktop
+    public TheaterPanel Panel()
     {
-        get { lock (delayLock) return theaterDesktop; }
-        private set { lock (delayLock) theaterDesktop = value; }
-    }
-
-    /// <summary>Opens or closes the 3D settings panel in the theater; any thread.</summary>
-    public void ToggleTheaterPanel()
-    {
-        theaterUi.TogglePanel();
-        Interlocked.Increment(ref stereoVersion);
-    }
-
-    /// <summary>The followed video's playback for the theater's bottom bar, while the page reports it.</summary>
-    private static TheaterMedia? MediaOf(VideoHint? hint) =>
-        hint?.Page is { } page && page.Fresh(System.Diagnostics.Stopwatch.GetTimestamp())
-            ? new TheaterMedia(page.Paused, page.Time, page.Duration, page.Muted)
-            : null;
-
-    /// <summary>The theater panel's values from the settings and the loaded model.</summary>
-    private TheaterPanel PanelOf(StereoSettings stereo)
-    {
+        StereoSettings stereo = Stereo;
         DepthModel? m = Depth?.Model;
         StereoTuning tuning = stereo.Tuning ?? StereoTuning.Default;
         string size = m == null ? "-" : $"{m.Preset} ({m.Width}×{m.Height})";
@@ -221,17 +171,6 @@ public sealed class Session
         };
         return new TheaterPanel(m == null ? "none" : DepthModel.Name(m.Tier), size, stereo.Strength, stereo.Convergence,
             timing, tuning.EdgeSnap, tuning.Captions);
-    }
-
-    /// <summary>The virtual monitor's desktop bounds, re-read once a second (render thread).</summary>
-    private Rectangle MonitorBounds()
-    {
-        if (Stopwatch.GetElapsedTime(monitorBoundsTime).TotalSeconds >= 1 || monitorBounds.IsEmpty)
-        {
-            monitorBounds = DisplayConfigurationService.Resolve(options.Source, retryWhileTargetUnavailable: false)?.Bounds ?? monitorBounds;
-            monitorBoundsTime = Stopwatch.GetTimestamp();
-        }
-        return monitorBounds;
     }
 
     /// <summary>The shared depth model, owned by the controller; null while AI 3D is off.</summary>
@@ -364,7 +303,6 @@ public sealed class Session
         int seenStereoVersion = stereoVersion;
         DepthServiceState? seenModelState = null;
         string? aiStatus = null;
-        Func<Rectangle, bool?> changed = capture.Changed;
         (string?, string?) Measures(double seconds) => (ai.TakeMeasures(seconds, Depth, PageData()), gpuTimer.TakeSummary());
 
         while (!stopRequested)
@@ -414,7 +352,7 @@ public sealed class Session
             CaptureUpdate update = capture.Acquire(redraw ? 0 : 16);
             meter.OnCapture(update);
             // The depth model gets the new frame now, not after waiting for the swap chain.
-            if (update.Frame && renderer.SideBySide && capture.Texture is { } arrived) ai.HandOverEarly(arrived, Depth, changed, capture.ResetChanges);
+            if (update.Frame && renderer.SideBySide && capture.Texture is { } arrived) ai.HandOverEarly(arrived, Depth, update.ContentQpc);
 
             // New depth or new AI settings change the picture even when the desktop did not.
             // The model's state shows as a badge in the glasses, and its loading ends a flat picture.
@@ -446,16 +384,9 @@ public sealed class Session
                 var fd = frame.Description;
                 var eye = new Size(renderer.Width / 2, renderer.Height);
                 double scale = Math.Min((double)eye.Width / fd.Width, (double)eye.Height / fd.Height);
-                overlay = ai.Process(frame, update.Frame || late.Frame, stereo, Depth, eye, scale, SoundDelay, PageCanDelay, BrowserVideo, changed, content);
+                overlay = ai.Process(frame, update.Frame || late.Frame, stereo, Depth, eye, scale, SoundDelay, PageCanDelay, BrowserVideo, content);
                 aiStatus = ai.Status;
-                Rectangle monitor = MonitorBounds();
-                ui = theaterUi.Build(overlay, ai.FoundRegion, stereo.Theater, monitor, eye, new Size((int)fd.Width, (int)fd.Height),
-                    stereo.Target, Depth?.State, stereo.Theater ? PanelOf(stereo) : null, stereo.OfferTheater, PageVideos,
-                    stereo.Theater ? MediaOf(BrowserVideo) : null);
-                TheaterActive = stereo.Theater && overlay != null;
-                TheaterDesktop = TheaterActive && overlay is StereoOverlay o
-                    ? new Rectangle(o.Source.X + monitor.X, o.Source.Y + monitor.Y, o.Source.Width, o.Source.Height)
-                    : Rectangle.Empty;
+                ui = theaterUi.Build(overlay, ai.FoundRegion, eye, new Size((int)fd.Width, (int)fd.Height), stereo.Target, Depth?.State);
                 SetDelay(ai.DelayRegion, ai.DelaySeconds);
             }
             else
@@ -463,11 +394,8 @@ public sealed class Session
                 aiStatus = stereo.Target == AiTarget.Off ? null : "AI 3D: works when the glasses are in 3D mode";
                 SetDelay(Rectangle.Empty, 0);
                 theaterUi.Hide();
-                TheaterActive = false;
-                TheaterDesktop = Rectangle.Empty;
             }
 
-            capture.ResetChanges();
             renderer.Render(capture.Texture, options.Method == CaptureMethod.DesktopDuplication ? capture.Pointer : null, overlay, ui);
             gpuTimer.Mark("draw");
             gpuTimer.EndFrame();
@@ -486,10 +414,10 @@ public sealed class Session
     /// <summary>What the browser extension tells about the video, for the measures (M7).</summary>
     private string PageData()
     {
-        if (BrowserVideo is not { } hint) return "none";
-        if (hint.Page is not { } page || !page.Fresh(Stopwatch.GetTimestamp())) return "the video's place (protocol 1)";
+        if (BrowserVideo is not { } hint) return "none (no theater)";
+        if (hint.Page is not { } page || !page.Fresh(Stopwatch.GetTimestamp())) return "the theater's place, no frame reports for over a second";
         double fps = page.FrameRate, error = page.ClockErrorMs;
-        return "the video's place and frames (protocol 2" + (fps > 0 ? $", {fps:0.#} fps" : "") +
+        return "the theater (" + (fps > 0 ? $"{fps:0.#} fps drawn" : "no frames yet") +
                (double.IsFinite(error) ? $", clock within {error:0.0} ms" : "") +
                (hint.Captions != null ? $", {hint.Captions.Count} caption boxes" : "") + $", {hint.Overlays.Count} overlay boxes)";
     }

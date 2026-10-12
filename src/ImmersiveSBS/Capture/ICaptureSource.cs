@@ -34,14 +34,4 @@ public interface ICaptureSource : IDisposable
     /// copies it in. Recovers from lost access (mode change, secure desktop) by itself.
     /// </summary>
     CaptureUpdate Acquire(int timeoutMs);
-
-    /// <summary>
-    /// Whether <paramref name="area"/> (px) of the desktop image may have changed since
-    /// <see cref="ResetChanges"/>: false only when the capture knows it did not; null when the
-    /// method does not say.
-    /// </summary>
-    bool? Changed(System.Drawing.Rectangle area);
-
-    /// <summary>Starts collecting changes afresh (after a frame has been handled).</summary>
-    void ResetChanges();
 }

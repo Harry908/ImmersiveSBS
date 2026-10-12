@@ -24,6 +24,48 @@ public sealed class DepthTierConverter : JsonConverter<DepthTier>
         writer.WriteStringValue(value.ToString());
 }
 
+/// <summary>
+/// What the video is, by name; the old "Auto" (detected, since removed) and anything unknown load
+/// as 2D rather than failing the whole file.
+/// </summary>
+public sealed class Native3DModeConverter : JsonConverter<Native3DMode>
+{
+    public override Native3DMode Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        reader.TokenType == JsonTokenType.String && Enum.TryParse(reader.GetString(), ignoreCase: true, out Native3DMode mode)
+        && Enum.IsDefined(mode)
+            ? mode
+            : Native3DMode.Off;
+
+    public override void Write(Utf8JsonWriter writer, Native3DMode value, JsonSerializerOptions options) =>
+        writer.WriteStringValue(value.ToString());
+}
+
+/// <summary>Shortcuts by command name; a command since removed (the pick shortcut) is skipped rather than failing the whole file.</summary>
+public sealed class ShortcutMapConverter : JsonConverter<Dictionary<ShortcutCommand, string>>
+{
+    public override Dictionary<ShortcutCommand, string> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        var map = new Dictionary<ShortcutCommand, string>();
+        if (reader.TokenType != JsonTokenType.StartObject) throw new JsonException("Shortcuts must be an object.");
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+        {
+            string name = reader.GetString() ?? "";
+            reader.Read();
+            string? keys = reader.TokenType == JsonTokenType.String ? reader.GetString() : null;
+            if (reader.TokenType is JsonTokenType.StartObject or JsonTokenType.StartArray) reader.Skip();
+            if (keys != null && Enum.TryParse(name, ignoreCase: true, out ShortcutCommand command) && Enum.IsDefined(command)) map[command] = keys;
+        }
+        return map;
+    }
+
+    public override void Write(Utf8JsonWriter writer, Dictionary<ShortcutCommand, string> value, JsonSerializerOptions options)
+    {
+        writer.WriteStartObject();
+        foreach (var (command, keys) in value) writer.WriteString(command.ToString(), keys);
+        writer.WriteEndObject();
+    }
+}
+
 /// <summary>Commands that can have a keyboard shortcut.</summary>
 public enum ShortcutCommand
 {
@@ -51,9 +93,6 @@ public enum ShortcutCommand
     /// <summary>Screen plane away from the viewer: more of the picture in front (convergence +0.05).</summary>
     PictureForward,
 
-    /// <summary>Pick the changing area under the cursor as the video and lock it, or release the lock.</summary>
-    PickVideo,
-
     /// <summary>Open the live tuning panel.</summary>
     Tuning,
 }
@@ -69,7 +108,6 @@ public static class ShortcutCommands
         ShortcutCommand.LessDepth => "Less depth",
         ShortcutCommand.PictureBack => "Picture further back",
         ShortcutCommand.PictureForward => "Picture further forward",
-        ShortcutCommand.PickVideo => "Pick the video under the cursor",
         ShortcutCommand.Tuning => "Tuning panel",
         ShortcutCommand.Settings => "Settings",
         ShortcutCommand.Exit => "Exit",
@@ -122,6 +160,7 @@ public sealed class AppSettings
     public bool MoveWindowsOffVirtualMonitorOnExit { get; set; } = true;
 
     /// <summary>Shortcut text per command, e.g. "Ctrl+Alt+B"; empty disables one.</summary>
+    [JsonConverter(typeof(ShortcutMapConverter))]
     public Dictionary<ShortcutCommand, string> Shortcuts { get; set; } = DefaultShortcuts();
 
     public static Dictionary<ShortcutCommand, string> DefaultShortcuts() => new()
@@ -136,18 +175,20 @@ public sealed class AppSettings
         [ShortcutCommand.LessDepth] = "Ctrl+Alt+W",
         [ShortcutCommand.PictureBack] = "Ctrl+Alt+PageDown",
         [ShortcutCommand.PictureForward] = "Ctrl+Alt+PageUp",
-        [ShortcutCommand.PickVideo] = "Ctrl+Alt+Shift+D",
         [ShortcutCommand.Tuning] = "Ctrl+Alt+T",
     };
 
     /// <summary>Fine tuning of AI 3D, edited live in the tuning panel.</summary>
     public StereoTuning Tuning { get; set; } = StereoTuning.Default;
 
-    /// <summary>What AI 3D converts; Off shows the virtual monitor flat in both eyes.</summary>
+    /// <summary>
+    /// Off or Whole screen: whether the whole virtual monitor is converted. Browser video is
+    /// converted in the extension's theater, whatever this says.
+    /// </summary>
     public AiTarget Ai3D { get; set; } = AiTarget.Off;
 
-    /// <summary>What the AI 3D shortcut switches back on to.</summary>
-    public AiTarget Ai3DLastTarget { get; set; } = AiTarget.Video;
+    /// <summary>What the AI 3D shortcut switches back on to: Whole screen.</summary>
+    public AiTarget Ai3DLastTarget { get; set; } = AiTarget.WholeScreen;
 
     /// <summary>σ: depth strength as a fraction of the comfort-limited maximum (video-3d-plan.md §7.1).</summary>
     public double Ai3DStrength { get; set; } = 0.6;
@@ -162,8 +203,8 @@ public sealed class AppSettings
     public DepthPreset DepthPreset { get; set; } = DepthPreset.Balanced;
 
     /// <summary>
-    /// Shows the video this late, with the app's sound delayed by the same amount, for steadier
-    /// depth (video-3d-plan.md P5); 0 = live. Only while AI 3D follows a video; not for calls.
+    /// Shows the theater's video this late, with its sound delayed in the page by the same amount,
+    /// for steadier depth (video-3d-plan.md P5); 0 = live. Not for calls.
     /// </summary>
     public double BufferSeconds { get; set; }
 
@@ -174,24 +215,18 @@ public sealed class AppSettings
     /// </summary>
     public VideoTiming Timing { get; set; } = VideoTiming.Auto;
 
-    /// <summary>
-    /// Use what the browser extension tells about the playing video (improvement-plan.md §3): its
-    /// exact place, frames, pause and seeks, and the boxes drawn over it. Off is the way out when a
-    /// page reports wrongly; the extension still delays the sound.
-    /// </summary>
-    public bool UsePageData { get; set; } = true;
-
     /// <summary>Lip-sync trim for the delayed sound, ms; positive plays the sound later.</summary>
     public int AudioOffsetMs { get; set; }
 
-    /// <summary>Show a "3D theater" button over a playing video in the glasses (finds the video even with AI 3D off).</summary>
+    /// <summary>The browser extension shows a "3D theater" button over a video while the glasses are in 3D mode.</summary>
     public bool OfferTheater { get; set; } = true;
 
-    /// <summary>Horizontal stretch of the video around its centre, for content in the wrong aspect ratio.</summary>
+    /// <summary>Horizontal stretch of the theater's picture, for content in the wrong aspect ratio; the player draws it.</summary>
     public double VideoStretch { get; set; } = 1;
 
-    /// <summary>Video that is already side-by-side or top-bottom: detected and shown as is by default.</summary>
-    public Native3DMode Native3D { get; set; } = Native3DMode.Auto;
+    /// <summary>What the video is: 2D (converted) or side-by-side or top-bottom 3D (shown as is).</summary>
+    [JsonConverter(typeof(Native3DModeConverter))]
+    public Native3DMode Native3D { get; set; } = Native3DMode.Off;
 
     [JsonIgnore]
     public DisplayIdentity? VirtualMonitorIdentity
@@ -236,6 +271,7 @@ public sealed class AppSettings
                     // Commands added in later versions get their default shortcut.
                     foreach (var (command, text) in DefaultShortcuts()) s.Shortcuts.TryAdd(command, text);
                     s.Tuning = (s.Tuning ?? StereoTuning.Default).Migrated();
+                    s.ForgetRemovedChoices();
                     return s;
                 }
             }
@@ -259,6 +295,16 @@ public sealed class AppSettings
         {
             Log.Write("AppSettings: could not save settings: " + e.Message);
         }
+    }
+
+    /// <summary>
+    /// "The browser video only" went (browser video is converted in the theater): a saved one is
+    /// Off, and the AI 3D shortcut switches to the whole screen.
+    /// </summary>
+    public void ForgetRemovedChoices()
+    {
+        if (Ai3D == AiTarget.Video) Ai3D = AiTarget.Off;
+        Ai3DLastTarget = AiTarget.WholeScreen;
     }
 
     public AppSettings Clone() => JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(this, JsonOptions), JsonOptions)!;

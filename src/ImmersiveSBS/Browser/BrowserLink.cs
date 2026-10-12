@@ -10,7 +10,7 @@ using ImmersiveSBS.Depth;
 
 namespace ImmersiveSBS.Browser;
 
-/// <summary>A box the page draws over the followed video's picture, top-frame CSS px.</summary>
+/// <summary>A box the theater's player draws over its picture (a control or a caption), viewport CSS px.</summary>
 /// <param name="Kind">"caption", "control" or "other".</param>
 public sealed record PageBox(CssRect Box, string Kind)
 {
@@ -43,13 +43,25 @@ public sealed class BrowserConnection
 
     public string ExtensionVersion { get; internal set; } = "";
 
-    /// <summary>The extension's protocol: 1 reports the media list; 2 also the followed video's frames, state and overlays.</summary>
-    public int Protocol { get; internal set; } = 1;
+    /// <summary>The extension's protocol, from its hello; the connection counts only with <see cref="BrowserLink.Protocol"/>.</summary>
+    public int Protocol { get; internal set; }
 
-    /// <summary>The video this browser was asked to follow, with what it reports about it as it comes; null when none.</summary>
+    /// <summary>Its hello named the app's protocol: it is in <see cref="BrowserLink.Connections"/>.</summary>
+    public bool Accepted { get; internal set; }
+
+    /// <summary>The theater's video, with what its page reports about it as it comes; null while no theater is open.</summary>
     public PageVideo? Followed => followed;
 
-    /// <summary>The boxes over the followed video's picture, as last reported.</summary>
+    /// <summary>The open theater, as its page last reported it; null when none.</summary>
+    public TheaterReport? Theater
+    {
+        get => theater;
+        internal set => theater = value;
+    }
+
+    private volatile TheaterReport? theater;
+
+    /// <summary>The boxes over the theater's picture, as last reported.</summary>
     public IReadOnlyList<PageBox> Overlays
     {
         get => overlays;
@@ -84,9 +96,14 @@ public sealed class BrowserConnection
         return (Interlocked.Exchange(ref requestedDelay, seconds) != seconds) | tabChanged;
     }
 
-    internal async Task SendAsync(object message, CancellationToken cancel)
+    internal Task SendAsync(object message, CancellationToken cancel) =>
+        SendBytesAsync(JsonSerializer.SerializeToUtf8Bytes(message), cancel);
+
+    internal Task SendTextAsync(string json, CancellationToken cancel) =>
+        SendBytesAsync(Encoding.UTF8.GetBytes(json), cancel);
+
+    private async Task SendBytesAsync(byte[] bytes, CancellationToken cancel)
     {
-        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(message);
         await sendGate.WaitAsync(cancel);
         try
         {
@@ -118,6 +135,12 @@ public sealed class BrowserLink : IDisposable
     /// <summary>The extension's ID, from the public key in extension/manifest.json.</summary>
     public const string ExtensionId = "dopaoaefmhhmpbdgpnkgpkjhbndebmnl";
 
+    /// <summary>
+    /// The one protocol this app speaks: the extension ships in its folder (extension/), so any
+    /// other is an old copy still loaded in the browser, refused with a message to reload it.
+    /// </summary>
+    public const int Protocol = 3;
+
     private const int MaxConnections = 8;
     private const int MaxMessageBytes = 1 << 20;
     private static readonly TimeSpan PingInterval = TimeSpan.FromSeconds(20);
@@ -145,8 +168,14 @@ public sealed class BrowserLink : IDisposable
     /// <summary>The connected browsers; a snapshot, any thread.</summary>
     public IReadOnlyList<BrowserConnection> Connections => Volatile.Read(ref snapshot);
 
-    /// <summary>A browser connected or left, or reported new media; raised on a pool thread.</summary>
+    /// <summary>A browser connected or left, or reported new media or its theater; raised on a pool thread.</summary>
     public event Action? Changed;
+
+    /// <summary>
+    /// A browser's extension speaks another protocol (an old copy loaded in the browser): its
+    /// name and the extension's version; raised on a pool thread. It is not in <see cref="Connections"/>.
+    /// </summary>
+    public event Action<string, string>? Refused;
 
     /// <summary>Starts listening; false (and logged) when the port is taken, e.g. by another instance.</summary>
     public bool Start()
@@ -170,45 +199,48 @@ public sealed class BrowserLink : IDisposable
     /// <summary>
     /// Asks <paramref name="connection"/> to play the sound of tab <paramref name="tab"/>'s pages
     /// <paramref name="seconds"/> late (0: live), and every other tab's live; sent only when it
-    /// changes. Extensions before 1.2.1 ignore the tab and delay every page. Any thread.
+    /// changes. Any thread.
     /// </summary>
-    public void SetDelay(BrowserConnection connection, double seconds, int? tab = null)
+    public void SetDelay(BrowserConnection connection, double seconds, int tab)
     {
         seconds = Math.Round(Math.Max(0, seconds), 3);
-        if (seconds == 0) tab = null;
-        if (!connection.SetRequestedDelay(seconds, tab)) return;
-        Send(connection, tab is int t ? new { type = "delay", seconds, tab = t } : (object)new { type = "delay", seconds });
+        int? delayed = seconds > 0 ? tab : null;
+        if (!connection.SetRequestedDelay(seconds, delayed)) return;
+        Send(connection, new { type = "delay", seconds, tab = delayed });
     }
-
-    /// <summary>Plays or pauses one element.</summary>
-    public void TogglePlay(BrowserConnection connection, string mediaId) =>
-        Send(connection, new { type = "toggle", id = mediaId });
-
-    /// <summary>Moves one element <paramref name="seconds"/> on (back when negative); extensions before 1.2.2 ignore it.</summary>
-    public void Seek(BrowserConnection connection, string mediaId, double seconds) =>
-        Send(connection, new { type = "seek", id = mediaId, by = seconds });
-
-    /// <summary>Moves one element to <paramref name="seconds"/> into it; extensions before 1.2.3 ignore it.</summary>
-    public void SeekTo(BrowserConnection connection, string mediaId, double seconds) =>
-        Send(connection, new { type = "seek", id = mediaId, to = Math.Round(Math.Max(0, seconds), 2) });
-
-    /// <summary>Mutes or unmutes one element; extensions before 1.2.3 ignore it.</summary>
-    public void ToggleMute(BrowserConnection connection, string mediaId) =>
-        Send(connection, new { type = "mute", id = mediaId });
 
     /// <summary>
-    /// Asks <paramref name="connection"/> to report the frames, state and overlays of one video
-    /// (protocol 2), or of none; sent only when it changes. Returns what it reports, as it comes.
+    /// Opens the theater on the largest playing video of the tab in front of each browser, or
+    /// closes it (the tray, the shortcut). Without a click in the page, the player fills the
+    /// browser window and the window goes full screen.
     /// </summary>
-    public PageVideo? Follow(BrowserConnection connection, string? mediaId)
+    public void RequestTheater(bool open) => Broadcast(new { type = "theater", open });
+
+    private string status = "";
+
+    /// <summary>
+    /// What every browser is told about the app: whether the glasses show 3D,
+    /// whether to offer the theater button, and the 3D settings its panel shows. Sent when it
+    /// changes and to each browser that connects. Any thread.
+    /// </summary>
+    public void SetStatus(bool glasses, bool offer, object? settings)
     {
-        if (connection.Protocol < 2) mediaId = null;
-        if (connection.SetFollowed(mediaId)) Send(connection, new { type = "follow", id = mediaId });
-        return connection.Followed;
+        string text = JsonSerializer.Serialize(new { type = "status", glasses, offer, settings });
+        if (Interlocked.Exchange(ref status, text) == text) return;
+        foreach (BrowserConnection c in Connections) SendText(c, text);
     }
+
+    /// <summary>A button of the theater's 3D panel was pressed ("depthMore", "modelNext"…); raised on a pool thread.</summary>
+    public event Action<BrowserConnection, string>? Command;
+
 
     /// <summary>This process's clock in ms, as the extension's clock sync and frame times use it.</summary>
     public static double ClockMs(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
+
+    private void SendText(BrowserConnection connection, string json) =>
+        _ = connection.SendTextAsync(json, stop.Token).ContinueWith(
+            t => Log.Write($"Browser: sending to {connection} failed: {t.Exception?.GetBaseException().Message}"),
+            TaskContinuationOptions.OnlyOnFaulted);
 
     private void Send(BrowserConnection connection, object message) =>
         _ = connection.SendAsync(message, stop.Token).ContinueWith(
@@ -271,7 +303,6 @@ public sealed class BrowserLink : IDisposable
                     if (connections.Count >= MaxConnections) return;
                     connection = new BrowserConnection(nextNumber++, socket);
                     connections.Add(connection);
-                    Volatile.Write(ref snapshot, connections.ToArray());
                 }
                 await ReceiveLoopAsync(socket, connection);
             }
@@ -286,7 +317,7 @@ public sealed class BrowserLink : IDisposable
                     lock (gate)
                     {
                         connections.Remove(connection);
-                        Volatile.Write(ref snapshot, connections.ToArray());
+                        Volatile.Write(ref snapshot, connections.Where(c => c.Accepted).ToArray());
                     }
                     Log.Write($"Browser: {connection} disconnected.");
                     Changed?.Invoke();
@@ -380,13 +411,35 @@ public sealed class BrowserLink : IDisposable
         {
             JsonElement root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("type", out JsonElement type)) return;
+            // Nothing but the hello counts from an extension that does not speak this protocol.
+            if (!connection.Accepted && type.GetString() != "hello") return;
             switch (type.GetString())
             {
                 case "hello":
                     connection.Browser = Text(root, "browser");
                     connection.ExtensionVersion = Text(root, "version");
-                    connection.Protocol = Math.Max(1, (int)Number(root, "protocol", 1));
+                    connection.Protocol = (int)Number(root, "protocol", 0);
+                    if (connection.Protocol != Protocol)
+                    {
+                        Log.Write($"Browser: {connection} has extension {connection.ExtensionVersion} (protocol {connection.Protocol}); " +
+                                  $"this app needs protocol {Protocol}: reload the extension from the app's folder.");
+                        Refused?.Invoke(connection.ToString(), connection.ExtensionVersion);
+                        return;
+                    }
+                    lock (gate)
+                    {
+                        connection.Accepted = true;
+                        Volatile.Write(ref snapshot, connections.Where(c => c.Accepted).ToArray());
+                    }
                     Log.Write($"Browser: {connection} connected (extension {connection.ExtensionVersion}, protocol {connection.Protocol}).");
+                    if (Volatile.Read(ref status) is { Length: > 0 } current) SendText(connection, current);
+                    Changed?.Invoke();
+                    break;
+                case "command":
+                    if (Text(root, "name") is { Length: > 0 and < 40 } name) Command?.Invoke(connection, name);
+                    break;
+                case "theater":
+                    OnTheater(connection, root);
                     Changed?.Invoke();
                     break;
                 case "media":
@@ -418,7 +471,6 @@ public sealed class BrowserLink : IDisposable
                     if (FollowedBy(connection, root) is { } followed)
                     {
                         followed.SetState(Flag(root, "paused"), Flag(root, "seeking"), (int)Number(root, "seeks", 0));
-                        followed.SetPosition(Number(root, "time", double.NaN), Number(root, "duration", double.NaN), Flag(root, "muted"));
                         double error = Number(root, "clockError", double.NaN);
                         if (double.IsFinite(error)) followed.ClockErrorMs = error;
                     }
@@ -441,7 +493,37 @@ public sealed class BrowserLink : IDisposable
     private static bool Flag(JsonElement root, string name) =>
         root.TryGetProperty(name, out JsonElement e) && e.ValueKind == JsonValueKind.True;
 
-    /// <summary>The followed video, if the message is about it (others are left over from before a change).</summary>
+    /// <summary>
+    /// The theater opened, moved or closed: its report, and the video its frame, state and box
+    /// messages are about from now on.
+    /// </summary>
+    private static void OnTheater(BrowserConnection connection, JsonElement root)
+    {
+        string id = Text(root, "id");
+        if (!Flag(root, "open"))
+        {
+            if (connection.Theater?.MediaId != id) return;
+            connection.Theater = null;
+            connection.SetFollowed(null);
+            Log.Write($"Browser: the theater in {connection} closed.");
+            return;
+        }
+        CssRect? picture = root.TryGetProperty("picture", out JsonElement p) && p.ValueKind == JsonValueKind.Object
+            ? new CssRect(Number(p, "x", 0), Number(p, "y", 0), Number(p, "width", 0), Number(p, "height", 0))
+            : null;
+        TheaterReport? was = connection.Theater;
+        long since = was?.MediaId == id ? was.Since : Stopwatch.GetTimestamp();
+        string view = "";
+        if (root.TryGetProperty("view", out JsonElement v) && v.ValueKind == JsonValueKind.Object)
+            view = $"player full screen {(Flag(v, "full") ? "yes" : "no")}, window {Number(v, "outerWidth", 0):0.#}×{Number(v, "outerHeight", 0):0.#}, " +
+                   $"viewport {Number(v, "innerWidth", 0):0.#}×{Number(v, "innerHeight", 0):0.#}, " +
+                   $"screen {Number(v, "screenWidth", 0):0.#}×{Number(v, "screenHeight", 0):0.#} CSS px";
+        connection.Theater = new TheaterReport(id, (int)Number(root, "tab", -1), picture, Math.Max(0.1, Number(root, "dpr", 1)),
+            Flag(root, "onScreen"), since, view);
+        if (connection.SetFollowed(id)) Log.Write($"Browser: the theater in {connection} opened.");
+    }
+
+    /// <summary>The theater's video, if the message is about it (others are left over from before a change).</summary>
     private static PageVideo? FollowedBy(BrowserConnection connection, JsonElement root) =>
         connection.Followed is { } page && page.MediaId == Text(root, "id") ? page : null;
 

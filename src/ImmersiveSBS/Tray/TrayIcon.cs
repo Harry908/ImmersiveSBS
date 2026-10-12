@@ -25,7 +25,6 @@ public sealed class TrayIcon : IDisposable
     private readonly ToolStripMenuItem captureItem;
     private readonly ToolStripMenuItem aiItem;
     private readonly ToolStripMenuItem aiOffItem;
-    private readonly ToolStripMenuItem aiVideoItem;
     private readonly ToolStripMenuItem aiScreenItem;
     private readonly ToolStripMenuItem aiStatusItem;
     private readonly ToolStripMenuItem theaterItem;
@@ -60,15 +59,13 @@ public sealed class TrayIcon : IDisposable
         aiStatusItem = new ToolStripMenuItem { Enabled = false };
         aiOffItem = new ToolStripMenuItem("Off");
         aiOffItem.Click += (_, _) => controller.SetAi3D(AiTarget.Off);
-        aiVideoItem = new ToolStripMenuItem("Video only (browser extension)");
-        aiVideoItem.Click += (_, _) => controller.SetAi3D(AiTarget.Video);
         aiScreenItem = new ToolStripMenuItem("Whole screen");
         aiScreenItem.Click += (_, _) => controller.SetAi3D(AiTarget.WholeScreen);
         aiItem = new ToolStripMenuItem("AI 3D");
-        aiItem.DropDownItems.AddRange([aiOffItem, aiVideoItem, aiScreenItem, new ToolStripSeparator(), aiStatusItem]);
+        aiItem.DropDownItems.AddRange([aiOffItem, aiScreenItem, new ToolStripSeparator(), aiStatusItem]);
 
-        theaterItem = new ToolStripMenuItem("3D theater (video fills the glasses)");
-        theaterItem.Click += (_, _) => controller.SetTheater(!controller.Theater);
+        theaterItem = new ToolStripMenuItem("3D theater (the browser video, full screen)");
+        theaterItem.Click += (_, _) => controller.ToggleTheater();
 
         stretchItem = new ToolStripMenuItem("Video stretch");
         foreach ((string text, double factor) in new[] { ("None", 1.0), ("×1.1", 1.1), ("×1.2", 1.2), ("×1.25", 1.25), ("×1.33 (4:3 as 16:9)", 1.3333), ("×1.5", 1.5) })
@@ -162,7 +159,6 @@ public sealed class TrayIcon : IDisposable
         graphicsCaptureItem.Checked = controller.Settings.CaptureMethod == CaptureMethod.GraphicsCapture;
         theaterItem.Checked = controller.Theater;
         aiOffItem.Checked = controller.Settings.Ai3D == AiTarget.Off;
-        aiVideoItem.Checked = controller.Settings.Ai3D == AiTarget.Video;
         aiScreenItem.Checked = controller.Settings.Ai3D == AiTarget.WholeScreen;
         aiItem.ShortcutKeyDisplayString = controller.ShortcutText(ShortcutCommand.ToggleAi3D);
         aiStatusItem.Text = controller.ModelStatus;

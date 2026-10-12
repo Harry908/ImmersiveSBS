@@ -14,7 +14,6 @@ public class AppSettingsTests
             BufferSeconds = 1,
             AudioOffsetMs = -40,
             VideoStretch = 1.3333,
-            UsePageData = false,
             Tuning = new StereoTuning { DilateRadius = 5, SoftEdges = 3, AntiAlias = AutoSwitch.Off, Foreground = -2, Smoothing = 0.4, SceneCut = 0.2, FloatingWindow = false, StaticOverlays = true },
         };
         s.Shortcuts[ShortcutCommand.MoreDepth] = "Ctrl+Shift+Up";
@@ -26,11 +25,34 @@ public class AppSettingsTests
         Assert.Equal(1, c.BufferSeconds);
         Assert.Equal(-40, c.AudioOffsetMs);
         Assert.Equal(1.3333, c.VideoStretch);
-        Assert.False(c.UsePageData);
-        Assert.True(new AppSettings().UsePageData);
         Assert.Equal(s.Tuning, c.Tuning);
         Assert.Equal("Ctrl+Shift+Up", c.Shortcuts[ShortcutCommand.MoreDepth]);
         Assert.NotSame(s.Tuning, c.Tuning);
+    }
+
+    /// <summary>
+    /// A file from before the extension became part of the app: the pick shortcut, detected 3D
+    /// video, the browser video target and page data are gone; the rest of the file loads.
+    /// </summary>
+    [Fact]
+    public void ChoicesSinceRemovedLoadAsTheirReplacements()
+    {
+        var options = new System.Text.Json.JsonSerializerOptions { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
+        var s = System.Text.Json.JsonSerializer.Deserialize<AppSettings>("""
+            {"Ai3D":"Video","Ai3DLastTarget":"Video","Native3D":"Auto","UsePageData":false,"Ai3DStrength":0.8,
+             "Shortcuts":{"Pause":"Ctrl+Alt+P","PickVideo":"Ctrl+Alt+Shift+D"}}
+            """, options)!;
+        s.ForgetRemovedChoices();
+        Assert.Equal(AiTarget.Off, s.Ai3D);
+        Assert.Equal(AiTarget.WholeScreen, s.Ai3DLastTarget);
+        Assert.Equal(Native3DMode.Off, s.Native3D);
+        Assert.Equal(0.8, s.Ai3DStrength);
+        Assert.Equal("Ctrl+Alt+P", s.Shortcuts[ShortcutCommand.Pause]);
+        Assert.Single(s.Shortcuts);
+        // Written back, the file names what is there now.
+        string json = System.Text.Json.JsonSerializer.Serialize(s, options);
+        Assert.DoesNotContain("PickVideo", json);
+        Assert.Contains("\"Native3D\":\"Off\"", json);
     }
 
     [Fact]

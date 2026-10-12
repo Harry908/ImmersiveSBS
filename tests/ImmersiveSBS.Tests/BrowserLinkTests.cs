@@ -46,28 +46,91 @@ public sealed class BrowserLinkTests : IDisposable
         }
     }
 
-    private const string Hello = """{"type":"hello","protocol":1,"version":"1.0.0","browser":"Microsoft Edge 131"}""";
+    private const string Hello = """{"type":"hello","protocol":3,"version":"1.4.0","browser":"Microsoft Edge 155"}""";
+
+    private const string Media = """
+        {"type":"media","media":[{"id":"7:0:abc#1","tab":7,"frame":0,"kind":"video","playing":true,"audible":true,"area":230400,
+          "videoWidth":1920,"videoHeight":1080,"delayable":true,"reason":null,"delay":0,"latency":null,"theater":true},
+          {"id":"7:0:abc#2","tab":7,"frame":0,"kind":"audio","playing":false,"audible":true,"area":0,
+          "videoWidth":0,"videoHeight":0,"delayable":false,"reason":"cross-origin","delay":0,"latency":12}]}
+        """;
 
     [Fact]
     public async Task TheExtensionConnectsAndReportsItsMedia()
     {
         using ClientWebSocket socket = await ConnectAsync(ExtensionOrigin);
         await SendAsync(socket, Hello);
-        await SendAsync(socket, """
-            {"type":"media","media":[{"id":"7:0:abc#1","tab":7,"frame":0,"kind":"video","playing":true,"audible":true,"seeks":2,
-              "rect":{"x":10,"y":20,"width":640,"height":360},"viewport":{"width":1280,"height":720},"dpr":1.5,"visible":true,
-              "fullscreen":false,"videoWidth":1920,"videoHeight":1080,"delayable":true,"reason":null,"delay":0,"latency":null}]}
-            """);
+        await SendAsync(socket, Media);
 
-        BrowserConnection c = await WaitForAsync(c => c.Media.Count == 1);
-        Assert.Equal("Microsoft Edge 131", c.Browser);
+        BrowserConnection c = await WaitForAsync(c => c.Media.Count == 2);
+        Assert.Equal("Microsoft Edge 155", c.Browser);
         BrowserMedia m = c.Media[0];
         Assert.Equal("7:0:abc#1", m.Id);
-        Assert.True(m.IsVideo && m.Playing && m.Audible && m.Delayable);
-        Assert.Equal(new CssRect(10, 20, 640, 360), m.Rect);
-        Assert.Equal(1.5, m.Dpr);
-        Assert.Equal(2, m.Seeks);
+        Assert.True(m.IsVideo && m.Playing && m.Audible && m.Delayable && m.Theater);
+        Assert.Equal(230400, m.Area);
         Assert.Null(m.Latency);
+        Assert.False(c.Media[1].Delayable || c.Media[1].Theater);
+        Assert.Equal("cross-origin", c.Media[1].Reason);
+    }
+
+    /// <summary>
+    /// The extension ships with the app: one still loaded from before speaks another protocol. It
+    /// is told nothing and counts as no browser, and the app hears its version to say "reload it".
+    /// </summary>
+    [Fact]
+    public async Task AnOldExtensionIsRefused()
+    {
+        (string Browser, string Version)? refused = null;
+        link.Refused += (browser, version) => refused = (browser, version);
+        using ClientWebSocket socket = await ConnectAsync(ExtensionOrigin);
+        await SendAsync(socket, """{"type":"hello","protocol":2,"version":"1.2.4","browser":"Microsoft Edge 155"}""");
+        await SendAsync(socket, Media);
+        while (refused == null)
+        {
+            timeout.Token.ThrowIfCancellationRequested();
+            await Task.Delay(10);
+        }
+        Assert.Equal(("Microsoft Edge 155", "1.2.4"), refused);
+        await Task.Delay(100);
+        Assert.Empty(link.Connections);
+    }
+
+    /// <summary>
+    /// The extension's theater needs to know whether the glasses show 3D, whether the user wants
+    /// its button, and the 3D panel's values; a browser that connects is told at once, the rest
+    /// only on a change. The panel's buttons come back as commands.
+    /// </summary>
+    [Fact]
+    public async Task TheAppTellsItsStatusAndTakesTheTheatersCommands()
+    {
+        link.SetStatus(glasses: true, offer: true, settings: new { depth = 0.6, timing = "auto" });
+        using ClientWebSocket socket = await ConnectAsync(ExtensionOrigin);
+        await SendAsync(socket, Hello);
+        JsonElement first = await ReceiveAsync(socket);
+        Assert.Equal("status", first.GetProperty("type").GetString());
+        Assert.True(first.GetProperty("glasses").GetBoolean() && first.GetProperty("offer").GetBoolean());
+        Assert.Equal(0.6, first.GetProperty("settings").GetProperty("depth").GetDouble());
+
+        link.SetStatus(glasses: true, offer: true, settings: new { depth = 0.6, timing = "auto" });
+        link.SetStatus(glasses: false, offer: true, settings: new { depth = 0.6, timing = "auto" });
+        JsonElement second = await ReceiveAsync(socket);
+        Assert.False(second.GetProperty("glasses").GetBoolean());
+
+        string? command = null;
+        link.Command += (_, name) => command = name;
+        await SendAsync(socket, """{"type":"command","name":"depthMore"}""");
+        while (command == null)
+        {
+            timeout.Token.ThrowIfCancellationRequested();
+            await Task.Delay(10);
+        }
+        Assert.Equal("depthMore", command);
+
+        // The tray's theater: every browser is asked, and opens it on the tab in front.
+        link.RequestTheater(true);
+        JsonElement open = await ReceiveAsync(socket);
+        Assert.Equal("theater", open.GetProperty("type").GetString());
+        Assert.True(open.GetProperty("open").GetBoolean());
     }
 
     [Fact]
@@ -80,47 +143,30 @@ public sealed class BrowserLinkTests : IDisposable
     }
 
     [Fact]
-    public async Task ADelayIsSentOnlyWhenItChanges()
-    {
-        using ClientWebSocket socket = await ConnectAsync(ExtensionOrigin);
-        await SendAsync(socket, Hello);
-        BrowserConnection c = await WaitForAsync(c => c.Browser != "");
-
-        link.SetDelay(c, 1.0204);
-        link.SetDelay(c, 1.0204);
-        link.SetDelay(c, 0);
-
-        JsonElement first = await ReceiveAsync(socket);
-        Assert.Equal("delay", first.GetProperty("type").GetString());
-        Assert.Equal(1.02, first.GetProperty("seconds").GetDouble());
-        JsonElement second = await ReceiveAsync(socket);
-        Assert.Equal(0, second.GetProperty("seconds").GetDouble());
-        Assert.Equal(0, c.RequestedDelay);
-    }
-
-    [Fact]
-    public async Task ADelayNamesTheFollowedVideosTab()
+    public async Task ADelayNamesTheTheatersTabAndIsSentOnlyWhenItChanges()
     {
         // Only that tab plays late; music in another tab stays live. Moving to another tab at the
         // same delay is a change too; going live drops the tab.
         using ClientWebSocket socket = await ConnectAsync(ExtensionOrigin);
-        await SendAsync(socket, Hello2);
+        await SendAsync(socket, Hello);
         BrowserConnection c = await WaitForAsync(c => c.Browser != "");
 
-        link.SetDelay(c, 0.5, tab: 12);
-        link.SetDelay(c, 0.5, tab: 12);
-        link.SetDelay(c, 0.5, tab: 14);
+        link.SetDelay(c, 0.5204, tab: 12);
+        link.SetDelay(c, 0.5204, tab: 12);
+        link.SetDelay(c, 0.5204, tab: 14);
         link.SetDelay(c, 0, tab: 14);
 
         JsonElement first = await ReceiveAsync(socket);
+        Assert.Equal("delay", first.GetProperty("type").GetString());
         Assert.Equal(12, first.GetProperty("tab").GetInt32());
-        Assert.Equal(0.5, first.GetProperty("seconds").GetDouble());
+        Assert.Equal(0.52, first.GetProperty("seconds").GetDouble());
         JsonElement second = await ReceiveAsync(socket);
         Assert.Equal(14, second.GetProperty("tab").GetInt32());
         JsonElement third = await ReceiveAsync(socket);
         Assert.Equal(0, third.GetProperty("seconds").GetDouble());
-        Assert.False(third.TryGetProperty("tab", out _));
+        Assert.Equal(JsonValueKind.Null, third.GetProperty("tab").ValueKind);
         Assert.Null(c.RequestedTab);
+        Assert.Equal(0, c.RequestedDelay);
     }
 
     [Fact]
@@ -138,31 +184,38 @@ public sealed class BrowserLinkTests : IDisposable
         }
     }
 
-    private const string Hello2 = """{"type":"hello","protocol":2,"version":"1.1.0","browser":"Google Chrome 140"}""";
-
+    /// <summary>
+    /// The theater opens: its picture, px ratio and whether its viewport is the screen; then its
+    /// frames, state and boxes are kept for that video only, and closing it forgets them.
+    /// </summary>
     [Fact]
-    public async Task AFollowedVideoReportsItsFramesStateAndOverlays()
+    public async Task TheTheaterReportsItsPictureFramesStateAndBoxes()
     {
         using ClientWebSocket socket = await ConnectAsync(ExtensionOrigin);
-        await SendAsync(socket, Hello2);
-        BrowserConnection c = await WaitForAsync(c => c.Protocol == 2);
+        await SendAsync(socket, Hello);
+        BrowserConnection c = await WaitForAsync(c => c.Browser != "");
 
-        Depth.PageVideo? page = link.Follow(c, "7:0:abc#1");
-        Assert.NotNull(page);
-        JsonElement follow = await ReceiveAsync(socket);
-        Assert.Equal("follow", follow.GetProperty("type").GetString());
-        Assert.Equal("7:0:abc#1", follow.GetProperty("id").GetString());
-        Assert.Same(page, link.Follow(c, "7:0:abc#1"));   // unchanged: nothing sent again
+        await SendAsync(socket, """
+            {"type":"theater","id":"7:0:abc#1","open":true,"tab":7,"picture":{"x":0,"y":60,"width":1920,"height":960},"dpr":1,"onScreen":true,
+             "view":{"full":true,"outerWidth":1920,"outerHeight":1080,"innerWidth":1920,"innerHeight":1080,"screenWidth":1920,"screenHeight":1080}}
+            """);
+        TheaterReport t = (await WaitForAsync(c => c.Theater != null)).Theater!;
+        Assert.Equal("7:0:abc#1", t.MediaId);
+        Assert.Equal(7, t.Tab);
+        Assert.True(t.OnScreen);
+        Assert.Equal("player full screen yes, window 1920×1080, viewport 1920×1080, screen 1920×1080 CSS px", t.View);
+        Assert.Equal(new Rectangle(0, 60, 1920, 960), t.ToScreen(t.Picture!));
+        Depth.PageVideo page = c.Followed!;
+        Assert.Equal("7:0:abc#1", page.MediaId);
 
         double now = BrowserLink.ClockMs(System.Diagnostics.Stopwatch.GetTimestamp());
         await SendAsync(socket, $$"""{"type":"frame","id":"7:0:abc#1","presented":41,"media":12.5,"display":{{now + 16}},"width":1920,"height":1080}""");
         await SendAsync(socket, """{"type":"frame","id":"7:0:other#2","presented":99,"media":1,"display":1}""");
         await SendAsync(socket, """{"type":"state","id":"7:0:abc#1","paused":true,"seeking":false,"seeks":3,"rate":1,"clockError":0.4}""");
         await SendAsync(socket, """
-            {"type":"overlays","id":"7:0:abc#1","boxes":[{"x":10,"y":300,"width":620,"height":40,"kind":"control"},
-              {"x":100,"y":250,"width":400,"height":30,"kind":"caption"},{"x":"bad"},{"x":1,"y":1,"width":-5,"height":3}]}
+            {"type":"overlays","id":"7:0:abc#1","boxes":[{"x":10,"y":980,"width":620,"height":40,"kind":"control"},
+              {"x":100,"y":850,"width":400,"height":30,"kind":"caption"},{"x":"bad"},{"x":1,"y":1,"width":-5,"height":3}]}
             """);
-
         while (c.Overlays.Count == 0)
         {
             timeout.Token.ThrowIfCancellationRequested();
@@ -175,20 +228,29 @@ public sealed class BrowserLinkTests : IDisposable
         Assert.Equal(0.4, page.ClockErrorMs);
         Assert.Equal(2, c.Overlays.Count);
         Assert.True(c.Overlays[1].IsCaption);
-        Assert.Equal(new CssRect(10, 300, 620, 40), c.Overlays[0].Box);
 
-        // Following none: nothing is kept.
-        Assert.Null(link.Follow(c, null));
+        // Moved (full screen now at another px ratio): the same theater, still followed.
+        long since = t.Since;
+        await SendAsync(socket, """
+            {"type":"theater","id":"7:0:abc#1","open":true,"tab":7,"picture":{"x":0,"y":48,"width":1536,"height":768},"dpr":1.25,"onScreen":true}
+            """);
+        while (c.Theater!.Dpr != 1.25)
+        {
+            timeout.Token.ThrowIfCancellationRequested();
+            await Task.Delay(10);
+        }
+        Assert.Equal(since, c.Theater.Since);
+        Assert.Same(page, c.Followed);
+        Assert.Equal(new Rectangle(0, 60, 1920, 960), c.Theater.ToScreen(c.Theater.Picture!));
+
+        await SendAsync(socket, """{"type":"theater","id":"7:0:abc#1","open":false}""");
+        while (c.Theater != null)
+        {
+            timeout.Token.ThrowIfCancellationRequested();
+            await Task.Delay(10);
+        }
+        Assert.Null(c.Followed);
         Assert.Empty(c.Overlays);
-    }
-
-    [Fact]
-    public async Task AProtocolOneBrowserIsNeverAskedToFollow()
-    {
-        using ClientWebSocket socket = await ConnectAsync(ExtensionOrigin);
-        await SendAsync(socket, Hello);
-        BrowserConnection c = await WaitForAsync(c => c.Browser != "");
-        Assert.Null(link.Follow(c, "1:0:a#1"));
     }
 
     [Fact]
@@ -197,8 +259,8 @@ public sealed class BrowserLinkTests : IDisposable
         // The page's clock runs 123 456.7 ms behind the app's; the page works out the offset from
         // the app's answers, NTP-style, with one-way delays of 0.1–5 ms either way.
         using ClientWebSocket socket = await ConnectAsync(ExtensionOrigin);
-        await SendAsync(socket, Hello2);
-        await WaitForAsync(c => c.Protocol == 2);
+        await SendAsync(socket, Hello);
+        await WaitForAsync(c => c.Browser != "");
         const double offset = 123456.7;
         double PageNow() => BrowserLink.ClockMs(System.Diagnostics.Stopwatch.GetTimestamp()) - offset;
         var random = new Random(3);
@@ -225,84 +287,18 @@ public sealed class BrowserLinkTests : IDisposable
     {
         using ClientWebSocket socket = await ConnectAsync(ExtensionOrigin);
         await SendAsync(socket, "not json");
-        await SendAsync(socket, """{"type":"media","media":[{"id":"x"},{"nonsense":true},42]}""");
         await SendAsync(socket, Hello);
+        await SendAsync(socket, """{"type":"media","media":[{"id":"x"},{"nonsense":true},42]}""");
+        await SendAsync(socket, """{"type":"theater","id":"nothing open","open":false}""");
         BrowserConnection c = await WaitForAsync(c => c.Browser != "");
+        await Task.Delay(100);
         Assert.Empty(c.Media);
+        Assert.Null(c.Theater);
     }
 
     public void Dispose()
     {
         link.Dispose();
         timeout.Dispose();
-    }
-}
-
-/// <summary>Placing a page's video on the screen and matching it with the found video.</summary>
-public class BrowserMediaTests
-{
-    private static BrowserMedia Video(CssRect? rect, double dpr = 1.25, CssSize? viewport = null, bool visible = true, string kind = "video", string id = "1:0:a#1") =>
-        new(id, 1, 0, kind, true, true, 0, rect, viewport ?? new CssSize(1280, 800), dpr, visible, false, 1920, 1080, true, null, 0, null);
-
-    [Fact]
-    public void APageFillingTheWindowIsPlacedByItsCssPxTimesTheScale()
-    {
-        // 1280×800 CSS px at 1.25 = 1600×1000 px: the whole client area (full screen).
-        var client = new Rectangle(100, 50, 1600, 1000);
-        Rectangle? screen = Video(new CssRect(100, 80, 640, 360)).ScreenRect(client);
-        Assert.Equal(new Rectangle(225, 150, 800, 450), screen);
-    }
-
-    [Fact]
-    public void ThePageSitsUnderTheToolbarAtTheBottomOfTheWindow()
-    {
-        // 100 px of tab strip and toolbar above the page.
-        var client = new Rectangle(100, 50, 1600, 1100);
-        Rectangle? screen = Video(new CssRect(0, 0, 1280, 720)).ScreenRect(client);
-        Assert.Equal(new Rectangle(100, 150, 1600, 900), screen);
-    }
-
-    [Fact]
-    public void APictureScrolledPartlyOutIsCutToThePage()
-    {
-        var client = new Rectangle(0, 0, 1600, 1100);
-        Rectangle? screen = Video(new CssRect(0, -100, 640, 360)).ScreenRect(client);
-        Assert.Equal(new Rectangle(0, 100, 800, 325), screen);
-    }
-
-    [Fact]
-    public void APageBiggerThanTheWindowIsAnotherWindows()
-    {
-        Assert.Null(Video(new CssRect(0, 0, 640, 360)).ScreenRect(new Rectangle(0, 0, 1200, 700)));
-        Assert.Null(Video(null).ScreenRect(new Rectangle(0, 0, 1600, 1000)));
-    }
-
-    [Fact]
-    public void TheBestCoveringVisibleVideoIsMatched()
-    {
-        var client = new Rectangle(0, 0, 1600, 1000);
-        var found = new Rectangle(120, 100, 805, 450);
-        (string, BrowserMedia)[] media =
-        [
-            ("small", Video(new CssRect(900, 500, 160, 90), id: "small")),
-            ("hidden", Video(new CssRect(100, 80, 640, 360), visible: false, id: "hidden")),
-            ("audio", Video(new CssRect(100, 80, 640, 360), kind: "audio", id: "audio")),
-            ("main", Video(new CssRect(100, 80, 640, 360), id: "main")),
-        ];
-        var match = BrowserMedia.Match(media, client, found);
-        Assert.NotNull(match);
-        Assert.Equal("main", match.Value.Owner);
-        Assert.Equal(new Rectangle(125, 100, 800, 450), match.Value.Screen);
-
-        // Nothing there: no match.
-        Assert.Null(BrowserMedia.Match(media, client, new Rectangle(1200, 50, 300, 200)));
-    }
-
-    [Fact]
-    public void OverlapIsIntersectionOverUnion()
-    {
-        Assert.Equal(1, BrowserMedia.Overlap(new Rectangle(0, 0, 10, 10), new Rectangle(0, 0, 10, 10)));
-        Assert.Equal(0, BrowserMedia.Overlap(new Rectangle(0, 0, 10, 10), new Rectangle(20, 0, 10, 10)));
-        Assert.Equal(50.0 / 150, BrowserMedia.Overlap(new Rectangle(0, 0, 10, 10), new Rectangle(5, 0, 10, 10)), 6);
     }
 }

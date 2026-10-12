@@ -916,9 +916,110 @@ points). The pick shortcut (Ctrl+Alt+Shift+D) now follows the reported video und
 With page data off, the video's place is still used (only frames, state and boxes are not).
 `StereoSettings.FindVideo` became `OfferTheater`: nothing runs for the button any more.
 
+### Two or more browser windows (2026-10-12, user report: "struggles with 2+ video tabs/windows")
+
+A page reports its video in its own viewport's px, and the app placed it in every browser
+window big enough for the page (the only check): with two windows of a similar size, each
+video showed up in both, so the app could follow a phantom (the wrong place converted, the
+wrong tab's sound delayed, the theater's controls on the other video). Extension 1.2.4 reports
+each page's window place and size from its screen's work area (`screenX − screen.availLeft`,
+`outerWidth`…, DIP); the app takes, for each video, the window whose `GetWindowRect` (from its
+monitor's work area, at its DPI) matches best. Tabs in one window were already told apart (a
+background tab reports itself hidden). The "following a … video" log line now says how close
+the window matched ("its window matches within N DIP"): that number should be 0–2 in a run;
+if it is large, the DIP assumption is wrong for that setup.
+
+The user then clarified: one video at a time, switching between two Edge windows, and the
+theater should follow. The controller now watches the foreground window (not the theater's):
+on a switch to a browser window with a reported video, that video (playing first, else the
+largest) is followed at once, in the theater too, so the theater, the delayed sound and the
+bar's controls move with it ("Browser: switched to another browser window; following …").
+A video in the window the user works in is kept while paused.
+
+### The 3D theater moves into the page (2026-10-12, user request)
+
+The user showed Universal 3D Viewer: its button sits in the page over the video and opens a
+player in the page that can go full screen. The app's own theater (a button drawn only in the
+glasses from the page's report, a quarter of a second late, a player window left out of the
+capture, a mouse hook catching clicks) was "too laggy and inconsistent". Now:
+
+- Extension 1.3: the button and the player are the page's. The button shows over a video under
+  the mouse while the app says the glasses are in 3D mode (`status` message, also carrying the
+  3D panel's values and whether the user wants the button). The player covers the page, goes
+  full screen on the click and draws the video on a canvas at its own size, so the capture
+  gets it sharp, not as small as the page laid it out (1131×636 in the last run). Controls,
+  keys and a 3D panel (its buttons send `command`) are its own; the page's captions are copied
+  in. Opened from the tray or the shortcut (`theater` message, no click in the page), it fills
+  the browser window and the worker puts the window in full screen.
+- The app follows the video whose report says `theater` before anything else, turns AI 3D on
+  for it and fits it to the whole eye; `TheaterUi` keeps only that and the model badge.
+  Removed: `TheaterWindow`, `TheaterInput`, `TheaterButtons`, the app-drawn buttons and bar,
+  `Session.PageVideos`, the cursor clip, the app's play/seek/mute messages and the page's
+  time/duration/muted report.
+
+Not yet seen: whether Chrome keeps presenting frames of a video covered by the player (if not,
+the canvas falls back to drawing each animation frame, but the frame events the app times the
+picture with would stop), and the player on sites whose captions are not in caption-like boxes.
+
+### The extension becomes part of the app (2026-10-12, docs/extension-first-plan.md phases 1–3)
+
+The user approved the plan's three decisions (browser video in 3D only through the theater;
+already-3D video chosen, not detected; the stretch drawn by the player). Done:
+
+- **Phase 1: one extension, one protocol.** Extension 1.4.0 speaks protocol 3; `BrowserLink`
+  accepts only that (`BrowserLink.Protocol`). An older copy is logged, kept out of
+  `Connections`, and the tray says to reload it. Removed: protocol 1 and 2 paths, delays for
+  "every tab", the `UsePageData` setting, the pick shortcut. Settings files from before load: a
+  saved pick shortcut is skipped (`ShortcutMapConverter`), "Auto" 3D detection loads as 2D
+  (`Native3DModeConverter`), "the browser video only" loads as Off (`ForgetRemovedChoices`).
+- **Phase 2: browser video means the theater.** The page reports its open theater (`theater`:
+  its picture in viewport CSS px, the px ratio, whether the viewport is the screen) and, while
+  open, its frames, state, boxes and clock pings without being asked. The controller follows the
+  newest open theater (`TheaterReport`), when a window fills the virtual monitor
+  (`FullScreenOn`), and maps its picture by the px ratio. Removed from the app: in-place
+  following (`PageVideosNear` and its nine probe points, `FollowBrowserVideo`,
+  `PlayingBrowserVideo`, `VideoInWindow`, foreground-window switching, grace and pick rules),
+  page-to-screen geometry (`BrowserMedia.ScreenRect`/`ToScreen`/`WindowError`/`Match`,
+  `Native.WindowInWorkArea`, `ClientBounds`, `ForegroundRootWindow`), `follow` messages, the
+  "Video only" AI 3D target. Removed from the extension: the overlay probe (an
+  `elementsFromPoint` grid over unknown players), the iframe position messages, window and
+  viewport reports. The tray's theater asks every browser; each opens it on the largest playing
+  video of its tab in front.
+- **Phase 3: the player decides when the picture changes.** In the theater a frame goes to the
+  model when the player reports a frame drawn since the last one handed over (matched to the
+  capture's time; until the clock is synced, each new capture while it plays); the whole screen
+  hands over each new capture. The player emits its frame events from its own draws (the
+  element's frame callback, or the animation loop if that stops), so they hold even if the
+  browser stops presenting the covered element. Removed: the luma grid (and its GPU pass), the
+  capture's dirty-rectangle tracking, the paused-but-changing distrust, `Native3DDetector` and
+  its tests, the app's stretch, the app's theater fit (`UiLayer.Theater`, the renderer's theater
+  branch, `TheaterGeometry.Fit`). The player's 3D panel gained "Stretch" and "Video: 2D /
+  side-by-side / top-bottom"; the status carries both.
+- Phase 4 (packaging) stays as the plan says: unpacked, with the version check.
+
+Tests: 162 (the detector's, the page-placement and theater-fit tests went with their code; new:
+an old extension refused, the theater's report and mapping, the tray's theater request, old
+settings loading).
+
+First run in the glasses (1.4.0): the theater converted only once in six openings. In the
+player's own full screen Edge reported the window as 1489×832 against a 1501×844 screen (CSS
+px), so the size comparison said "not the screen". Fixed in 1.4.1: the player being the
+document's full-screen element counts as on the screen; the page also reports what it measured
+(`view`), and the log names which check failed (the page's, or no window covering the virtual
+monitor) with the numbers. With it, 3D ran at 25 hand-overs/s (the video's rate). On WeTV the
+player showed the subtitle language menu: `[class*="subtitle"]` matched the hidden menu, whose
+`innerText` is all its text. 1.4.2: caption boxes must be visible, over the video, not
+controls, menus or lists, at most 4 lines; WeTV's subtitles are `div.text-track > span`
+(checked on the live site: of 14 matched boxes only the subtitle is kept).
+Then the subtitle showed early, late or twice: the player put it 9 % above the screen's bottom,
+which for a 2.39:1 video is the black bar under the picture, and the app delays only the
+picture's rectangle (buffer 2 s), showing the rest live. 1.4.3: the caption is placed from the
+picture's rectangle (inside its lower part, above the controls while they show), read on each
+drawn frame instead of every 250 ms, and its box reported as soon as its text changes.
+
 ### Next
 
-1. Same run again (reload the extension: 1.2.2): no hops in the `matched … ms` value, no
+1. Same run again (reload the extension: 1.4.0): no hops in the `matched … ms` value, no
    "no longer following" around theater toggles, sound without gaps in the buffer, and the
    `post … ms` part of the depth status at 756×420 (expected under 10 ms).
 2. The edge blur: compare Soft edges Auto against 1 and 0, and Warp Splat against Lookup, on

@@ -105,7 +105,7 @@ public sealed class AppController : IDisposable
         audioTimer.Tick += (_, _) =>
         {
             UpdateAudioDelay();
-            UpdateTheater();
+            UpdateStatus();
         };
         audioTimer.Start();
         Evaluate("start", force: true);
@@ -125,7 +125,7 @@ public sealed class AppController : IDisposable
 
     private BrowserLink? browserLink;
     private int browserCount;
-    /// <summary>The browser video under the found region, followed from tick to tick.</summary>
+    /// <summary>The theater's video, followed from tick to tick; null while no theater is open.</summary>
     private BrowserVideo? browserVideo;
     /// <summary>The browser whose pages play their sound late now, or null.</summary>
     private BrowserConnection? browserDelaying;
@@ -133,24 +133,12 @@ public sealed class AppController : IDisposable
     private readonly HashSet<(int Connection, string Id)> browserRefused = [];
     private long browserLogAt;
     private long followLogAt;
-    /// <summary>When the followed video was last seen where it should be (Environment.TickCount64).</summary>
-    private long browserSeenAt;
-    /// <summary>When the user picked a video (the theater button, the pick shortcut): kept even while paused and another plays.</summary>
-    private long browserPickedAt = long.MinValue / 2;
+    /// <summary>Why the theater was last found not full screen on the virtual monitor (said once per theater and reason).</summary>
+    private string? offScreenTheater;
 
-    /// <summary>A reported video smaller than this (a thumbnail, a preview) gets no theater button, px.</summary>
-    private static readonly System.Drawing.Size MinTheaterVideo = new(160, 90);
-
-    /// <summary>
-    /// How long the followed video is kept after it stops being found, ms. In the first run, Edge
-    /// lost it for one tick at a time (a popup over it, the player re-laying out), and each loss
-    /// restarted the page's delayed sound and the video's buffer: an audible gap and a freeze.
-    /// </summary>
-    private const long BrowserGraceMs = 1500;
-
-    /// <param name="Window">The browser's top-level window.</param>
-    /// <param name="Screen">Where the picture is on the desktop, px.</param>
-    private sealed record BrowserVideo(BrowserConnection Connection, BrowserMedia Media, IntPtr Window, Rectangle Screen);
+    /// <param name="Theater">What its page reports about the theater.</param>
+    /// <param name="Media">The video's entry in the media report, once it is there (for its sound).</param>
+    private sealed record BrowserVideo(BrowserConnection Connection, TheaterReport Theater, BrowserMedia? Media);
 
     /// <summary>"Sound 1 s behind" while the page delays the sound; null otherwise.</summary>
     public string? AudioStatus => browserDelaying != null
@@ -167,9 +155,10 @@ public sealed class AppController : IDisposable
     /// <summary>The browser extension's state, for the settings window.</summary>
     public string BrowserStatus =>
         browserLink == null ? "The browser extension cannot connect: another program uses its port (see the log)."
-        : browserLink.Connections.Count == 0 ? "Browser extension not connected: the buffer is off, and matched timing stays within 90 ms with the sound live."
+        : browserLink.Connections.Count == 0
+            ? "Browser extension not connected. It is part of ImmersiveSBS: browser video is shown in 3D only in its theater, and the page delays the sound."
         : "Browser extension connected: " + string.Join(", ", browserLink.Connections.Select(c => c.ToString()))
-          + (browserDelaying != null ? "; the sound is delayed in the page." : ".");
+          + (Theater ? "; the 3D theater is open" : "") + (browserDelaying != null ? "; the sound is delayed in the page." : ".");
 
     private void StartBrowserLink()
     {
@@ -180,9 +169,16 @@ public sealed class AppController : IDisposable
             return;
         }
         browserLink = link;
+        link.Command += (_, name) => dispatcher.BeginInvoke(() => OnPageCommand(name));
+        link.Refused += (browser, version) => dispatcher.BeginInvoke(() => tray?.Notify(
+            $"{browser} has an older ImmersiveSBS extension ({version}). Reload it: open edge://extensions (or chrome://extensions), " +
+            "press the reload button on ImmersiveSBS link, then reload the video's tab."));
         link.Changed += () => dispatcher.BeginInvoke(() =>
         {
-            if (browserLink == null || browserLink.Connections.Count == browserCount) return;
+            if (browserLink == null) return;
+            // A theater opened or closed: at once, not at the next tick.
+            UpdateBrowserVideo(session);
+            if (browserLink.Connections.Count == browserCount) return;
             browserCount = browserLink.Connections.Count;
             browserRefused.RemoveWhere(r => browserLink.Connections.All(c => c.Number != r.Connection));
             Notify();
@@ -192,16 +188,15 @@ public sealed class AppController : IDisposable
     /// <summary>
     /// Keeps the page's delayed sound in step with what the session asks for. Sound is delayed
     /// only inside the page, by the browser extension: the app never captures, replays or turns
-    /// down any program's sound. The session learns whether the page can delay the followed
-    /// video's sound (else no buffer, and matched timing within lip sync with the sound live);
-    /// while it asks for a delay, the page plays the sound that late, and the session is told how
-    /// late it plays now, so the picture follows exactly.
+    /// down any program's sound. The session learns whether the page can delay the theater
+    /// video's sound (protected and cross-origin media cannot: no buffer then, and matched timing
+    /// within lip sync with the sound live); while it asks for a delay, the page plays the sound
+    /// that late, and the session is told how late it plays now, so the picture follows exactly.
     /// </summary>
     private void UpdateAudioDelay()
     {
         Session? s = session;
         UpdateBrowserVideo(s);
-        if (s != null) s.PageVideos = PageVideoRects();
 
         BrowserVideo? video = browserVideo;
         bool canDelay = video != null && !shuttingDown && BrowserCanDelay(video);
@@ -227,203 +222,110 @@ public sealed class AppController : IDisposable
         }
 
         double trim = Settings.AudioOffsetMs / 1000.0;
-        StartBrowserDelay(video!.Connection, video.Media.Tab, Math.Round(wanted + trim, 3));
+        StartBrowserDelay(video!.Connection, video.Theater.Tab, Math.Round(wanted + trim, 3));
         // The picture follows the page's sound: how late it is now, without the trim (0 until the
         // video is taken into the delay, which happens once it plays).
-        s!.SoundDelay = video.Media.Delay > 0 ? Math.Max(0.001, Math.Round(video.Media.Delay - trim, 3)) : 0;
+        double delay = video.Media?.Delay ?? 0;
+        s!.SoundDelay = delay > 0 ? Math.Max(0.001, Math.Round(delay - trim, 3)) : 0;
         LogBrowserDelay(video);
     }
 
     /// <summary>
-    /// Follows a video the extension reports, the only way a video is found (nothing is guessed
-    /// from the picture): the same element from tick to tick while it stays visible and on top in
-    /// its window, else the largest playing one on the virtual monitor. A followed paused video
-    /// gives way to one that plays (the user started another), except in the theater or just
-    /// after the user picked it. The session gets its exact place; a seek clears the depth history.
+    /// Follows the extension's 3D theater, the only way browser video reaches AI 3D: its page
+    /// reports which video, where its player shows it and whether that is the whole screen; the
+    /// newest one counts, should two browsers have one open. The session gets its place on the
+    /// virtual monitor, its frames, state and the boxes of its controls and captions.
     /// </summary>
     private void UpdateBrowserVideo(Session? s)
     {
         BrowserVideo? found = null;
-        if (browserLink is { Connections.Count: > 0 } link && s is { Windowed: false } && VirtualMonitor != null && !shuttingDown)
+        if (browserLink is { Connections.Count: > 0 } link && !shuttingDown
+            && link.Connections.Where(c => c.Theater != null).MaxBy(c => c.Theater!.Since) is { } c)
         {
-            long now = Environment.TickCount64;
-            bool hold = Theater || now - browserPickedAt < 2000;
-            if (browserVideo is { } previous) found = FollowBrowserVideo(link, previous);
-            if (found is { Media.Playing: false } && !hold && PlayingBrowserVideo() is { } playing && !Same(playing, found))
-                found = playing;
-            found ??= PlayingBrowserVideo();
-            if (found != null)
-            {
-                browserSeenAt = now;
-            }
-            else if (browserVideo is { } kept && link.Connections.Contains(kept.Connection) && now - browserSeenAt < BrowserGraceMs)
-            {
-                // Missed for a moment: keep it as last seen rather than restart the sound and the buffer.
-                found = kept with { Media = kept.Connection.Media.FirstOrDefault(m => m.Id == kept.Media.Id) ?? kept.Media };
-            }
+            TheaterReport t = c.Theater!;
+            found = new BrowserVideo(c, t, c.Media.FirstOrDefault(m => m.Id == t.MediaId));
         }
 
         BrowserVideo? was = browserVideo;
-        if (found?.Connection != was?.Connection || found?.Media.Id != was?.Media.Id)
+        if (found?.Connection != was?.Connection || found?.Theater.MediaId != was?.Theater.MediaId)
         {
             Log.Write(found == null
-                ? "Browser: no longer following a video in the browser."
-                : $"Browser: following a {found.Media.VideoWidth}×{found.Media.VideoHeight} video in {found.Connection}, " +
-                  $"at {found.Screen} on the desktop.");
-        }
-        else if (found != null && found.Media.Seeks != was!.Media.Seeks && Settings.UsePageData)
-        {
-            // A jump in the video: depth smoothed over the old frames would smear into the new.
-            depthService?.ResetHistory();
+                ? "Browser: no theater video."
+                : $"Browser: the theater shows a {found.Media?.VideoWidth ?? 0}×{found.Media?.VideoHeight ?? 0} video in {found.Connection}.");
+            offScreenTheater = null;
         }
         browserVideo = found;
-
-        // Protocol 2: the followed video reports its frames, state and the boxes over it; every
-        // other browser stops reporting. With page data off, the video is still found (the page
-        // delays its sound) but nothing the page tells reaches the picture.
-        bool usePage = Settings.UsePageData;
-        PageVideo? page = null;
-        if (browserLink != null)
-        {
-            foreach (BrowserConnection c in browserLink.Connections)
-                if ((c != found?.Connection || !usePage) && c.Followed != null) browserLink.Follow(c, null);
-            if (found != null && usePage) page = browserLink.Follow(found.Connection, found.Media.Id);
-        }
+        SetTheater(found != null);
 
         if (s == null) return;
-        if (found == null || VirtualMonitor is not { } monitor)
+        if (found == null || s.Windowed || VirtualMonitor is not { } vm || found.Theater.Picture is not { } picture)
         {
             s.BrowserVideo = null;
             return;
         }
-        Rectangle local = found.Screen;
-        local.Offset(-monitor.Bounds.X, -monitor.Bounds.Y);
-        if (!usePage)
+        // Its place on the screen is known only while its viewport is the screen, and the screen
+        // must be the virtual monitor (the glasses show nothing else).
+        string? notShown = !found.Theater.OnScreen
+            ? $"its page says its viewport is not the screen ({found.Theater.View})"
+            : FullScreenOn(vm.Bounds, out string window) ? null
+            : $"no window covers the virtual monitor {vm.Bounds.Width}×{vm.Bounds.Height} at ({vm.Bounds.X}, {vm.Bounds.Y}): {window}";
+        if (notShown != null)
         {
-            // Its place only: that is how the video is found.
-            s.BrowserVideo = new VideoHint(local, found.Media.Playing);
+            string key = found.Theater.MediaId + "|" + notShown;
+            if (offScreenTheater != key)
+            {
+                offScreenTheater = key;
+                Log.Write($"Browser: the theater is not full screen on the virtual monitor yet ({notShown}); its video is shown once it is.");
+            }
+            s.BrowserVideo = null;
             return;
         }
-
-        // The page's boxes, from its CSS px to the virtual monitor's px, split into captions and the rest.
-        var overlays = new List<Rectangle>();
-        List<Rectangle>? captions = page != null ? [] : null;
-        if (page != null)
+        if (offScreenTheater != null)
         {
-            Rectangle client = Native.ClientBounds(found.Window);
-            foreach (PageBox box in found.Connection.Overlays)
-            {
-                if (found.Media.ToScreen(box.Box, client) is not Rectangle r) continue;
-                r.Offset(-monitor.Bounds.X, -monitor.Bounds.Y);
-                (box.IsCaption ? captions! : overlays).Add(r);
-            }
+            offScreenTheater = null;
+            Log.Write($"Browser: the theater is full screen on the virtual monitor ({found.Theater.View}).");
         }
-        s.BrowserVideo = new VideoHint(local, found.Media.Playing)
+
+        PageVideo? page = found.Connection.Followed;
+        Rectangle local = found.Theater.ToScreen(picture);
+        var overlays = new List<Rectangle>();
+        var captions = new List<Rectangle>();
+        foreach (PageBox box in found.Connection.Overlays)
+            (box.IsCaption ? captions : overlays).Add(found.Theater.ToScreen(box.Box));
+        s.BrowserVideo = new VideoHint(local, page?.Paused != true)
         {
             Page = page,
-            Seeks = found.Media.Seeks,
             Overlays = overlays,
             Captions = captions,
         };
-        LogFollowed(found, page, overlays.Count, captions?.Count ?? 0);
+        LogFollowed(found, page, overlays.Count, captions.Count);
     }
 
-    /// <summary>Every 10 s while a video is followed with protocol 2: what the page tells (the evidence from a run).</summary>
+    /// <summary>Whether a window fills <paramref name="monitor"/> (the browser, full screen there), not this app's.</summary>
+    /// <param name="found">For the log: the window at the monitor's centre (its program and place).</param>
+    private static bool FullScreenOn(Rectangle monitor, out string found)
+    {
+        IntPtr window = Native.RootWindowAt(new System.Drawing.Point(monitor.X + monitor.Width / 2, monitor.Y + monitor.Height / 2));
+        if (window == IntPtr.Zero || !Native.GetWindowRect(window, out Native.RECT r))
+        {
+            found = "no window at its centre";
+            return false;
+        }
+        found = $"{Native.ProcessName(window)} at ({r.Left}, {r.Top}) to ({r.Right}, {r.Bottom}) at its centre";
+        return r.Left <= monitor.Left && r.Top <= monitor.Top && r.Right >= monitor.Right && r.Bottom >= monitor.Bottom;
+    }
+
+    /// <summary>Every 10 s while the theater is open: what the page tells (the evidence from a run).</summary>
     private void LogFollowed(BrowserVideo video, PageVideo? page, int overlays, int captions)
     {
         long now = Environment.TickCount64;
         if (page == null || now - followLogAt < 10000) return;
         followLogAt = now;
         bool fresh = page.Fresh(Stopwatch.GetTimestamp());
-        Log.Write($"Browser: the followed video in {video.Connection}: " + (fresh
+        Log.Write($"Browser: the theater in {video.Connection}: " + (fresh
             ? $"{(page.Paused ? "paused" : "playing")}, {page.FrameRate:0.##} fps, clock within {page.ClockErrorMs:0.0#} ms, " +
               $"{overlays} boxes over it and {captions} captions."
-            : "no frame or state messages for over a second (page data not used)."));
-    }
-
-    private static System.Drawing.Point Center(Rectangle r) => new(r.X + r.Width / 2, r.Y + r.Height / 2);
-
-    private static bool Same(BrowserVideo a, BrowserVideo b) => a.Connection == b.Connection && a.Media.Id == b.Media.Id;
-
-    /// <summary>The followed video again, if it is still there, visible and on top where it was seen.</summary>
-    private static BrowserVideo? FollowBrowserVideo(BrowserLink link, BrowserVideo previous)
-    {
-        if (!link.Connections.Contains(previous.Connection) || !Native.IsWindow(previous.Window) || Native.IsIconic(previous.Window))
-            return null;
-        BrowserMedia? media = previous.Connection.Media.FirstOrDefault(m => m.Id == previous.Media.Id);
-        if (media is not { Visible: true } || media.ScreenRect(Native.ClientBounds(previous.Window)) is not Rectangle screen) return null;
-        if (Native.RootWindowAt(Center(screen)) != previous.Window) return null;
-        return previous with { Media = media, Screen = screen };
-    }
-
-    /// <summary>
-    /// The videos the extension reports visible on the virtual monitor (its px), where the theater
-    /// button is offered; null while no browser is connected. Not thumbnails or previews (smaller
-    /// than <see cref="MinTheaterVideo"/>).
-    /// </summary>
-    private IReadOnlyList<Rectangle>? PageVideoRects()
-    {
-        if (browserLink is not { Connections.Count: > 0 } || VirtualMonitor is not { } vm || shuttingDown) return null;
-        var rects = new List<Rectangle>();
-        foreach (BrowserVideo v in PageVideosNear())
-        {
-            Rectangle r = Rectangle.Intersect(v.Screen, vm.Bounds);
-            if (r.Width < MinTheaterVideo.Width || r.Height < MinTheaterVideo.Height) continue;
-            r.Offset(-vm.Bounds.X, -vm.Bounds.Y);
-            rects.Add(r);
-        }
-        return rects;
-    }
-
-    /// <summary>The reported video at a desktop point, big enough for the theater; the one the button was pressed on.</summary>
-    private BrowserVideo? PageVideoAt(System.Drawing.Point desktop) =>
-        PageVideosNear().FirstOrDefault(v => v.Screen.Contains(desktop)
-                                             && v.Screen.Width >= MinTheaterVideo.Width && v.Screen.Height >= MinTheaterVideo.Height);
-
-    /// <summary>
-    /// The visible videos the extension reports in the browser window under the cursor, in the
-    /// followed video's, and in those at <paramref name="also"/> (desktop points), placed on the
-    /// screen; each only where its window is on top at its centre (a page's coordinates say
-    /// nothing about the window, so another window's page cannot count).
-    /// </summary>
-    private IEnumerable<BrowserVideo> PageVideosNear(params System.Drawing.Point[] also)
-    {
-        if (browserLink is not { } link) yield break;
-        var windows = new List<IntPtr>();
-        Native.GetCursorPos(out System.Drawing.Point cursor);
-        foreach (System.Drawing.Point p in also.Prepend(cursor))
-        {
-            IntPtr at = Native.RootWindowAt(p);
-            if (at != IntPtr.Zero && !windows.Contains(at)) windows.Add(at);
-        }
-        if (browserVideo is { } followed && !windows.Contains(followed.Window)) windows.Add(followed.Window);
-        foreach (IntPtr window in windows)
-        {
-            if (!Native.IsWindow(window) || Native.IsIconic(window)) continue;
-            Rectangle client = Native.ClientBounds(window);
-            if (client.IsEmpty) continue;
-            foreach (BrowserConnection c in link.Connections)
-                foreach (BrowserMedia m in c.Media)
-                    if (m.IsVideo && m.Visible && m.ScreenRect(client) is Rectangle screen && Native.RootWindowAt(Center(screen)) == window)
-                        yield return new BrowserVideo(c, m, window, screen);
-        }
-    }
-
-    /// <summary>
-    /// The largest playing video the extension reports on the virtual monitor (big enough for the
-    /// theater), or null. The browser windows are looked for under the cursor and at nine points
-    /// across the monitor (a page's coordinates need its window).
-    /// </summary>
-    private BrowserVideo? PlayingBrowserVideo()
-    {
-        if (VirtualMonitor is not { } vm) return null;
-        Rectangle b = vm.Bounds;
-        var points = new System.Drawing.Point[9];
-        for (int i = 0; i < 9; i++)
-            points[i] = new System.Drawing.Point(b.X + b.Width * (1 + 2 * (i % 3)) / 6, b.Y + b.Height * (1 + 2 * (i / 3)) / 6);
-        return PageVideosNear(points)
-            .Where(v => v.Media.Playing && Rectangle.Intersect(v.Screen, b) is { Width: >= 160, Height: >= 90 })
-            .MaxBy(v => (long)v.Screen.Width * v.Screen.Height);
+            : "no frame or state messages for over a second."));
     }
 
     /// <summary>
@@ -435,7 +337,7 @@ public sealed class AppController : IDisposable
     {
         foreach (BrowserMedia m in video.Connection.Media)
         {
-            if (m.Tab != video.Media.Tab || (m.Id != video.Media.Id && !(m.Playing && m.Audible))) continue;
+            if (m.Tab != video.Theater.Tab || (m.Id != video.Theater.MediaId && !(m.Playing && m.Audible))) continue;
             var key = (video.Connection.Number, m.Id);
             if (!m.Delayable && browserRefused.Add(key))
                 Log.Write($"Browser: {video.Connection} cannot delay a {m.Kind}'s sound in the page ({m.Reason}); no buffer for it, matched timing within 90 ms with the sound live.");
@@ -444,7 +346,7 @@ public sealed class AppController : IDisposable
         return true;
     }
 
-    /// <summary>Has the browser play the followed video's tab <paramref name="seconds"/> late, every other tab live.</summary>
+    /// <summary>Has the browser play the theater video's tab <paramref name="seconds"/> late, every other tab live.</summary>
     private void StartBrowserDelay(BrowserConnection connection, int tab, double seconds)
     {
         if (browserDelaying != connection)
@@ -460,7 +362,7 @@ public sealed class AppController : IDisposable
     private void StopBrowserDelay()
     {
         if (browserDelaying == null) return;
-        browserLink?.SetDelay(browserDelaying, 0);
+        browserLink?.SetDelay(browserDelaying, 0, -1);
         Log.Write($"Browser: {browserDelaying} plays the sound live again.");
         browserDelaying = null;
         if (session != null) session.SoundDelay = 0;
@@ -475,9 +377,9 @@ public sealed class AppController : IDisposable
         browserLogAt = now;
         IReadOnlyList<BrowserMedia> media = video.Connection.Media;
         int late = media.Count(m => m.Delay > 0);
-        Log.Write($"Audio: {video.Connection} plays the page's sound {video.Media.Delay:0.00#} s late " +
+        Log.Write($"Audio: {video.Connection} plays the page's sound {video.Media?.Delay ?? 0:0.00#} s late " +
                   $"(asked {video.Connection.RequestedDelay:0.00#} s; {late} of {media.Count} media elements delayed; " +
-                  $"video {(video.Media.Playing ? "playing" : "paused")}; Web Audio output latency {video.Media.Latency?.ToString() ?? "-"} ms).");
+                  $"video {(video.Media?.Playing == true ? "playing" : "paused")}; Web Audio output latency {video.Media?.Latency?.ToString() ?? "-"} ms).");
     }
 
     #endregion
@@ -520,13 +422,6 @@ public sealed class AppController : IDisposable
             case ShortcutCommand.PictureForward:
                 Adjust(s => s.Ai3DConvergence = Math.Round(Math.Clamp(s.Ai3DConvergence + (command == ShortcutCommand.PictureForward ? 0.05 : -0.05), 0.1, 0.9), 2),
                     s => $"Screen plane {s.Ai3DConvergence:0.00}");
-                break;
-
-            case ShortcutCommand.PickVideo:
-                // The video the extension reports under the cursor becomes the followed one.
-                Native.GetCursorPos(out System.Drawing.Point cursor);
-                if (PageVideoAt(cursor) is { } picked) Follow(picked, "the pick shortcut");
-                else Log.Write("AI 3D: no video from the browser extension under the cursor to pick.");
                 break;
 
             case ShortcutCommand.Tuning:
@@ -573,11 +468,8 @@ public sealed class AppController : IDisposable
 
     #region Theater
 
-    private readonly TheaterButtons theaterButtons = new();
-    private TheaterInput? theaterInput;
-    private TheaterWindow? theaterWindow;
-    private long theaterWithoutVideoSince;
-    private bool cursorConfined;
+    /// <summary>What the browsers were last told (<see cref="UpdateStatus"/>).</summary>
+    private (bool Glasses, bool Offer, TheaterPanel? Panel, double Stretch, Native3DMode Layout) sentStatus;
 
     /// <summary>
     /// The timing choices, from no delay to the longest (the theater panel steps through them,
@@ -641,139 +533,83 @@ public sealed class AppController : IDisposable
         if (choice.Buffer == 0) s.Timing = choice.Timing;
     }
 
-    /// <summary>The found video fills both eyes in the glasses, the desktop hidden.</summary>
+    /// <summary>
+    /// The extension's 3D theater is open: its player is full screen in the page
+    /// (the extension draws the button, the player and its controls), and the app shows it in 3D
+    /// filling both eyes, AI 3D on or not.
+    /// </summary>
     public bool Theater { get; private set; }
 
-    /// <summary>Turns theater mode on or off (tray, on-screen buttons, the player window's keys).</summary>
-    public void SetTheater(bool on)
+    /// <summary>Follows the page's theater (<see cref="UpdateBrowserVideo"/>).</summary>
+    private void SetTheater(bool on)
     {
         if (Theater == on) return;
-        if (on && browserVideo == null)
-        {
-            // Videos are found only by the extension.
-            tray?.Notify(BrowserConnected
-                ? "The 3D theater needs a playing video in the browser on the virtual monitor."
-                : "The 3D theater needs the ImmersiveSBS browser extension, which finds the video.");
-            return;
-        }
-        if (on && !OpenTheaterWindow()) return;
         Theater = on;
-        if (!on) CloseTheaterWindow();
-        theaterWithoutVideoSince = 0;
-        Log.Write(on ? "App: theater on." : "App: theater off.");
+        Log.Write(on ? "App: theater on (the extension's player)." : "App: theater off.");
         // The theater turns AI 3D on for its video (and the model loads), so re-evaluate fully.
         Evaluate(on ? "theater on" : "theater off", force: true);
     }
 
     /// <summary>
-    /// Opens the theater's player window over the virtual monitor (<see cref="TheaterWindow"/>):
-    /// it takes the clicks and keys the page under it used to get. Only while the glasses show
-    /// the virtual monitor, and only when the capture can leave it out.
+    /// Opens the extension's theater on the largest playing video of the tab in front, or closes
+    /// it (the tray): without a click in the page it fills the browser window, which goes full screen.
     /// </summary>
-    private bool OpenTheaterWindow()
+    public void ToggleTheater()
     {
-        if (session is not { Windowed: false } || VirtualMonitor is not { } vm || shuttingDown) return false;
-        var window = new TheaterWindow(vm.Bounds);
-        window.Command += OnTheaterKey;
-        window.Show();
-        if (!window.Excluded)
+        if (!BrowserConnected)
         {
-            window.CloseAndRestore();
-            tray?.Notify("The 3D theater needs Windows 10 2004 or later (a window the capture leaves out).");
-            return false;
+            tray?.Notify("The 3D theater is in the ImmersiveSBS browser extension, which is not connected: load it from the app's folder (Settings).");
+            return;
         }
-        theaterWindow = window;
-        Native.SeeThroughWindow = window.Handle;
-        return true;
+        browserLink!.RequestTheater(!Theater);
     }
 
-    private void CloseTheaterWindow()
+    /// <summary>
+    /// A button of the theater's 3D panel, in the page (UI thread). The new values go back to the
+    /// page with the next status.
+    /// </summary>
+    private void OnPageCommand(string name)
     {
-        TheaterWindow? window = theaterWindow;
-        theaterWindow = null;
-        Native.SeeThroughWindow = IntPtr.Zero;
-        window?.CloseAndRestore();
-    }
-
-    /// <summary>A key or double click in the player window (UI thread).</summary>
-    private void OnTheaterKey(TheaterKey key)
-    {
-        switch (key)
+        switch (name)
         {
-            case TheaterKey.Exit: SetTheater(false); break;
-            case TheaterKey.PlayPause: TogglePlay(); break;
-            case TheaterKey.Back or TheaterKey.Forward:
-                if (browserVideo is { } video) browserLink?.Seek(video.Connection, video.Media.Id, key == TheaterKey.Back ? -10 : 10);
+            case "depthLess": Execute(ShortcutCommand.LessDepth); break;
+            case "depthMore": Execute(ShortcutCommand.MoreDepth); break;
+            case "planeBack": Execute(ShortcutCommand.PictureBack); break;
+            case "planeForward": Execute(ShortcutCommand.PictureForward); break;
+            case "modelPrevious" or "modelNext":
+                Adjust(s => s.DepthTier = NextModel(s, name == "modelNext" ? 1 : -1), s => "Model " + DepthModel.Name(s.DepthTier));
                 break;
-        }
-    }
-
-    /// <summary>The followed video itself; else the media key, which the browser gives to the video it chooses.</summary>
-    private void TogglePlay()
-    {
-        if (browserVideo is { } video && browserLink != null) browserLink.TogglePlay(video.Connection, video.Media.Id);
-        else Native.PressMediaPlayPause();
-    }
-
-    /// <summary>Hook thread → UI thread: an on-screen button was clicked in the glasses, at <paramref name="at"/> (desktop px).</summary>
-    private void OnTheaterClicked(TheaterAction action, System.Drawing.Point at) => dispatcher.BeginInvoke(() =>
-    {
-        switch (action)
-        {
-            case TheaterAction.EnterTheater:
-                // The theater opens on the video whose button was pressed.
-                if (PageVideoAt(at) is { } pick) Follow(pick, "the theater button");
-                SetTheater(true);
-                break;
-            case TheaterAction.ExitTheater: SetTheater(false); break;
-            case TheaterAction.PlayPause: TogglePlay(); break;
-            case TheaterAction.SeekBack: OnTheaterKey(TheaterKey.Back); break;
-            case TheaterAction.SeekForward: OnTheaterKey(TheaterKey.Forward); break;
-            case TheaterAction.Mute:
-                if (browserVideo is { } muted) browserLink?.ToggleMute(muted.Connection, muted.Media.Id);
-                break;
-            case TheaterAction.SeekBar:
-                // Where on the bar it was pressed says where to: a share of the video's length.
-                if (browserVideo is { } seeking && browserLink != null && seeking.Connection.Followed is { } page
-                    && double.IsFinite(page.Duration) && theaterButtons.RectOf(TheaterAction.SeekBar) is Rectangle bar)
-                {
-                    // The click area reaches above and below the drawn bar; its width is the bar's.
-                    browserLink.SeekTo(seeking.Connection, seeking.Media.Id, TheaterGeometry.SeekFraction(bar, at.X) * page.Duration);
-                }
-                break;
-            case TheaterAction.Settings: session?.ToggleTheaterPanel(); break;
-            case TheaterAction.DepthLess: Execute(ShortcutCommand.LessDepth); break;
-            case TheaterAction.DepthMore: Execute(ShortcutCommand.MoreDepth); break;
-            case TheaterAction.PlaneBack: Execute(ShortcutCommand.PictureBack); break;
-            case TheaterAction.PlaneForward: Execute(ShortcutCommand.PictureForward); break;
-            case TheaterAction.ModelPrevious or TheaterAction.ModelNext:
-                Adjust(s => s.DepthTier = NextModel(s, action == TheaterAction.ModelNext ? 1 : -1), s => "Model " + DepthModel.Name(s.DepthTier));
-                break;
-            case TheaterAction.SizePrevious or TheaterAction.SizeNext:
-                Adjust(s => s.DepthPreset = (DepthPreset)Math.Clamp((int)s.DepthPreset + (action == TheaterAction.SizeNext ? 1 : -1), 0,
+            case "sizePrevious" or "sizeNext":
+                Adjust(s => s.DepthPreset = (DepthPreset)Math.Clamp((int)s.DepthPreset + (name == "sizeNext" ? 1 : -1), 0,
                     Enum.GetValues<DepthPreset>().Length - 1), s => $"Resolution {s.DepthPreset}");
                 break;
-            case TheaterAction.BufferLess or TheaterAction.BufferMore:
-                Adjust(s => SetTiming(s, NextTiming(s, action == TheaterAction.BufferMore ? 1 : -1)),
-                    s => "Timing: " + TimingLabel(TimingIndex(s)));
+            case "timingLess" or "timingMore":
+                Adjust(s => SetTiming(s, NextTiming(s, name == "timingMore" ? 1 : -1)), s => "Timing: " + TimingLabel(TimingIndex(s)));
                 break;
-            case TheaterAction.ToggleEdgeSnap:
+            case "edgeSnap":
                 Adjust(s => s.Tuning = s.Tuning with { EdgeSnap = !s.Tuning.EdgeSnap }, s => "Edge snapping " + (s.Tuning.EdgeSnap ? "on" : "off"));
                 break;
-            case TheaterAction.ToggleCaptions:
+            case "captions":
                 Adjust(s => s.Tuning = s.Tuning with { Captions = !s.Tuning.Captions }, s => "Flat subtitles " + (s.Tuning.Captions ? "on" : "off"));
                 break;
+            case "stretchLess" or "stretchMore":
+                // The player draws the stretch; 1 to 1.5 in steps of 0.05.
+                Adjust(s => s.VideoStretch = Math.Round(Math.Clamp(s.VideoStretch + (name == "stretchMore" ? 0.05 : -0.05), 1, 1.5), 2),
+                    s => $"Stretch ×{s.VideoStretch:0.00}");
+                break;
+            case "layoutNext":
+                // What the video is: 2D (converted), side-by-side or top-bottom 3D (shown as is).
+                Adjust(s => s.Native3D = s.Native3D switch
+                {
+                    Native3DMode.Off => Native3DMode.ForceSideBySide,
+                    Native3DMode.ForceSideBySide => Native3DMode.ForceTopBottom,
+                    _ => Native3DMode.Off,
+                }, s => "Video " + s.Native3D);
+                break;
+            default:
+                Log.Write($"Browser: unknown command from the theater: {name}.");
+                break;
         }
-    });
-
-    /// <summary>Follows <paramref name="pick"/> from now on: the user chose it (<paramref name="how"/>).</summary>
-    private void Follow(BrowserVideo pick, string how)
-    {
-        if (browserVideo is not { } current || !Same(current, pick))
-            Log.Write($"Browser: {how} picked a {pick.Media.VideoWidth}×{pick.Media.VideoHeight} video in {pick.Connection} at {pick.Screen}.");
-        browserVideo = pick;
-        browserSeenAt = browserPickedAt = Environment.TickCount64;
-        UpdateBrowserVideo(session);
     }
 
     /// <summary>The next (or previous) model whose file exists at the current resolution, wrapping round.</summary>
@@ -790,55 +626,36 @@ public sealed class AppController : IDisposable
     }
 
     /// <summary>
-    /// The click hook runs only while the glasses show the virtual monitor; theater mode ends by
-    /// itself when no video has been found for a few seconds (the video was closed).
+    /// Tells the browsers what their theater needs (UI thread, every tick; sent only on a
+    /// change): whether the glasses show the virtual monitor in 3D (the button shows only then),
+    /// whether the user wants the button, and the 3D panel's values.
     /// </summary>
-    private void UpdateTheater()
+    private void UpdateStatus()
     {
-        bool glasses = session is { Windowed: false } && !shuttingDown;
-        if (glasses && theaterInput == null)
+        if (browserLink == null) return;
+        bool glasses = session is { Windowed: false } && VirtualMonitor != null && !shuttingDown;
+        TheaterPanel? panel = session?.Panel();
+        var status = (glasses, Settings.OfferTheater, panel, Settings.VideoStretch, Settings.Native3D);
+        if (status == sentStatus) return;
+        sentStatus = status;
+        object? settings = panel == null ? null : new
         {
-            theaterInput = new TheaterInput(theaterButtons);
-            theaterInput.Clicked += OnTheaterClicked;
-        }
-        else if (!glasses && theaterInput != null)
-        {
-            theaterInput.Dispose();
-            theaterInput = null;
-            theaterButtons.Clear();
-        }
-        // The glasses left 3D or the virtual monitor: the player window would cover a screen nobody sees through.
-        if (!glasses && Theater) SetTheater(false);
-
-        // In the theater only the video is visible, so the cursor stays on it: outside it, it would
-        // move over (and click) windows the user cannot see. Re-applied each tick, as Windows
-        // drops a clip on some events (a secure desktop, another app's clip).
-        Rectangle confine = Theater && session is { TheaterActive: true } s0 ? s0.TheaterDesktop : Rectangle.Empty;
-        if (!confine.IsEmpty)
-        {
-            Native.ConfineCursor(confine);
-            cursorConfined = true;
-        }
-        else if (cursorConfined)
-        {
-            Native.ConfineCursor(null);
-            cursorConfined = false;
-        }
-
-        if (!Theater) return;
-        if (session is { TheaterActive: true })
-        {
-            theaterWithoutVideoSince = 0;
-        }
-        else if (theaterWithoutVideoSince == 0)
-        {
-            theaterWithoutVideoSince = Environment.TickCount64;
-        }
-        else if (Environment.TickCount64 - theaterWithoutVideoSince > 4000)
-        {
-            Log.Write("App: theater ended: no video found.");
-            SetTheater(false);
-        }
+            model = panel.Model,
+            size = panel.Size,
+            depth = Math.Round(panel.Depth, 2),
+            plane = Math.Round(panel.Plane, 2),
+            timing = panel.Timing,
+            edgeSnap = panel.EdgeSnap,
+            captions = panel.Captions,
+            stretch = Math.Round(Settings.VideoStretch, 2),
+            layout = Settings.Native3D switch
+            {
+                Native3DMode.ForceSideBySide => "sideBySide",
+                Native3DMode.ForceTopBottom => "topBottom",
+                _ => "2d",
+            },
+        };
+        browserLink.SetStatus(glasses, Settings.OfferTheater, settings);
     }
 
     #endregion
@@ -1053,7 +870,7 @@ public sealed class AppController : IDisposable
         }
 
         if (EffectiveAi3D != AiTarget.Off && desired is { MirrorBounds: null })
-            StatusText += Theater ? "; 3D theater" : "; AI 3D " + (Settings.Ai3D == AiTarget.Video ? "video" : "whole screen");
+            StatusText += Theater ? "; 3D theater" : "; AI 3D whole screen";
 
         UpdateDepthService();
         _ = ReconcileAsync(desired);
@@ -1105,10 +922,9 @@ public sealed class AppController : IDisposable
     {
         double fov = KnownGlasses.FindByEdidKey(Glasses?.Identity.EdidKey)?.FieldOfView ?? DefaultFieldOfView;
         var stereo = new StereoSettings(EffectiveAi3D, Settings.Ai3DStrength, Settings.Ai3DConvergence, fov, Settings.Native3D,
-            Settings.VideoStretch, Settings.BufferSeconds, Settings.Tuning, Theater, Settings.OfferTheater, Settings.Timing);
+            Settings.BufferSeconds, Settings.Tuning, Theater, Settings.Timing);
         if (s.Stereo != stereo) s.Stereo = stereo;
         if (s.Depth != depthService) s.Depth = depthService;
-        s.Buttons = theaterButtons;
         if (depthService != null)
         {
             if (depthService.Tuning != Settings.Tuning) depthService.Tuning = Settings.Tuning;
@@ -1288,7 +1104,6 @@ public sealed class AppController : IDisposable
         tuningWindow?.Close();
         retryTimer.Stop();
         audioTimer.Stop();
-        CloseTheaterWindow();
         StopBrowserDelay();
         if (session != null)
         {
@@ -1313,13 +1128,6 @@ public sealed class AppController : IDisposable
     /// <summary>Releases the hooks, the depth model, the browser link and the tray icon; safe to call twice.</summary>
     public void Dispose()
     {
-        if (cursorConfined)
-        {
-            Native.ConfineCursor(null);
-            cursorConfined = false;
-        }
-        theaterInput?.Dispose();
-        theaterInput = null;
         cursorGuard?.Dispose();
         cursorGuard = null;
         windowGuard?.Dispose();

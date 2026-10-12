@@ -11,7 +11,7 @@ public enum AiTarget
     /// <summary>Off: the virtual monitor is shown flat in both eyes.</summary>
     Off,
 
-    /// <summary>The video the browser extension reports, only (the plan's default); nothing without it.</summary>
+    /// <summary>The extension's theater video: set while the theater is open, not a setting.</summary>
     Video,
 
     /// <summary>The whole virtual monitor; text and menus shimmer slightly with depth.</summary>
@@ -38,33 +38,29 @@ public enum VideoTiming
 /// <param name="Strength">σ ∈ [0, 1], a fraction of the comfort-limited maximum.</param>
 /// <param name="Convergence">c ∈ (0, 1): the nearness at the screen plane.</param>
 /// <param name="FieldOfView">The glasses' diagonal field of view, degrees.</param>
-/// <param name="Native3D">What to do with video that is already side-by-side or top-bottom.</param>
-/// <param name="Stretch">Horizontal stretch of the video around its centre (1 = none), for content
-/// in the wrong aspect ratio; works with AI 3D off too.</param>
+/// <param name="Native3D">What the video is: 2D (converted) or side-by-side or top-bottom 3D (shown as is).</param>
 /// <param name="BufferSeconds">How late the video is shown, in step with the sound the page delays; 0 = no buffer.
-/// Only with the browser extension; without it, Auto timing.</param>
+/// Only where the page can delay the sound; else Auto timing.</param>
 /// <param name="Tuning">Fine controls; null = the defaults.</param>
-/// <param name="Theater">The video fills both eyes, the desktop hidden; needs the extension's video, AI 3D or not.</param>
-/// <param name="OfferTheater">Offer the "3D theater" button over the extension's videos.</param>
+/// <param name="Theater">The extension's player shows the video: it fills both eyes, the desktop hidden, AI 3D or not.</param>
 /// <param name="Timing">Live or matched while there is no buffer.</param>
 public sealed record StereoSettings(AiTarget Target, double Strength, double Convergence, double FieldOfView,
-    Native3DMode Native3D = Native3DMode.Auto, double Stretch = 1, double BufferSeconds = 0, StereoTuning? Tuning = null,
-    bool Theater = false, bool OfferTheater = false, VideoTiming Timing = VideoTiming.Auto)
+    Native3DMode Native3D = Native3DMode.Off, double BufferSeconds = 0, StereoTuning? Tuning = null,
+    bool Theater = false, VideoTiming Timing = VideoTiming.Auto)
 {
     public static readonly StereoSettings Off = new(AiTarget.Off, 0.6, 0.35, 50);
-
-    public bool Stretches => Math.Abs(Stretch - 1) > 0.001;
 }
 
 /// <summary>
-/// Where the video is, exactly, as the browser extension reports it (source px), and whether it
-/// plays: the only way a video is found. Guessing it from the picture (a tracker of changing
-/// areas) took scrolling pages, animations and the desktop for videos, and its box shifted as
-/// the player's controls came and went; it was removed on 2026-10-12.
+/// Where the extension's theater shows its video (source px, the player full screen on the
+/// virtual monitor), and whether it plays: the only way browser video reaches AI 3D. Guessing a
+/// video from the picture took scrolling pages, animations and the desktop for videos, and
+/// following one in place in a page needed its window and layout guessed too; both were removed
+/// on 2026-10-12.
 /// </summary>
-/// <param name="Overlays">Boxes the page draws over the picture (player controls, titles, logos), source px.</param>
-/// <param name="Captions">The page's caption boxes, source px; null when it reports none (subtitles may be burned in).</param>
-/// <param name="Page">Frame events and playback state as they arrive (protocol 2); null with protocol 1.</param>
+/// <param name="Overlays">The player's controls over the picture, source px.</param>
+/// <param name="Captions">The player's caption boxes, source px (subtitles may also be burned in).</param>
+/// <param name="Page">The theater's frame events and playback state as they arrive.</param>
 public sealed record VideoHint(Rectangle Region, bool Playing)
 {
     public IReadOnlyList<Rectangle> Overlays { get; init; } = [];
@@ -72,20 +68,18 @@ public sealed record VideoHint(Rectangle Region, bool Playing)
     public IReadOnlyList<Rectangle>? Captions { get; init; }
 
     public PageVideo? Page { get; init; }
-
-    /// <summary>How many times the video has seeked (protocol 1 too); −1 unknown.</summary>
-    public int Seeks { get; init; } = -1;
 }
 
 /// <summary>
-/// Per-session driver of the video features on the render thread: finds the region, stretches
-/// it, recognises video that is already 3D, feeds the depth service and builds the eye images:
-/// live, matched (delayed just enough for every frame's own depth, improvement-plan.md §6), or a
-/// fixed delay late from <see cref="VideoDelayBuffer"/> while the sound is delayed too
-/// (video-3d-plan.md §4.1, §4.4, P5). Only frames whose picture changed in the region are handed
-/// to the model (improvement-plan.md §9 step 0): a 24–30 fps video changes every second or third
-/// loop, and the rest were repeats. Eye images are rebuilt only when the frame, the depth or the
-/// settings changed. The live picture never waits for depth.
+/// Per-session driver of the video features on the render thread: takes the region (the
+/// theater's video, or the whole screen), shows video the user says is already 3D as it is,
+/// feeds the depth service and builds the eye images: live, matched (delayed just enough for
+/// every frame's own depth, improvement-plan.md §6), or a fixed delay late from
+/// <see cref="VideoDelayBuffer"/> while the sound is delayed too (video-3d-plan.md §4.1, §4.4,
+/// P5). Only new pictures go to the model (improvement-plan.md §9 step 0): in the theater the
+/// frames its player reports drawing, so a 24–30 fps video hands over 24–30 a second and a
+/// paused one none; the whole screen, each new capture. Eye images are rebuilt only when the
+/// frame, the depth or the settings changed. The live picture never waits for depth.
 /// </summary>
 public sealed class AiStereo : IDisposable
 {
@@ -125,24 +119,10 @@ public sealed class AiStereo : IDisposable
     /// <summary>Matched timing plays the sound live up to this picture delay (ITU-R BT.1359: acceptable to +90 ms).</summary>
     public const double LiveSoundMaxSeconds = 0.090;
 
-    /// <summary>A page that says paused while the picture keeps changing this long is not believed.</summary>
-    private const double PausedButChangingSeconds = 0.5;
-
-    /// <summary>The dirty rectangles missed a change this many times within <see cref="MissWindowSeconds"/>: stop trusting them.</summary>
-    private const int MaxMissedChanges = 3;
-
-    private const double MissWindowSeconds = 10;
-
     private readonly StereoSynth synth;
     private readonly VideoDelayBuffer delayed;
-    private readonly Native3DDetector native = new();
     private readonly MatchedDelay matched = new(PresentLatencyMs);
     private readonly Stopwatch clock = Stopwatch.StartNew();
-    private Size gridSource;
-    private Size gridCells;
-    private byte[] grid = [];
-    private byte[] previousGrid = [];
-    private bool previousGridValid;
     private float[] input = [];
     private DepthFrame? depth;
     private DepthFrame? smoothed;
@@ -150,12 +130,9 @@ public sealed class AiStereo : IDisposable
     private Rectangle region;
     private long frameId;
     private long regionStartId;
-    private double lastGridTime;
-    private double gridDt = 1.0 / 30;
     private double lastBandTime;
     private double bandLeft, bandRight, bandLeftTarget, bandRightTarget;
     private long shownDelayedId = -1;
-    private Rectangle theaterRegion;
     /// <summary>When each recent frame id was handed to the model, to know how old its depth is.</summary>
     private readonly long[] submitTicks = new long[64];
     private bool depthStale;
@@ -163,8 +140,7 @@ public sealed class AiStereo : IDisposable
     /// <summary>The model input queued on the GPU this frame, handed to the service after the present.</summary>
     private QueuedInput? queuedInput;
 
-    /// <param name="Forced">Handed over whatever the luma grid says (a new region, model or settings).</param>
-    private readonly record struct QueuedInput(DepthService Service, long FrameId, double Time, bool Forced);
+    private readonly record struct QueuedInput(DepthService Service, long FrameId, double Time);
     private StereoOverlay? overlay;
     private object? overlayKey;
 
@@ -172,12 +148,10 @@ public sealed class AiStereo : IDisposable
     private bool forceHandOver = true;
     private DepthService? lastService;
     private StereoSettings? lastSettings;
-    private bool dirtyRectsTrusted = true;
-    private int missedChanges;
-    private double missWindowStart;
-    /// <summary>The region of the frame whose luma grid is queued, and whether that frame was skipped as unchanged.</summary>
-    private Rectangle checkRegion;
-    private bool checkSkipped;
+    /// <summary>The theater's last frame handed to the model (its count of frames drawn), −1 for none.</summary>
+    private long lastPresented = -1;
+    /// <summary>The theater's page data at the last <see cref="Process"/>, for <see cref="HandOverEarly"/>; null outside the theater.</summary>
+    private PageVideo? lastPage;
     private long lastDepthFrameId = -1;
     private int segment;
     private int seenSeeks = -1;
@@ -186,18 +160,16 @@ public sealed class AiStereo : IDisposable
     // Measures (improvement-plan.md §0), per statistics window.
     private readonly List<float> ageSamples = [];
     private float[] ageScratch = [];
-    private int handOvers, repeatsSkipped, depthFramesTaken;
+    private int handOvers, depthFramesTaken;
     private string changeSource = "-";
     private double holeFraction = double.NaN;
     private double lastHoleQueue;
     private string timingShown = "live";
     private VideoHint? boxesHint;
     private Rectangle boxesRegion;
-    private double pausedChangingSince = double.NaN;
     /// <summary>A frame was handed over by <see cref="HandOverEarly"/> since the last <see cref="Process"/>: its picture changed.</summary>
     private bool earlyChanged;
     private bool liveLast;
-    private bool pagePausedLast;
 
     public AiStereo(ID3D11Device device)
     {
@@ -240,18 +212,17 @@ public sealed class AiStereo : IDisposable
     /// <param name="eyeSize">One eye's size on the glasses, px.</param>
     /// <param name="scale">Eye px per source px (1 when the virtual monitor matches the eye).</param>
     /// <param name="soundDelay">How late the page plays the sound under <see cref="DelayRegion"/> now, seconds; 0 = live.</param>
-    /// <param name="pageCanDelay">The browser extension follows this video and can delay its sound in the page.</param>
-    /// <param name="hint">The video's exact place from the browser extension, if it reports one.</param>
-    /// <param name="changed">Whether an area of the frame changed since the last call (false only when the capture knows it did not; null when it cannot tell).</param>
+    /// <param name="pageCanDelay">The page can delay this video's sound (not protected or cross-site media).</param>
+    /// <param name="hint">The theater's video from the browser extension; null without one.</param>
     /// <param name="captureTicks">When the newest desktop image was made, Stopwatch ticks; 0 = now.</param>
     public StereoOverlay? Process(ID3D11Texture2D source, bool newFrame, StereoSettings settings, DepthService? service,
-        Size eyeSize, double scale, double soundDelay, bool pageCanDelay, VideoHint? hint = null, Func<Rectangle, bool?>? changed = null,
-        long captureTicks = 0)
+        Size eyeSize, double scale, double soundDelay, bool pageCanDelay, VideoHint? hint = null, long captureTicks = 0)
     {
         DelayRegion = Rectangle.Empty;
         FoundRegion = Rectangle.Empty;
         liveLast = false;
-        if (settings.Target == AiTarget.Off && !settings.Stretches && !settings.Theater)
+        lastPage = null;
+        if (settings.Target == AiTarget.Off)
         {
             Forget();
             DelaySeconds = wantedDelaySeconds = 0;
@@ -264,77 +235,41 @@ public sealed class AiStereo : IDisposable
         var d = source.Description;
         var sourceSize = new Size((int)d.Width, (int)d.Height);
         bool track = settings.Target != AiTarget.WholeScreen;
-        if (newFrame || grid.Length == 0) QueueGrid(source, sourceSize);
-        checkRegion = Rectangle.Empty;
-        checkSkipped = false;
 
-        // The video: only where the browser extension says it is. The theater keeps its last box
-        // while the page's is missed for a moment (the controller's grace keeps it otherwise).
-        Rectangle exact = Rectangle.Empty;
-        double seconds = clock.Elapsed.TotalSeconds;
-        if (track && hint is { } h)
+        // The region: the whole frame, or where the theater shows its video.
+        Rectangle target = new(Point.Empty, sourceSize);
+        if (track)
         {
-            Rectangle r = Rectangle.Intersect(h.Region, new Rectangle(Point.Empty, sourceSize));
-            if (r.Width >= 16 && r.Height >= 16) exact = r;
-        }
-        if (!settings.Theater) theaterRegion = Rectangle.Empty;
-        else if (!exact.IsEmpty) theaterRegion = exact;
-
-        // The region: the whole frame, or the extension's video.
-        Rectangle target;
-        if (!track)
-        {
-            target = new Rectangle(Point.Empty, sourceSize);
-        }
-        else if (!exact.IsEmpty || !theaterRegion.IsEmpty)
-        {
-            target = exact.IsEmpty ? theaterRegion : exact;
-        }
-        else
-        {
-            Status = (settings.Target == AiTarget.Off ? "Stretch" : "AI 3D") + ": no video from the browser extension (it finds the video; without it, only Whole screen)";
-            SetRegion(Rectangle.Empty, service);
-            return null;
+            target = hint is { } h ? Rectangle.Intersect(h.Region, target) : Rectangle.Empty;
+            if (target.Width < 16 || target.Height < 16)
+            {
+                Status = "AI 3D: waiting for the theater's video (full screen on the virtual monitor)";
+                SetRegion(Rectangle.Empty, service);
+                return null;
+            }
         }
         SetRegion(target, service);
         FoundRegion = region;
-        // In the theater every new frame counts; a video the page says is playing counts too,
-        // even in a still shot.
-        bool regionMoving = !track || settings.Theater || hint is { Playing: true };
-        Rectangle drawn = Stretched(region, settings.Stretch);
-        string stretch = (track ? ", from the browser" : "") + (settings.Stretches ? $", stretched ×{settings.Stretch:0.##}" : "");
+        string from = track ? ", in the theater" : "";
 
-        // Stretch or theater with AI 3D off: the region flat in both eyes.
-        if (settings.Target == AiTarget.Off)
-        {
-            DelaySeconds = wantedDelaySeconds = 0;
-            Status = $"Video {region.Width}×{region.Height}{stretch}";
-            return Cached((Native3DLayout.None, region, drawn), newFrame, () => synth.SplitNative(source, region, Native3DLayout.None), drawn);
-        }
-
-        // Video that is already 3D goes straight to the eyes (§7.4).
-        if (newFrame && regionMoving) native.Update(grid, gridCells.Width, 8, region, gridDt);
+        // Video that is already 3D goes straight to the eyes, as the user says it is (§7.4).
         Native3DLayout layout = settings.Native3D switch
         {
-            Native3DMode.Off => Native3DLayout.None,
             Native3DMode.ForceSideBySide => Native3DLayout.SideBySide,
             Native3DMode.ForceTopBottom => Native3DLayout.TopBottom,
-            _ => native.Layout,
+            _ => Native3DLayout.None,
         };
         if (layout != Native3DLayout.None)
         {
-            // No delay region: the page's delayed sound runs on through the controller's grace
-            // time rather than restart (silent for its length) if this was a passing false find.
-            // The 2026-10-12 run flipped to "shown as is" every few seconds.
-            if (settings.Native3D != Native3DMode.Auto) DelaySeconds = wantedDelaySeconds = 0;
-            Status = $"AI 3D: {(layout == Native3DLayout.SideBySide ? "side-by-side" : "top-bottom")} 3D video, shown as is{stretch}";
-            return Cached((layout, region, drawn), newFrame, () => synth.SplitNative(source, region, layout), drawn);
+            DelaySeconds = wantedDelaySeconds = 0;
+            Status = $"AI 3D: {(layout == Native3DLayout.SideBySide ? "side-by-side" : "top-bottom")} 3D video, shown as is{from}";
+            return Cached((layout, region), newFrame, () => synth.SplitNative(source, region, layout));
         }
 
         // The theater shows its video flat until depth is there (the model loading, the buffer
-        // filling), rather than dropping back to the desktop.
-        StereoOverlay? FlatInTheater() => settings.Theater
-            ? Cached((Native3DLayout.None, region, drawn), newFrame, () => synth.SplitNative(source, region, Native3DLayout.None), drawn)
+        // filling), rather than dropping back to the page.
+        StereoOverlay? FlatInTheater() => track
+            ? Cached((Native3DLayout.None, region), newFrame, () => synth.SplitNative(source, region, Native3DLayout.None))
             : null;
 
         if (service == null)
@@ -366,7 +301,7 @@ public sealed class AiStereo : IDisposable
         PageVideo? page = hint?.Page;
         long now = Stopwatch.GetTimestamp();
         bool pageFresh = page?.Fresh(now) == true;
-        int seeks = pageFresh ? page!.Seeks : !exact.IsEmpty ? hint!.Seeks : -1;
+        int seeks = pageFresh ? page!.Seeks : -1;
         if (seeks >= 0 && seeks != seenSeeks)
         {
             if (seenSeeks >= 0)
@@ -378,43 +313,37 @@ public sealed class AiStereo : IDisposable
             seenSeeks = seeks;
         }
 
-        // What the page draws over the picture: its controls held flat, its captions instead of
-        // the subtitle detection (improvement-plan.md §7.4); only for the video it reports.
+        // What the player draws over the picture: its controls held flat, its captions instead of
+        // the subtitle detection (improvement-plan.md §7.4).
         if (!ReferenceEquals(hint, boxesHint) || region != boxesRegion)
         {
             boxesHint = hint;
             boxesRegion = region;
-            service.PageBoxes = !exact.IsEmpty && pageFresh && hint is { } hb
+            service.PageBoxes = track && pageFresh && hint is { } hb
                 ? PageBoxes.ToModel(hb.Overlays, hb.Captions ?? [], region, new Size(service.Model.Width, service.Model.Height))
                 : null;
         }
 
-        // Which frames go to the model: those whose picture changed in the region. The capture's
-        // dirty rectangles say so at once; otherwise the luma grid decides after the present.
-        // While the page says the video is paused, none (its controls fading in and out are
-        // redrawn, not handed over).
-        bool? known = forceHandOver ? true : dirtyRectsTrusted ? changed?.Invoke(region) : null;
-        // A frame handed over early changed the picture too; what changed since is the rest.
-        bool pictureChanged = newFrame && (known ?? regionMoving) || earlyChanged;
-        bool pagePaused = pageFresh && page!.Paused && !page.Seeking;
-        // ...unless the picture keeps changing anyway (another element plays, or the page is
-        // wrong): then the capture decides (§3.5 rule 3).
-        if (!pagePaused || (newFrame && !pictureChanged)) pausedChangingSince = double.NaN;
-        else if (pictureChanged && double.IsNaN(pausedChangingSince)) pausedChangingSince = seconds;
-        if (pagePaused && seconds - pausedChangingSince >= PausedButChangingSeconds) pagePaused = false;
-        bool handOver = pictureChanged && (forceHandOver || !pagePaused);
-        changeSource = forceHandOver ? changeSource : known.HasValue ? "dirty rectangles" : dirtyRectsTrusted ? "luma grid" : "luma grid (dirty rectangles missed changes)";
-        if (newFrame)
-        {
-            checkRegion = region;
-            checkSkipped = known == false && !earlyChanged;
-            if (regionMoving && !handOver && !earlyChanged) repeatsSkipped++;
-        }
+        // Which frames go to the model. In the theater, those the player drew since the last one
+        // handed over: it reports each frame it draws, so a paused video gives none and a seek
+        // while paused gives one. Without its reports yet (the clock still syncing), each new
+        // capture while the page says it plays. The whole screen: each new capture.
+        PageVideo.FrameEvent shownFrame = default;
+        bool haveFrame = track && pageFresh && page!.TryFrameAt(captureTicks > 0 ? captureTicks : now, Stopwatch.Frequency / 120, out shownFrame);
+        bool newPicture;
+        if (!track) newPicture = newFrame;
+        else if (haveFrame) newPicture = newFrame && shownFrame.Presented != lastPresented;
+        else newPicture = newFrame && !(pageFresh && page!.Paused && !page.Seeking);
+        if (forceHandOver && newFrame) newPicture = true;
+        if (newPicture && haveFrame) lastPresented = shownFrame.Presented;
+        // A frame handed over early changed the picture too; it is not handed over again.
+        bool pictureChanged = newPicture || earlyChanged;
+        bool handOver = newPicture;
+        changeSource = !track ? "captured frames" : haveFrame ? "the theater's frames" : "captured frames (no frame reports yet)";
         earlyChanged = false;
-        pagePausedLast = pagePaused;
-        double mediaTime = double.NaN;
-        if (pageFresh && page!.TryFrameAt(captureTicks > 0 ? captureTicks : now, Stopwatch.Frequency / 120, out PageVideo.FrameEvent fe))
-            mediaTime = fe.MediaTime;
+        lastPage = track && pageFresh ? page : null;
+        double mediaTime = haveFrame ? shownFrame.MediaTime : double.NaN;
+        bool regionMoving = !track || !(pageFresh && page!.Paused);
 
         StereoTuning tuning = settings.Tuning ?? StereoTuning.Default;
         synth.DilateRadius = tuning.DilateRadius;
@@ -424,8 +353,7 @@ public sealed class AiStereo : IDisposable
         if (!floatingWindow) bandLeftTarget = bandRightTarget = 0;
 
         double budget = StereoMath.ComfortBudget(settings.FieldOfView, eyeSize.Width, eyeSize.Height);
-        // A stretch widens disparity as much as the picture; keep the total within the budget.
-        float strength = (float)(StereoMath.Strength(budget, settings.Convergence, settings.Strength) / scale / settings.Stretch);
+        float strength = (float)(StereoMath.Strength(budget, settings.Convergence, settings.Strength) / scale);
 
         // Soft edges (improvement-plan.md §7.1): enough passes for a typical step to become a ramp
         // the warp can stretch over; the guided upsample's colour term softens with them, or it
@@ -435,13 +363,13 @@ public sealed class AiStereo : IDisposable
         synth.RangeSigma = (float)(0.1 + 0.05 * passes);
 
         // Timing: the buffer, matched, or live. Sound is only ever delayed by the page (the browser
-        // extension): without it there is no buffer, and matched timing stays within the 90 ms
-        // lip sync allows with the sound live.
+        // extension); for media it cannot delay there is no buffer, and matched timing stays
+        // within the 90 ms lip sync allows with the sound live.
         matched.FrameRate = pageFresh ? page!.FrameRate : 0;
         matched.Update(clock.Elapsed.TotalSeconds);
         bool bufferWanted = settings.BufferSeconds > 0 && track;
         bool buffer = bufferWanted && pageCanDelay;
-        string note = bufferWanted && !pageCanDelay ? ", buffer needs the browser extension" : "";
+        string note = bufferWanted && !pageCanDelay ? ", no buffer: the page cannot delay this video's sound" : "";
         // A buffer that cannot run behaves as Auto.
         VideoTiming timing = bufferWanted ? VideoTiming.Auto : settings.Timing;
         bool wantMatched = !buffer && track && timing switch
@@ -457,7 +385,7 @@ public sealed class AiStereo : IDisposable
             timingShown = "buffer";
             // Until the page has delayed the sound, as late as lip sync allows with it live.
             double towards = soundDelay > 0 ? soundDelay : LiveSoundMaxSeconds;
-            return Delayed(source, pictureChanged, handOver, known.HasValue, settings, service, strength, drawn, stretch,
+            return Delayed(source, pictureChanged, handOver, settings, service, strength, from + note,
                        mediaTime, ShownDelay(towards)) ?? FlatInTheater();
         }
         if (wantMatched && !double.IsNaN(matched.DelayMs))
@@ -465,7 +393,7 @@ public sealed class AiStereo : IDisposable
             double delay = matched.DelayMs / 1000;
             if (!pageCanDelay && delay > LiveSoundMaxSeconds)
             {
-                note += $", matched {delay * 1000:0} ms needs the browser extension: {LiveSoundMaxSeconds * 1000:0} ms with the sound live";
+                note += $", matched {delay * 1000:0} ms needs the sound delayed: {LiveSoundMaxSeconds * 1000:0} ms with the sound live";
                 delay = LiveSoundMaxSeconds;
             }
             DelayRegion = pageCanDelay ? region : Rectangle.Empty;
@@ -475,7 +403,7 @@ public sealed class AiStereo : IDisposable
             double towards = soundDelay > 0 ? soundDelay : Math.Min(delay, LiveSoundMaxSeconds);
             service.LookAheadFrames = 0;
             timingShown = "matched";
-            return Matched(source, pictureChanged, handOver, known.HasValue, settings, service, strength, drawn, stretch + note,
+            return Matched(source, pictureChanged, handOver, settings, service, strength, from + note,
                        mediaTime, ShownDelay(towards), soundDelay > 0) ?? FlatInTheater();
         }
 
@@ -490,7 +418,7 @@ public sealed class AiStereo : IDisposable
         service.LookAheadFrames = 0;
         timingShown = "live";
         liveLast = true;
-        return Live(source, pictureChanged, handOver, known.HasValue, regionMoving, settings, service, strength, scale, drawn, stretch + note)
+        return Live(source, pictureChanged, handOver, regionMoving, settings, service, strength, scale, from + note)
                ?? FlatInTheater();
     }
 
@@ -515,27 +443,29 @@ public sealed class AiStereo : IDisposable
 
     /// <summary>
     /// Render thread, as soon as a new desktop image arrives, before waiting for the swap chain:
-    /// in live timing, queues the video's model input from it when the capture says its picture
-    /// changed, so the depth model gets it up to a refresh sooner (improvement-plan.md §9 step 2);
-    /// <see cref="SubmitReadyInput"/> hands it over once the GPU has copied it. Uses the region,
-    /// model and settings of the last <see cref="Process"/>, which then knows this frame is done.
+    /// in live timing in the theater, queues the video's model input from it when the player
+    /// reports a new frame shown by then, so the depth model gets it up to a refresh sooner
+    /// (improvement-plan.md §9 step 2); <see cref="SubmitReadyInput"/> hands it over once the GPU
+    /// has copied it. Uses the region, model and settings of the last <see cref="Process"/>,
+    /// which then knows this frame is done.
     /// </summary>
-    /// <param name="resetChanges">Starts the capture's change record afresh, so the next call sees only what changed after this frame.</param>
-    public void HandOverEarly(ID3D11Texture2D source, DepthService? service, Func<Rectangle, bool?> changed, Action resetChanges)
+    /// <param name="captureTicks">When the image was made, Stopwatch ticks.</param>
+    public void HandOverEarly(ID3D11Texture2D source, DepthService? service, long captureTicks)
     {
         if (!liveLast || forceHandOver || region.IsEmpty || service == null || !ReferenceEquals(service, lastService)
-            || service.State != DepthServiceState.Ready || pagePausedLast || !dirtyRectsTrusted || changed(region) != true)
+            || service.State != DepthServiceState.Ready || lastPage is not { } page || page.Paused
+            || !page.TryFrameAt(captureTicks, Stopwatch.Frequency / 120, out PageVideo.FrameEvent shown) || shown.Presented == lastPresented)
             return;
-        Submit(source, service, decided: true);
+        lastPresented = shown.Presented;
+        Submit(source, service);
         synth.Flush();
-        resetChanges();
         earlyChanged = true;
     }
 
     /// <summary>Hands a queued model input to the service if the GPU has already copied it; never waits.</summary>
     public void SubmitReadyInput(DepthService? current)
     {
-        if (queuedInput is not { Forced: true } q || !synth.QueuedModelInputReady) return;
+        if (queuedInput is not { } q || !synth.QueuedModelInputReady) return;
         queuedInput = null;
         int length = synth.QueuedModelInputLength;
         if (input.Length != length) input = new float[length];
@@ -547,10 +477,10 @@ public sealed class AiStereo : IDisposable
     }
 
     /// <summary>The live path: the newest frame with the newest depth there is.</summary>
-    private StereoOverlay? Live(ID3D11Texture2D source, bool pictureChanged, bool handOver, bool decided, bool regionMoving,
-        StereoSettings settings, DepthService service, float strength, double scale, Rectangle drawn, string stretch)
+    private StereoOverlay? Live(ID3D11Texture2D source, bool pictureChanged, bool handOver, bool regionMoving,
+        StereoSettings settings, DepthService service, float strength, double scale, string from)
     {
-        if (handOver) Submit(source, service, decided);
+        if (handOver) Submit(source, service);
 
         // Depth computed for an earlier region does not fit this one.
         bool newDepth = service.TryTake(ref depth) && depth!.FrameId > regionStartId;
@@ -563,7 +493,7 @@ public sealed class AiStereo : IDisposable
         }
 
         string what = settings.Target == AiTarget.WholeScreen ? "whole screen" : $"video {region.Width}×{region.Height}";
-        Status = $"AI 3D: {what}{(regionMoving ? "" : ", paused")}{stretch}; {service.Status}";
+        Status = $"AI 3D: {what}{(regionMoving ? "" : ", paused")}{from}; {service.Status}";
         if (!haveNearness) return null;
 
         // How far the picture has moved on past the depth's frame, in frames and in video time.
@@ -573,8 +503,8 @@ public sealed class AiStereo : IDisposable
         {
             if (!depthStale) Log.Write($"AI 3D: depth is {frames} frames ({ms:0} ms) behind the picture; showing the video flat until it catches up.");
             depthStale = true;
-            Status = $"AI 3D: {what}: depth too slow ({ms:0} ms behind), shown flat{stretch}; {service.Status}";
-            return Cached((Native3DLayout.None, region, drawn), pictureChanged, () => synth.SplitNative(source, region, Native3DLayout.None), drawn);
+            Status = $"AI 3D: {what}: depth too slow ({ms:0} ms behind), shown flat{from}; {service.Status}";
+            return Cached((Native3DLayout.None, region), pictureChanged, () => synth.SplitNative(source, region, Native3DLayout.None));
         }
         if (depthStale) Log.Write($"AI 3D: depth caught up ({frames} frames behind).");
         depthStale = false;
@@ -585,7 +515,7 @@ public sealed class AiStereo : IDisposable
         if (pictureChanged || newDepth || bandsMoved || overlay == null || !key.Equals(overlayKey))
         {
             overlay = new StereoOverlay(
-                synth.Synthesize(source, region, strength, (float)settings.Convergence, (float)bandLeft, (float)bandRight), drawn, region);
+                synth.Synthesize(source, region, strength, (float)settings.Convergence, (float)bandLeft, (float)bandRight), region);
             overlayKey = key;
             QueueHoleCountEverySecond();
         }
@@ -597,19 +527,19 @@ public sealed class AiStereo : IDisposable
     /// <paramref name="shownSeconds"/> ago (reaching <see cref="StereoSettings.BufferSeconds"/>
     /// once the page plays the sound that late) is shown, with depth averaged over its neighbours.
     /// </summary>
-    private StereoOverlay? Delayed(ID3D11Texture2D source, bool pictureChanged, bool handOver, bool decided, StereoSettings settings,
-        DepthService service, float strength, Rectangle drawn, string stretch, double mediaTime, double shownSeconds)
+    private StereoOverlay? Delayed(ID3D11Texture2D source, bool pictureChanged, bool handOver, StereoSettings settings,
+        DepthService service, float strength, string from, double mediaTime, double shownSeconds)
     {
         double bufferSeconds = settings.BufferSeconds;
         // The buffer shows a frame long after its depth is ready: the depth thread looks as many
         // frames ahead as fit in that time, less a margin (improvement-plan.md §10).
         double period = matched.PeriodMs;
         service.LookAheadFrames = double.IsFinite(period) && period > 0 ? (int)Math.Floor((shownSeconds - 0.3) * 1000 / period) : 0;
-        Push(source, pictureChanged, handOver, decided, service, bufferSeconds, mediaTime);
+        Push(source, pictureChanged, handOver, service, bufferSeconds, mediaTime);
         bool newDepth = TakeDepthIntoBuffer(service);
 
         string waiting = shownSeconds < bufferSeconds - 0.002 ? $", reaching {bufferSeconds:0.#} s with the page's sound" : "";
-        Status = $"AI 3D: video {region.Width}×{region.Height}, {shownSeconds:0.##} s behind ({delayed.Count} frames){waiting}{stretch}; {service.Status}";
+        Status = $"AI 3D: video {region.Width}×{region.Height}, {shownSeconds:0.##} s behind ({delayed.Count} frames){waiting}{from}; {service.Status}";
         int index = SelectDelayed(shownSeconds);
         if (index < 0) return null;
 
@@ -629,7 +559,7 @@ public sealed class AiStereo : IDisposable
             have = match != VideoDelayBuffer.DepthMatch.None;
             if (have) ageSamples.Add((float)(ageTicks * 1000.0 / Stopwatch.Frequency));
         }
-        return ShowDelayed(frame, have, key, settings, strength, drawn);
+        return ShowDelayed(frame, have, key, settings, strength);
     }
 
     /// <summary>
@@ -637,15 +567,15 @@ public sealed class AiStereo : IDisposable
     /// each frame with its own depth or depth interpolated between the frames on either side.
     /// </summary>
     /// <param name="soundDelayed">The page plays the sound late too; otherwise it is live.</param>
-    private StereoOverlay? Matched(ID3D11Texture2D source, bool pictureChanged, bool handOver, bool decided, StereoSettings settings,
-        DepthService service, float strength, Rectangle drawn, string stretch, double mediaTime, double delaySeconds, bool soundDelayed)
+    private StereoOverlay? Matched(ID3D11Texture2D source, bool pictureChanged, bool handOver, StereoSettings settings,
+        DepthService service, float strength, string from, double mediaTime, double delaySeconds, bool soundDelayed)
     {
         // Frames for the delay being reached as well as the one shown now.
-        Push(source, pictureChanged, handOver, decided, service, Math.Max(delaySeconds, wantedDelaySeconds), mediaTime);
+        Push(source, pictureChanged, handOver, service, Math.Max(delaySeconds, wantedDelaySeconds), mediaTime);
         bool newDepth = TakeDepthIntoBuffer(service);
 
         string sound = soundDelayed ? ", sound delayed in the page" : ", sound live";
-        Status = $"AI 3D: video {region.Width}×{region.Height}, matched {delaySeconds * 1000:0} ms (depth needs {matched.NeedMs:0} ms){sound}{stretch}; {service.Status}";
+        Status = $"AI 3D: video {region.Width}×{region.Height}, matched {delaySeconds * 1000:0} ms (depth needs {matched.NeedMs:0} ms){sound}{from}; {service.Status}";
         int index = SelectDelayed(delaySeconds);
         if (index < 0) return null;
 
@@ -658,7 +588,7 @@ public sealed class AiStereo : IDisposable
         EnsureSmoothed(service.Model);
         VideoDelayBuffer.DepthMatch match = delayed.InterpolatedNearness(index, smoothed!.Nearness, out long ageTicks);
         if (match != VideoDelayBuffer.DepthMatch.None) ageSamples.Add((float)(ageTicks * 1000.0 / Stopwatch.Frequency));
-        return ShowDelayed(frame, match != VideoDelayBuffer.DepthMatch.None, key, settings, strength, drawn);
+        return ShowDelayed(frame, match != VideoDelayBuffer.DepthMatch.None, key, settings, strength);
     }
 
     /// <summary>
@@ -666,7 +596,7 @@ public sealed class AiStereo : IDisposable
     /// first frame of a region goes in (and to the model) even when the picture stands still: a
     /// paused video would otherwise have nothing to show.
     /// </summary>
-    private void Push(ID3D11Texture2D source, bool pictureChanged, bool handOver, bool decided, DepthService service, double delaySeconds,
+    private void Push(ID3D11Texture2D source, bool pictureChanged, bool handOver, DepthService service, double delaySeconds,
         double mediaTime)
     {
         bool first = delayed.Count == 0 || delayed[delayed.Count - 1].Region != region;
@@ -675,7 +605,7 @@ public sealed class AiStereo : IDisposable
                 mediaTime, segment))
         {
             Timer?.Mark("buffer");
-            if (handOver || first) Submit(source, service, decided || first);
+            if (handOver || first) Submit(source, service);
             else frameId++;   // its own id, without depth: shown with its neighbours'
         }
     }
@@ -704,11 +634,9 @@ public sealed class AiStereo : IDisposable
     }
 
     /// <summary>Builds the eyes of a held frame from the nearness in <see cref="smoothed"/>, or shows it flat without.</summary>
-    private StereoOverlay ShowDelayed(VideoDelayBuffer.Frame frame, bool haveDepth, object key, StereoSettings settings, float strength,
-        Rectangle drawn)
+    private StereoOverlay ShowDelayed(VideoDelayBuffer.Frame frame, bool haveDepth, object key, StereoSettings settings, float strength)
     {
         var local = new Rectangle(Point.Empty, frame.Region.Size);
-        Rectangle frameDrawn = frame.Region == region ? drawn : Stretched(frame.Region, settings.Stretch);
         ID3D11ShaderResourceView eyes;
         if (haveDepth)
         {
@@ -724,18 +652,18 @@ public sealed class AiStereo : IDisposable
         }
 
         shownDelayedId = frame.Id;
-        var shown = new StereoOverlay(eyes, frameDrawn, frame.Region);
+        var shown = new StereoOverlay(eyes, frame.Region);
         overlay = shown;
         overlayKey = key;
         return shown;
     }
 
     /// <summary>Queues this frame's model input; <see cref="CollectReadbacks"/> hands it to the service.</summary>
-    private void Submit(ID3D11Texture2D source, DepthService service, bool decided)
+    private void Submit(ID3D11Texture2D source, DepthService service)
     {
         DepthModel model = service.Model;
         synth.QueueModelInput(source, region, new Size(model.Width, model.Height));
-        queuedInput = new QueuedInput(service, ++frameId, clock.Elapsed.TotalSeconds, forceHandOver || decided);
+        queuedInput = new QueuedInput(service, ++frameId, clock.Elapsed.TotalSeconds);
         submitTicks[frameId % submitTicks.Length] = Stopwatch.GetTimestamp();
         forceHandOver = false;
     }
@@ -763,78 +691,27 @@ public sealed class AiStereo : IDisposable
     }
 
     /// <summary>
-    /// Render thread, after the present: reads what <see cref="Process"/> queued on the GPU. The
-    /// luma grid says whether the frame changed in the region (and feeds the 3D video detector); the model input goes to the depth service
-    /// unless it repeats the previous frame. By now the GPU has made the copies, so this rarely
-    /// waits, and when it does, it is not in front of a present.
+    /// Render thread, after the present: reads what <see cref="Process"/> queued on the GPU and
+    /// hands the model input to the depth service. By now the GPU has made the copies, so this
+    /// rarely waits, and when it does, it is not in front of a present.
     /// </summary>
     /// <param name="current">The session's depth service now: input queued for one that was
     /// swapped out meanwhile (another model or size) is dropped; it has been disposed.</param>
     public void CollectReadbacks(DepthService? current)
     {
-        bool gridRead = synth.ReadQueuedLumaGrid(grid);
-        bool regionChanged = true;
-        if (gridRead)
-        {
-            double now = clock.Elapsed.TotalSeconds;
-            gridDt = Math.Clamp(now - lastGridTime, 1.0 / 240, 1.0);
-            lastGridTime = now;
-            if (!checkRegion.IsEmpty && previousGridValid) regionChanged = GridChanged(checkRegion);
-            if (checkSkipped && regionChanged) OnMissedChange(now);
-            if (previousGrid.Length != grid.Length) previousGrid = new byte[grid.Length];
-            grid.CopyTo(previousGrid, 0);
-            previousGridValid = true;
-        }
-
         if (queuedInput is { } q)
         {
             queuedInput = null;
-            if (!q.Forced && gridRead && !regionChanged)
+            int length = synth.QueuedModelInputLength;
+            if (input.Length != length) input = new float[length];
+            if (synth.ReadQueuedModelInput(input) && ReferenceEquals(q.Service, current))
             {
-                // A repeat of the frame before: the model's answer would be the same.
-                synth.DiscardQueuedModelInput();
-                repeatsSkipped++;
-            }
-            else
-            {
-                int length = synth.QueuedModelInputLength;
-                if (input.Length != length) input = new float[length];
-                if (synth.ReadQueuedModelInput(input) && ReferenceEquals(q.Service, current))
-                {
-                    q.Service.Submit(input, q.FrameId, q.Time);
-                    handOvers++;
-                }
+                q.Service.Submit(input, q.FrameId, q.Time);
+                handOvers++;
             }
         }
 
         if (synth.ReadQueuedHoles(out double holes)) holeFraction = holes;
-    }
-
-    /// <summary>Any 8×8 cell of <paramref name="area"/> whose mean luma moved since the last grid.</summary>
-    private bool GridChanged(Rectangle area)
-    {
-        int x0 = Math.Max(0, area.Left / 8), y0 = Math.Max(0, area.Top / 8);
-        int x1 = Math.Min(gridCells.Width, (area.Right + 7) / 8), y1 = Math.Min(gridCells.Height, (area.Bottom + 7) / 8);
-        for (int y = y0; y < y1; y++)
-        {
-            int row = y * gridCells.Width;
-            if (!grid.AsSpan(row + x0, Math.Max(0, x1 - x0)).SequenceEqual(previousGrid.AsSpan(row + x0, Math.Max(0, x1 - x0)))) return true;
-        }
-        return false;
-    }
-
-    /// <summary>The dirty rectangles said the region was unchanged, but its picture changed: after a few, they are not used again.</summary>
-    private void OnMissedChange(double now)
-    {
-        if (now - missWindowStart > MissWindowSeconds)
-        {
-            missWindowStart = now;
-            missedChanges = 0;
-        }
-        if (++missedChanges < MaxMissedChanges || !dirtyRectsTrusted) return;
-        dirtyRectsTrusted = false;
-        Log.Write($"AI 3D: the capture's dirty rectangles missed {missedChanges} changes of the video within {MissWindowSeconds:0} s; " +
-                  "the luma grid decides which frames are new from now on.");
     }
 
     /// <summary>
@@ -859,10 +736,10 @@ public sealed class AiStereo : IDisposable
         double busy = service is { AverageInferenceMs: > 0 } ? Math.Min(1, depthFramesTaken / s * service.AverageInferenceMs / 1000) : 0;
         string flicker = service != null && double.IsFinite(service.AverageFlicker) ? $"{service.AverageFlicker:0.0000}" : "-";
         string text = $"Measures: depth age {age} (mean/p95, {timingShown}); holes {(double.IsNaN(holeFraction) ? "-" : $"{holeFraction * 100:0.00} %")}; " +
-                      $"flicker {flicker}; hand-overs {handOvers / s:0}/s, repeats skipped {repeatsSkipped / s:0}/s ({changeSource}); " +
+                      $"flicker {flicker}; hand-overs {handOvers / s:0}/s ({changeSource}); " +
                       $"model busy {busy * 100:0} %; page data: {pageData}";
         ageSamples.Clear();
-        handOvers = repeatsSkipped = depthFramesTaken = 0;
+        handOvers = depthFramesTaken = 0;
         holeFraction = double.NaN;
         return text;
     }
@@ -881,37 +758,14 @@ public sealed class AiStereo : IDisposable
     }
 
     /// <summary>Rebuilds a flat or native overlay only on a new frame or a new key.</summary>
-    private StereoOverlay? Cached(object key, bool newFrame, Func<ID3D11ShaderResourceView> build, Rectangle drawn)
+    private StereoOverlay? Cached(object key, bool newFrame, Func<ID3D11ShaderResourceView> build)
     {
         if (newFrame || overlay == null || !key.Equals(overlayKey))
         {
-            overlay = new StereoOverlay(build(), drawn, region);
+            overlay = new StereoOverlay(build(), region);
             overlayKey = key;
         }
         return overlay;
-    }
-
-    /// <summary>The region widened by <paramref name="factor"/> around its centre.</summary>
-    public static Rectangle Stretched(Rectangle region, double factor)
-    {
-        if (Math.Abs(factor - 1) < 0.001) return region;
-        int width = (int)Math.Round(region.Width * factor);
-        return new Rectangle(region.Left + (region.Width - width) / 2, region.Top, width, region.Height);
-    }
-
-    /// <summary>Queues the luma grid; <see cref="CollectReadbacks"/> reads it.</summary>
-    private void QueueGrid(ID3D11Texture2D source, Size sourceSize)
-    {
-        if (gridSource != sourceSize || grid.Length == 0)
-        {
-            gridSource = sourceSize;
-            gridCells = new Size((sourceSize.Width + 7) / 8, (sourceSize.Height + 7) / 8);
-            grid = new byte[gridCells.Width * gridCells.Height];
-            previousGridValid = false;
-            lastGridTime = clock.Elapsed.TotalSeconds;
-        }
-
-        synth.QueueLumaGrid(source);
     }
 
     /// <summary>
@@ -961,19 +815,17 @@ public sealed class AiStereo : IDisposable
         haveNearness = false;
         overlay = null;
         bandLeft = bandRight = bandLeftTarget = bandRightTarget = 0;
-        native.Reset();
+        lastPresented = -1;
         service?.ResetHistory();
         forceHandOver = true;
     }
 
     private void Forget()
     {
-        grid = [];
-        previousGridValid = false;
         region = Rectangle.Empty;
         haveNearness = false;
         overlay = null;
-        native.Reset();
+        lastPage = null;
         delayed.Clear();
         shownDelayedId = -1;
         forceHandOver = true;

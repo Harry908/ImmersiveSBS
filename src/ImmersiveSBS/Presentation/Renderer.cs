@@ -156,7 +156,7 @@ public sealed class Renderer : IDisposable
     }
 
     /// <param name="stereo">AI 3D eye images of a region; drawn over the desktop in side-by-side only.</param>
-    /// <param name="ui">Theater mode and on-screen buttons, in side-by-side only.</param>
+    /// <param name="ui">The model badge, in side-by-side only.</param>
     public void Render(ID3D11Texture2D? source, PointerState? pointer, StereoOverlay? stereo = null, UiLayer? ui = null)
     {
         context.ClearRenderTargetView(target!, new Color4(0, 0, 0, 1));
@@ -181,7 +181,6 @@ public sealed class Renderer : IDisposable
         ID3D11SamplerState sampler = oneToOne ? pointSampler : linearSampler;
 
         bool haveCursor = pointer is { Visible: true, Width: > 0 } && UpdateCursor(pointer);
-        bool theater = ui?.Theater is not null && stereo is not null && eyes == 2;
 
         context.OMSetRenderTargets(target!);
         context.IASetPrimitiveTopology(PrimitiveTopology.TriangleStrip);
@@ -194,28 +193,6 @@ public sealed class Renderer : IDisposable
             int eyeX = eye * eyeW;
             var eyeHalf = new Vector4(eye * 0.5f, 0, eye * 0.5f + 0.5f, 1);
 
-            if (theater)
-            {
-                // Theater: only the video, as large as fits in the eye; the desktop stays dark.
-                Rectangle e = ui!.Theater!.Value;
-                context.RSSetViewport(eyeX + e.X, e.Y, e.Width, e.Height);
-                context.PSSetSampler(0, linearSampler);
-                context.OMSetBlendState(null);
-                WriteQuad(stereoQuad, new Vector4(-1, 1, 1, -1), eyeHalf);
-                context.VSSetConstantBuffer(0, stereoQuad);
-                context.PSSetShader(opaqueShader);
-                context.PSSetShaderResource(0, stereo!.Value.Eyes);
-                context.Draw(4, 0);
-
-                if (haveCursor && ui.TheaterCursor is Point c)
-                {
-                    context.RSSetViewport(eyeX, 0, eyeW, Height);
-                    WriteQuad(cursorQuad, EyeNdc(new Rectangle(c.X - pointer!.HotX, c.Y - pointer.HotY, pointer.Width, pointer.Height), eyeW),
-                        new Vector4(0, 0, 1, 1));
-                    DrawCursor(pointer);
-                }
-            }
-            else
             {
                 context.RSSetViewport(eyeX + (eyeW - vw) / 2, (Height - vh) / 2, vw, vh);
                 context.PSSetSampler(0, sampler);
@@ -289,8 +266,8 @@ public sealed class Renderer : IDisposable
         r.Left * 2f / eyeW - 1, 1 - r.Top * 2f / Height, r.Right * 2f / eyeW - 1, 1 - r.Bottom * 2f / Height);
 
     /// <summary>
-    /// Frees the textures of UI images not drawn this frame once there are many: the theater's
-    /// time label is a new image every second, which kept would grow without end.
+    /// Frees the textures of UI images not drawn this frame once there are many: an image made
+    /// anew for changing text would otherwise keep its texture for good.
     /// </summary>
     private void ForgetUnusedImages(IReadOnlyList<(UiImage Image, Rectangle EyeRect)> drawn)
     {
@@ -394,22 +371,12 @@ public sealed class Renderer : IDisposable
 }
 
 /// <summary>
-/// AI 3D eye images (left half, right half) drawn over <paramref name="Region"/> of the source
-/// (source px); <paramref name="Source"/> is the video region they show, before any stretch.
+/// AI 3D eye images (left half, right half) drawn over <paramref name="Region"/> of the source (source px).
 /// </summary>
-public readonly record struct StereoOverlay(ID3D11ShaderResourceView Eyes, Rectangle Region, Rectangle Source);
+public readonly record struct StereoOverlay(ID3D11ShaderResourceView Eyes, Rectangle Region);
 
-/// <summary>
-/// What is drawn on top in side-by-side: theater mode (the region fitted to the whole eye, the
-/// desktop dark) and the on-screen buttons, all in eye px.
-/// </summary>
+/// <summary>What is drawn on top in side-by-side (the model badge), in eye px.</summary>
 public sealed class UiLayer
 {
-    /// <summary>Theater: where the region's eye images go in each eye; null shows the desktop.</summary>
-    public Rectangle? Theater { get; init; }
-
-    /// <summary>Theater: the cursor's hot spot in each eye; null hides it.</summary>
-    public Point? TheaterCursor { get; init; }
-
     public IReadOnlyList<(UiImage Image, Rectangle EyeRect)> Images { get; init; } = [];
 }

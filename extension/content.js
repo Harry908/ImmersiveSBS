@@ -1,30 +1,30 @@
-// ImmersiveSBS link: the page script, in every frame. It finds the page's video and audio
-// elements and reports them (playing, audible, where the picture is) to the worker, and when the
-// app asks, plays their sound late through Web Audio: element -> DelayNode -> output. The sound
-// never leaves the browser, so it keeps its full quality and its usual output, and a paused or
-// seeking video stays in step with the delayed picture by itself (the delay line plays out what
-// it holds, just as the picture buffer does).
+// ImmersiveSBS link: the page script, in every frame. It is part of the ImmersiveSBS app: the app
+// finds browser video only through it, and shows browser video in 3D only in its theater.
 //
-// What cannot be delayed is left alone and reported, so the app can fall back to its own
-// capture: protected (DRM) media, media from another origin without CORS (Web Audio would get
-// silence from it), and pages where the browser does not let audio start before a click.
+// - It reports the page's video and audio elements (playing, audible, whether their sound can be
+//   delayed) and, when the app asks, plays their sound late through Web Audio: element ->
+//   DelayNode -> output. The sound never leaves the browser.
+// - While the app says the glasses are in 3D mode, it shows a "3D theater" button over a video
+//   under the mouse. The theater is a player covering the page, full screen, that draws the
+//   video at its own size on a canvas; the app captures that screen and turns it into 3D.
+// - While the theater is open it reports, for that video only: where the picture is on the
+//   screen, each frame it draws (on the app's clock), its playback state, and the boxes of its
+//   own controls and captions (which the app keeps flat).
 //
-// For the one video the app follows (protocol 2), the frame holding it also reports each
-// presented frame, its playback state the moment it changes, and the boxes the page draws over
-// its picture (controls, captions, logos), with frame times already on the app's clock.
+// What cannot be delayed is left alone and reported: protected (DRM) media, media from another
+// origin without CORS (Web Audio would get silence from it), and pages where the browser does
+// not let audio start before a click.
 'use strict';
 
 (() => {
-  const TAG = '__immersiveSbs';
   const PORT_NAME = 'immersivesbs-frame';
   const REPORT_MS = 500;
   const SHADOW_SCAN_MS = 5000;       // while the app is connected
   const IDLE_SHADOW_SCAN_MS = 30000; // while it is not (a page whose only video is in a shadow root)
-  const OVERLAY_MS = 250;            // the followed video's overlay probe
-  const OVERLAY_GRID = 8;            // probe points across and down the picture
-  const CLOCK_MS = 5000;             // clock re-sync
+  const CLOCK_MS = 5000;             // clock re-sync while the theater is open
   const CLOCK_SAMPLES = 8;           // the best of this many round trips counts
-  // Caption containers of common players; native <track> captions are found from textTracks.
+  // Caption containers of common players, whose text the theater shows; native <track> captions
+  // come from textTracks.
   const CAPTION_SELECTORS = [
     '.ytp-caption-window-container', '.caption-window', '.ytp-caption-segment',   // YouTube
     '.vjs-text-track-display', '.vjs-text-track-cue',                            // Video.js
@@ -32,11 +32,16 @@
     '.jw-captions', '.jw-text-track-container',                                  // JW Player
     '.vp-captions',                                                               // Vimeo
     '[data-a-target="player-captions-container"]', '.player-captions-container',  // Twitch
+    '.text-track',                                                                // WeTV
     '[class*="caption" i]', '[class*="subtitle" i]',
   ].join(',');
-  const CONTROL_SELECTORS = 'button, [role="button"], [role="slider"], [class*="control" i], [class*="progress" i], [class*="chrome" i]';
+  // What a caption box never is or holds: controls, menus, lists, dialogs.
+  const CAPTION_NOT = 'button, select, input, label, ul, ol, li, [role="button"], [role="menu"], [role="menuitem"], ' +
+    '[role="menuitemradio"], [role="listbox"], [role="option"], [role="dialog"], [role="radiogroup"], [role="radio"]';
+  const CAPTION_NOT_CLASS = /menu|setting|select|option|switch|btn|button|popup|panel|list|toggle|icon|tips?\b/i;
+  const CAPTION_MAX_LINES = 4;
 
-  /** element -> { id, delay node, delay applied (s), seeks } for elements in the page. */
+  /** element -> { id, delay node, delay applied (s) } for elements in the page. */
   const media = new Map();
   /** element -> MediaElementAudioSourceNode: made once per element, ever (a second throws). */
   const sources = new WeakMap();
@@ -48,13 +53,7 @@
   let applying = Promise.resolve();
   let lastSent = '';
   let lastShadowScan = 0;
-  /** Where this frame's viewport sits in the top frame's, CSS px; known at once in the top frame. */
-  let frameOffset = window === window.top ? { x: 0, y: 0 } : null;
-  let topViewport = null;   // { width, height } of the top frame's viewport, CSS px
-  let childAsked = -1e9;    // when a frame inside this one last asked where it is
   const listened = new WeakSet();
-  /** The video the app follows, if it is in this frame: { el, id, handle, timer, clock, state, overlays }. */
-  let followed = null;
   let clockSamples = [];
   let theta = NaN;          // app clock − page clock, ms
   let clockError = NaN;     // at most this far off, ms
@@ -88,7 +87,7 @@
 
   function track(el) {
     if (media.has(el)) return;
-    media.set(el, { id: nextId++, node: null, applied: 0, seeks: 0 });
+    media.set(el, { id: nextId++, node: null, applied: 0 });
     connectPort();
     if (listened.has(el)) return;
     listened.add(el);
@@ -96,9 +95,9 @@
       el.addEventListener(type, () => {
         const state = media.get(el);
         if (!state) return;
-        if (type === 'seeked') state.seeks++;
+        if (type === 'seeked') state.seeks = (state.seeks ?? 0) + 1;
         if (type === 'playing') queueApply();
-        if (followed?.el === el) sendState(false);
+        if (theater?.el === el) sendState(false);
         sendSoon();
       });
     }
@@ -136,9 +135,13 @@
     return decoded === undefined || decoded > 0;
   }
 
-  /** The video picture inside the element's box (object-fit), in top-frame CSS px, or null. */
+  /**
+   * The video picture inside the element's box (object-fit), in this frame's viewport CSS px, or
+   * null; in the theater, the player's canvas.
+   */
   function pictureRect(el) {
-    if (!frameOffset || el.tagName !== 'VIDEO') return null;
+    if (el.tagName !== 'VIDEO') return null;
+    if (theater?.el === el) return theaterPicture(theater);
     const box = el.getBoundingClientRect();
     if (box.width < 2 || box.height < 2) return null;
     const style = getComputedStyle(el);
@@ -158,30 +161,28 @@
       width = vw * scale;
       height = vh * scale;
     }
-    const round = v => Math.round(v * 10) / 10;
-    return { x: round(x + frameOffset.x), y: round(y + frameOffset.y), width: round(width), height: round(height) };
+    return { x, y, width, height };
   }
 
+  /** What the app needs to know about an element: for the sound, and which video the theater shows. */
   function describe(el, state) {
     const reason = blocker(el) ?? (wanted > 0 && context && context.state !== 'running' ? 'blocked' : null);
-    const viewport = window === window.top ? { width: innerWidth, height: innerHeight } : topViewport;
+    const r = document.visibilityState === 'visible' ? pictureRect(el) : null;
     return {
       id: state.id,
       kind: el.tagName === 'VIDEO' ? 'video' : 'audio',
       playing: !el.paused && !el.ended,
       audible: !el.muted && el.volume > 0 && hasAudio(el),
-      seeks: state.seeks,
-      rect: pictureRect(el),
-      viewport,
-      dpr: Math.round(devicePixelRatio * 1000) / 1000,
-      visible: document.visibilityState === 'visible',
-      fullscreen: document.fullscreenElement != null,
+      // The picture's size on the page, CSS px², 0 when not shown: the tray's theater opens on
+      // the largest playing video of the tab in front.
+      area: r ? Math.round(r.width * r.height) : 0,
       videoWidth: el.videoWidth || 0,
       videoHeight: el.videoHeight || 0,
       delayable: reason === null,
       reason,
       delay: state.applied,
       latency: context ? Math.round(((context.baseLatency || 0) + (context.outputLatency || 0)) * 1000) : null,
+      theater: theater?.el === el,
     };
   }
 
@@ -214,27 +215,21 @@
       queueApply();
     } else if (m?.type === 'app') {
       appConnected = m.connected === true;
-      if (!appConnected) unfollow();
+      if (!appConnected) showButton(null);
       lastSent = '';
       send();
-    } else if (m?.type === 'follow') {
-      follow(m.id);
+      if (theater) reportTheater(theater, true);
+    } else if (m?.type === 'status') {
+      appStatus = { glasses: m.glasses === true, offer: m.offer === true, settings: m.settings ?? null };
+      if (!appStatus.glasses || !appStatus.offer) showButton(null);
+      renderPanel();
+      if (theater) drawFrame();   // the stretch may have changed
+    } else if (m?.type === 'theater') {
+      // The app's tray or shortcut: open the player on one video (the worker chose it), or close it.
+      if (m.open !== true) closeTheater();
+      else for (const [el, state] of media) if (state.id === m.id) openTheater(el, false);
     } else if (m?.type === 'clock') {
       onClock(m);
-    } else if (m?.type === 'toggle') {
-      for (const [el, state] of media) {
-        if (state.id !== m.id) continue;
-        if (el.paused) el.play().catch(() => {});
-        else el.pause();
-      }
-    } else if (m?.type === 'seek') {
-      for (const [el, state] of media) {
-        if (state.id !== m.id || !Number.isFinite(el.duration)) continue;
-        const to = Number.isFinite(m.to) ? m.to : el.currentTime + m.by;
-        el.currentTime = Math.min(Math.max(0, to), el.duration);
-      }
-    } else if (m?.type === 'mute') {
-      for (const [el, state] of media) if (state.id === m.id) el.muted = !el.muted;
     }
   }
 
@@ -254,6 +249,15 @@
     lastSent = text;
     try {
       port.postMessage({ type: 'media', media: list });
+    } catch {
+      port = null;
+    }
+  }
+
+  function post(message) {
+    if (!port || !appConnected) return;
+    try {
+      port.postMessage(message);
     } catch {
       port = null;
     }
@@ -336,80 +340,13 @@
     if (!node) state.applied = 0;
   }
 
-  // ---- The followed video (protocol 2) ---------------------------------------------------
-  // Only the video the app follows reports more than its place, which keeps the traffic to a
-  // few kB/s: each presented frame (requestVideoFrameCallback: its count, its time in the video
-  // and when it is shown, mapped to the app's clock), its state at once on every change (and
-  // twice a second, so the app knows the page data is fresh), and the boxes over its picture.
-
-  function post(message) {
-    if (!port || !appConnected) return;
-    try {
-      port.postMessage(message);
-    } catch {
-      port = null;
-    }
-  }
-
-  function follow(id) {
-    let el = null;
-    for (const [e, state] of media) if (state.id === id) el = e;
-    if (el && followed?.el === el) return;
-    unfollow();
-    if (!el || el.tagName !== 'VIDEO' || typeof el.requestVideoFrameCallback !== 'function') return;
-    const f = { el, id, handle: 0, timer: 0, clock: 0, state: '', overlays: '', ticks: 0 };
-    followed = f;
-    const onFrame = (now, meta) => {
-      if (followed !== f) return;
-      f.handle = el.requestVideoFrameCallback(onFrame);
-      if (!Number.isFinite(theta)) return;   // not on the app's clock yet
-      post({
-        type: 'frame', id, presented: meta.presentedFrames, media: meta.mediaTime,
-        display: meta.expectedDisplayTime + theta, width: meta.width, height: meta.height,
-      });
-    };
-    f.handle = el.requestVideoFrameCallback(onFrame);
-    f.timer = setInterval(() => {
-      probeOverlays();
-      if (++f.ticks % 2 === 0) sendState(true);
-    }, OVERLAY_MS);
-    clockSamples = [];
-    theta = clockError = NaN;
-    for (let i = 0; i < CLOCK_SAMPLES; i++) setTimeout(pingClock, i * 60);
-    f.clock = setInterval(pingClock, CLOCK_MS);
-    sendState(true);
-  }
-
-  function unfollow() {
-    if (!followed) return;
-    followed.el.cancelVideoFrameCallback?.(followed.handle);
-    clearInterval(followed.timer);
-    clearInterval(followed.clock);
-    followed = null;
-  }
-
-  function sendState(force) {
-    const f = followed;
-    if (!f) return;
-    const el = f.el;
-    const message = {
-      type: 'state', id: f.id, paused: el.paused || el.ended, seeking: el.seeking, seeks: media.get(el)?.seeks ?? 0,
-      rate: el.playbackRate, clockError: Number.isFinite(clockError) ? Math.round(clockError * 100) / 100 : null,
-      // For the app's theater controls: where the video is, how long it is (null when live), muted.
-      time: Math.round(el.currentTime * 10) / 10,
-      duration: Number.isFinite(el.duration) ? Math.round(el.duration * 10) / 10 : null,
-      muted: el.muted,
-    };
-    const text = JSON.stringify(message);
-    if (!force && text === f.state) return;
-    f.state = text;
-    post(message);
-  }
-
+  // ---- The app's clock -------------------------------------------------------------------
   // NTP-style: θ = ((t1 − t0) + (t2 − t3)) / 2 is off by at most δ/2, δ = (t3 − t0) − (t2 − t1);
-  // the sample with the smallest round trip of the last few counts.
+  // the sample with the smallest round trip of the last few counts. Frame times go to the app
+  // on its clock.
+
   function pingClock() {
-    if (followed) post({ type: 'clock', t0: performance.now() });
+    if (theater) post({ type: 'clock', t0: performance.now() });
   }
 
   function onClock(m) {
@@ -425,152 +362,662 @@
     clockError = best.delta / 2;
   }
 
-  /** The picture's box in this frame's viewport (CSS px), or null. */
-  function localPicture(el) {
+  // ---- The 3D theater --------------------------------------------------------------------
+  // While the app is connected and the glasses are in 3D mode, a "3D theater" button shows over
+  // a video the mouse is on. Pressed (a real click in the page, so the page may go full screen),
+  // a player covers the page and goes full screen: it draws the video at its own size on a
+  // canvas, so the app captures it sharp, not as small as the page showed it, and turns it into
+  // 3D in the glasses. Its controls and the page's captions are drawn here and reported as boxes,
+  // which the app keeps flat. The original element keeps playing, with its sound (delayed as usual).
+
+  const THEATER_MIN_WIDTH = 160, THEATER_MIN_HEIGHT = 90;
+  const CONTROLS_MS = 2500;   // controls fade after this long without the mouse moving
+  const SEEK_STEP = 10;       // s, the ← → keys and the back / on buttons
+  /** What the app tells: { glasses: in 3D mode, offer: show the button, settings: the 3D panel's values }. */
+  let appStatus = { glasses: false, offer: false, settings: null };
+  let button = null;          // { host, el (the video under it), timer }
+  let theater = null;         // the open player, see openTheater
+  let moveQueued = false;
+
+  const ICONS = {
+    theater: 'M4 6h16v12H4zM2 4v16h20V4zm5 5h3v2H8v2h2v2H7zm6 0h2.5a2.5 2.5 0 0 1 0 6H13zm2 2v2h.5a1 1 0 0 0 0-2z',
+    play: 'M8 5v14l11-7z',
+    pause: 'M6 5h4v14H6zm8 0h4v14h-4z',
+    back: 'M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z',
+    forward: 'M12 5V1l5 5-5 5V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8z',
+    volume: 'M3 9v6h4l5 5V4L7 9zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z',
+    muted: 'M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.45 2.45q.05-.3.05-.65M19 12q0 1.4-.55 2.65l1.5 1.5A9 9 0 0 0 14 3.2v2.1a7 7 0 0 1 5 6.7M4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25A7 7 0 0 1 14 18.7v2.1a9 9 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9zM12 4 9.91 6.09 12 8.18z',
+    full: 'M7 14H5v5h5v-2H7zm-2-4h2V7h3V5H5zm12 7h-3v2h5v-5h-2zM14 5v2h3v3h2V5z',
+    window: 'M5 16h3v3h2v-5H5zm3-8H5v2h5V5H8zm6 11h2v-3h3v-2h-5zm2-11V5h-2v5h5V8z',
+    settings: 'M19.4 13a7.5 7.5 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.5 7.5 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.4 7.4 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7.4 7.4 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z',
+    close: 'M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4l5.6 5.6L5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6z',
+  };
+  const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[name]}"/></svg>`;
+
+  const STYLE = `
+    :host { all: initial; }
+    * { box-sizing: border-box; font-family: "Segoe UI", system-ui, sans-serif; }
+    svg { width: 24px; height: 24px; fill: currentColor; display: block; }
+    button { all: unset; cursor: pointer; color: #fff; display: inline-flex; align-items: center; justify-content: center;
+      gap: 8px; min-width: 44px; height: 44px; padding: 0 12px; border-radius: 22px; background: rgba(24,24,26,.78);
+      border: 1px solid rgba(255,255,255,.35); font-size: 15px; white-space: nowrap; }
+    button:hover, button:focus-visible { background: rgba(70,70,74,.92); border-color: #60cdff; }
+    button.round { width: 48px; min-width: 48px; padding: 0; }
+    button.big { width: 60px; height: 60px; border-radius: 30px; }
+    button.big svg { width: 32px; height: 32px; }
+  `;
+
+  // -- The button over a video
+
+  function onPointerMove(e) {
+    if (moveQueued) return;
+    moveQueued = true;
+    const x = e.clientX, y = e.clientY, path = e.composedPath();
+    requestAnimationFrame(() => {
+      moveQueued = false;
+      if (button && path.includes(button.host)) return showButton(button.el);   // on the button itself
+      showButton(theater ? null : videoAt(x, y));
+    });
+  }
+
+  /** The tracked video whose picture is at a point of this frame's viewport, big enough for the theater. */
+  function videoAt(x, y) {
+    if (!appConnected || !appStatus.glasses || !appStatus.offer) return null;
+    for (const [el] of media) {
+      if (el.tagName !== 'VIDEO' || !el.isConnected) continue;
+      const r = pictureRect(el);
+      if (!r || r.width < THEATER_MIN_WIDTH || r.height < THEATER_MIN_HEIGHT) continue;
+      if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height) return el;
+    }
+    return null;
+  }
+
+  function showButton(el) {
+    if (!el) {
+      if (button) button.host.style.display = 'none';
+      return;
+    }
+    if (!button) {
+      const host = document.createElement('div');
+      const root = host.attachShadow({ mode: 'closed' });
+      root.innerHTML = `<style>${STYLE}</style><button title="Open in the ImmersiveSBS 3D theater">${icon('theater')}3D theater</button>`;
+      const b = root.querySelector('button');
+      // The page must not see these: a click would also pause or open its video.
+      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'dblclick'])
+        b.addEventListener(type, ev => ev.stopPropagation());
+      b.addEventListener('click', ev => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const target = button.el;
+        showButton(null);
+        if (target) openTheater(target, true);
+      });
+      button = { host, el: null, timer: 0 };
+    }
     const r = pictureRect(el);
-    if (!r || !frameOffset) return null;
-    return { x: r.x - frameOffset.x, y: r.y - frameOffset.y, width: r.width, height: r.height };
+    if (!r) return showButton(null);
+    const host = button.host;
+    // In a page that is full screen only what is inside its full-screen element shows.
+    const parent = document.fullscreenElement ?? document.documentElement;
+    if (host.parentNode !== parent) parent.appendChild(host);
+    button.el = el;
+    host.style.cssText = `all: initial; position: fixed; z-index: 2147483647; display: block; ` +
+      `left: ${Math.round(r.x + r.width / 2)}px; top: ${Math.round(r.y + 12)}px; transform: translateX(-50%);`;
+    clearTimeout(button.timer);
+    button.timer = setTimeout(() => showButton(null), CONTROLS_MS);
   }
 
-  /** Effective opacity (the element's and every ancestor's), cached for one probe. */
-  function opacity(node, cache) {
-    if (!(node instanceof Element)) return 1;
-    if (cache.has(node)) return cache.get(node);
-    const style = getComputedStyle(node);
-    let value = style.display === 'none' || style.visibility === 'hidden' ? 0 : Number(style.opacity);
-    if (value > 0) value *= opacity(node.parentElement ?? node.getRootNode()?.host, cache);
-    cache.set(node, value);
-    return value;
+  document.addEventListener('pointermove', onPointerMove, { capture: true, passive: true });
+  window.addEventListener('scroll', () => showButton(null), { capture: true, passive: true });
+
+  // -- The player
+
+  /**
+   * Opens the player on <el>. <gesture>: called from a click in the page, which lets it go full
+   * screen; asked by the app instead, the browser window goes full screen (the worker does it).
+   */
+  function openTheater(el, gesture) {
+    if (theater) closeTheater();
+    if (!el?.isConnected || !media.has(el)) return;
+    const host = document.createElement('div');
+    host.style.cssText = 'all: initial; position: fixed; inset: 0; z-index: 2147483647; background: #000; display: block;';
+    host.tabIndex = -1;
+    const root = host.attachShadow({ mode: 'closed' });
+    root.innerHTML = `<style>${STYLE}
+      .stage { position: absolute; inset: 0; background: #000; }
+      .stage.idle { cursor: none; }
+      canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+      .caption { position: absolute; left: 10%; right: 10%; bottom: 20%; text-align: center; pointer-events: none;
+        font-size: clamp(18px, 3.2vh, 44px); }
+      .caption span { display: inline; white-space: pre-line; color: #fff; background: rgba(8,8,8,.75); padding: 2px 8px;
+        font-size: inherit; line-height: 1.35; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+      .top { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); display: flex; gap: 12px; }
+      .bar { position: absolute; left: 0; right: 0; bottom: 0; padding: 40px 32px 16px;
+        background: linear-gradient(transparent, rgba(0,0,0,.75)); }
+      .seek { position: relative; height: 24px; cursor: pointer; touch-action: none; }
+      .track { position: absolute; left: 0; right: 0; top: 9px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.35); }
+      .seek:hover .track { top: 7px; height: 10px; border-radius: 5px; }
+      .done { position: absolute; left: 0; top: 0; bottom: 0; border-radius: inherit; background: #60cdff; }
+      .knob { position: absolute; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; background: #fff; }
+      .row { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; margin-top: 10px; }
+      .time { color: #fff; font-size: 16px; font-variant-numeric: tabular-nums; }
+      .middle, .right { display: flex; gap: 14px; align-items: center; }
+      .right { justify-self: end; }
+      .panel { position: absolute; top: 76px; left: 50%; transform: translateX(-50%); padding: 12px; border-radius: 16px;
+        background: rgba(24,24,26,.92); border: 1px solid rgba(255,255,255,.25); display: grid; gap: 8px; }
+      .panel .line { display: grid; grid-template-columns: 48px 340px 48px; gap: 8px; align-items: center; }
+      .panel .value { color: #fff; font-size: 15px; padding: 0 12px; }
+      .panel button.wide { grid-column: 1 / 4; justify-content: flex-start; }
+      .hidden { display: none !important; }
+      .top, .bar { transition: opacity .25s; }
+      </style>
+      <div class="stage"><canvas></canvas><div class="caption"></div></div>
+      <div class="top">
+        <button data-act="settings" title="3D settings">${icon('settings')}3D settings</button>
+        <button data-act="exit" title="Leave the theater (Esc)">${icon('close')}Exit theater</button>
+      </div>
+      <div class="panel hidden"></div>
+      <div class="bar">
+        <div class="seek"><div class="track"><div class="done"></div></div><div class="knob"></div></div>
+        <div class="row">
+          <div class="time"></div>
+          <div class="middle">
+            <button class="round" data-act="back" title="10 s back (←)">${icon('back')}</button>
+            <button class="round big" data-act="play" title="Play / pause (Space)"></button>
+            <button class="round" data-act="forward" title="10 s on (→)">${icon('forward')}</button>
+          </div>
+          <div class="right">
+            <button class="round" data-act="mute" title="Mute (M)"></button>
+            <button class="round" data-act="fullscreen" title="Full screen (F, double click)"></button>
+          </div>
+        </div>
+      </div>`;
+    const $ = s => root.querySelector(s);
+    const t = {
+      el, id: media.get(el).id, host, root, canvas: $('canvas'), stage: $('.stage'), caption: $('.caption'), panel: $('.panel'),
+      bar: $('.bar'), top: $('.top'), seek: $('.seek'), done: $('.done'), knob: $('.knob'), time: $('.time'),
+      play: $('[data-act="play"]'), mute: $('[data-act="mute"]'), full: $('[data-act="fullscreen"]'),
+      ctx: null, vfc: 0, raf: 0, timer: 0, clock: 0, ticks: 0, lastFrame: 0, lastMove: performance.now(), dragging: null,
+      clickTimer: 0, windowFull: false, leaving: false, controlsShown: false, player: playerOf(el), shownCaption: '', captionStyle: '',
+      drawn: 0, drawnTime: NaN, reported: '', boxes: '', state: '', onMedia: null,
+    };
+    t.ctx = t.canvas.getContext('2d', { alpha: false });
+    theater = t;
+
+    root.addEventListener('click', e => {
+      const target = e.target.closest?.('[data-act]');
+      if (target) {
+        e.stopPropagation();
+        theaterAction(target.dataset.act, target);
+      }
+    });
+    t.stage.addEventListener('click', () => {
+      // A single click plays or pauses; a double click switches full screen instead.
+      clearTimeout(t.clickTimer);
+      t.clickTimer = setTimeout(() => theaterAction('play'), 250);
+    });
+    t.stage.addEventListener('dblclick', () => {
+      clearTimeout(t.clickTimer);
+      theaterAction('fullscreen');
+    });
+    host.addEventListener('pointermove', () => wake(), { passive: true });
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'dblclick', 'wheel', 'contextmenu'])
+      host.addEventListener(type, e => e.stopPropagation());
+    // The page under the player must not scroll.
+    host.addEventListener('wheel', e => e.preventDefault(), { passive: false });
+    t.seek.addEventListener('pointerdown', e => {
+      t.seek.setPointerCapture(e.pointerId);
+      t.dragging = seekFraction(e);
+      showProgress();
+    });
+    t.seek.addEventListener('pointermove', e => {
+      if (t.dragging === null) return;
+      t.dragging = seekFraction(e);
+      showProgress();
+    });
+    t.seek.addEventListener('pointerup', () => {
+      if (t.dragging !== null && Number.isFinite(el.duration)) el.currentTime = t.dragging * el.duration;
+      t.dragging = null;
+    });
+    t.onMedia = () => {
+      if (el.paused) drawFrame();
+      showControls();
+    };
+    for (const type of ['play', 'pause', 'seeked', 'volumechange', 'loadeddata', 'durationchange', 'ended'])
+      el.addEventListener(type, t.onMedia);
+
+    window.addEventListener('keydown', onTheaterKey, true);
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    (document.fullscreenElement ?? document.documentElement).appendChild(host);
+    host.focus({ preventScroll: true });
+    if (gesture && host.requestFullscreen) {
+      host.requestFullscreen({ navigationUI: 'hide' }).catch(() => windowFullscreen(true));
+    } else {
+      windowFullscreen(true);
+    }
+
+    // Each frame the video presents is drawn as it comes; a frame callback that stops coming
+    // (an element the browser no longer presents under the player) is covered by the
+    // animation loop, which draws whatever the element shows now.
+    const onFrame = (now, meta) => {
+      if (theater !== t) return;
+      t.lastFrame = performance.now();
+      drawFrame(meta);
+      t.vfc = el.requestVideoFrameCallback?.(onFrame) ?? 0;
+    };
+    t.vfc = el.requestVideoFrameCallback?.(onFrame) ?? 0;
+    const loop = () => {
+      if (theater !== t) return;
+      if (!el.isConnected) return closeTheater();
+      if (!el.paused && performance.now() - t.lastFrame > 250) drawFrame();
+      showProgress();
+      t.raf = requestAnimationFrame(loop);
+    };
+    t.raf = requestAnimationFrame(loop);
+    t.timer = setInterval(() => {
+      if (performance.now() - t.lastMove > CONTROLS_MS) fadeControls();
+      updateCaption();
+      placeCaption(t);
+      reportTheater(t, false);
+      reportBoxes(t);
+      if (++t.ticks % 2 === 0) sendState(true);
+    }, 250);
+    clockSamples = [];
+    theta = clockError = NaN;
+    for (let i = 0; i < CLOCK_SAMPLES; i++) setTimeout(pingClock, i * 60);
+    t.clock = setInterval(pingClock, CLOCK_MS);
+    drawFrame();
+    showControls();
+    renderPanel();
+    reportTheater(t, true);
+    sendState(true);
+    sendSoon();
   }
 
-  function alpha(color) {
-    const m = /rgba?\(([^)]+)\)/.exec(color);
-    if (!m) return color === 'transparent' ? 0 : 1;
-    const parts = m[1].split(/[ ,/]+/).filter(Boolean);
-    return parts.length >= 4 ? Number(parts[3]) : 1;
+  function closeTheater() {
+    const t = theater;
+    if (!t) return;
+    theater = null;
+    t.el.cancelVideoFrameCallback?.(t.vfc);
+    cancelAnimationFrame(t.raf);
+    clearInterval(t.timer);
+    clearInterval(t.clock);
+    clearTimeout(t.clickTimer);
+    for (const type of ['play', 'pause', 'seeked', 'volumechange', 'loadeddata', 'durationchange', 'ended'])
+      t.el.removeEventListener(type, t.onMedia);
+    window.removeEventListener('keydown', onTheaterKey, true);
+    document.removeEventListener('fullscreenchange', onFullscreenChange);
+    if (document.fullscreenElement === t.host) {
+      t.leaving = true;
+      document.exitFullscreen().catch(() => {});
+    }
+    if (t.windowFull) post({ type: 'windowFullscreen', on: false });
+    t.host.remove();
+    post({ type: 'theater', id: t.id, open: false });
+    sendSoon();
+  }
+
+  /** Asks the worker to put the browser window in full screen (no click to allow the page's own), or back. */
+  function windowFullscreen(on) {
+    if (theater) theater.windowFull = on;
+    post({ type: 'windowFullscreen', on });
+  }
+
+  function onFullscreenChange() {
+    const t = theater;
+    if (!t) return;
+    // Esc leaves the browser's full screen by itself; that leaves the theater too. The full
+    // screen button only leaves full screen.
+    if (document.fullscreenElement !== t.host && !t.leaving && !t.windowFull) return closeTheater();
+    t.leaving = false;
+    showControls();
+    reportTheater(t, false);
+  }
+
+  function theaterAction(act, target) {
+    const t = theater;
+    if (!t) return;
+    const el = t.el;
+    switch (act) {
+      case 'play':
+        if (el.paused || el.ended) el.play().catch(() => {});
+        else el.pause();
+        break;
+      case 'back':
+      case 'forward':
+        if (Number.isFinite(el.duration))
+          el.currentTime = Math.min(Math.max(0, el.currentTime + (act === 'back' ? -SEEK_STEP : SEEK_STEP)), el.duration);
+        break;
+      case 'mute':
+        el.muted = !el.muted;
+        break;
+      case 'fullscreen':
+        if (document.fullscreenElement === t.host) {
+          t.leaving = true;
+          document.exitFullscreen().catch(() => {});
+        } else if (t.windowFull) {
+          windowFullscreen(false);
+        } else {
+          t.host.requestFullscreen?.({ navigationUI: 'hide' }).catch(() => windowFullscreen(true));
+        }
+        break;
+      case 'settings':
+        t.panel.classList.toggle('hidden');
+        renderPanel();
+        break;
+      case 'exit':
+        closeTheater();
+        return;
+      default:
+        // The 3D panel's buttons: the app changes its settings and tells the new values back.
+        if (target?.dataset.command) post({ type: 'command', name: target.dataset.command });
+        break;
+    }
+    wake();
+  }
+
+  function onTheaterKey(e) {
+    const t = theater;
+    if (!t || e.ctrlKey || e.altKey || e.metaKey) return;
+    const act = {
+      ' ': 'play', k: 'play', K: 'play', MediaPlayPause: 'play',
+      ArrowLeft: 'back', j: 'back', J: 'back', ArrowRight: 'forward', l: 'forward', L: 'forward',
+      m: 'mute', M: 'mute', f: 'fullscreen', F: 'fullscreen', Escape: 'exit',
+    }[e.key];
+    if (!act) return;
+    // The page under the player must not act on the key too.
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    theaterAction(act);
+  }
+
+  function wake() {
+    if (!theater) return;
+    theater.lastMove = performance.now();
+    showControls();
+  }
+
+  function showControls() {
+    const t = theater;
+    if (!t) return;
+    t.stage.classList.remove('idle');
+    t.top.style.opacity = t.bar.style.opacity = '';
+    t.top.style.pointerEvents = t.bar.style.pointerEvents = '';
+    t.play.innerHTML = icon(t.el.paused || t.el.ended ? 'play' : 'pause');
+    t.mute.innerHTML = icon(t.el.muted ? 'muted' : 'volume');
+    t.full.innerHTML = icon(document.fullscreenElement === t.host || t.windowFull ? 'window' : 'full');
+    t.controlsShown = true;
+    placeCaption(t);
+    showProgress();
+  }
+
+  /** Controls stay while the video is paused, the panel is open or the mouse is on them. */
+  function fadeControls() {
+    const t = theater;
+    if (!t || !t.controlsShown) return;
+    if (t.el.paused || !t.panel.classList.contains('hidden') || t.dragging !== null) return;
+    if (t.top.matches(':hover') || t.bar.matches(':hover')) return;
+    t.top.style.opacity = t.bar.style.opacity = '0';
+    t.top.style.pointerEvents = t.bar.style.pointerEvents = 'none';
+    t.stage.classList.add('idle');
+    t.controlsShown = false;
+    placeCaption(t);
+  }
+
+  function seekFraction(e) {
+    const r = theater.seek.getBoundingClientRect();
+    return r.width > 0 ? Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1) : 0;
+  }
+
+  function showProgress() {
+    const t = theater;
+    if (!t || !t.controlsShown) return;
+    const el = t.el, live = !Number.isFinite(el.duration) || el.duration <= 0;
+    t.seek.classList.toggle('hidden', live);
+    const fraction = t.dragging ?? (live ? 0 : el.currentTime / el.duration);
+    t.done.style.width = `${fraction * 100}%`;
+    t.knob.style.left = `${fraction * 100}%`;
+    const now = live ? el.currentTime : fraction * el.duration;
+    t.time.textContent = live ? clock(now) : `${clock(now)} / ${clock(el.duration)}`;
+  }
+
+  function clock(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0) return '--:--';
+    const s = Math.floor(seconds), h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, r = String(s % 60).padStart(2, '0');
+    return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${r}` : `${m}:${r}`;
   }
 
   /**
-   * Whether a hit above the video draws anything: text, an image, SVG or canvas, or a background.
-   * Players lay transparent layers over the whole video to catch clicks; those do not count.
+   * Draws the video's current picture on the canvas, stretched as the app's setting says, and
+   * reports it to the app when it is a new frame: its count, its time in the video and when it
+   * is shown, on the app's clock. <meta>: the frame callback's, when it came from one.
    */
-  function drawsSomething(node, cache) {
-    if (opacity(node, cache) < 0.05) return false;
-    if (node instanceof SVGElement || /^(IMG|CANVAS|PICTURE|VIDEO|IFRAME)$/.test(node.tagName)) return true;
-    const style = getComputedStyle(node);
-    if (style.backgroundImage !== 'none' || alpha(style.backgroundColor) > 0.05) return true;
-    for (const child of node.childNodes) if (child.nodeType === Node.TEXT_NODE && child.textContent.trim()) return true;
-    return false;
+  function drawFrame(meta) {
+    const t = theater;
+    if (!t) return;
+    const el = t.el, vw = el.videoWidth, vh = el.videoHeight;
+    if (!vw || !vh) return;
+    const stretch = Number(appStatus.settings?.stretch) > 0 ? Number(appStatus.settings.stretch) : 1;
+    const w = Math.round(vw * stretch), h = vh;
+    if (t.canvas.width !== w || t.canvas.height !== h) {
+      t.canvas.width = w;
+      t.canvas.height = h;
+    }
+    try {
+      t.ctx.drawImage(el, 0, 0, w, h);
+    } catch {
+      return; // not decodable now (no frame yet): the last one stays
+    }
+    const mediaTime = meta ? meta.mediaTime : el.currentTime;
+    if (mediaTime === t.drawnTime) return;
+    t.drawnTime = mediaTime;
+    t.drawn++;
+    // The page's caption as it is with this frame (the timer alone would show it up to 250 ms late).
+    updateCaption();
+    if (!Number.isFinite(theta)) return;   // not on the app's clock yet
+    // Drawn now, the canvas is on the screen with the next frame of the page.
+    const display = meta ? meta.expectedDisplayTime : performance.now() + 1000 / 60;
+    post({ type: 'frame', id: t.id, presented: t.drawn, media: mediaTime, display: display + theta, width: w, height: h });
   }
 
-  function probeOverlays() {
-    const f = followed;
-    if (!f) return;
-    const el = f.el;
-    const pic = localPicture(el);
+  /** The video's playback state: at once on a change, and twice a second so the app knows it is current. */
+  function sendState(force) {
+    const t = theater;
+    if (!t) return;
+    const el = t.el;
+    const message = {
+      type: 'state', id: t.id, paused: el.paused || el.ended, seeking: el.seeking, seeks: media.get(el)?.seeks ?? 0,
+      rate: el.playbackRate, clockError: Number.isFinite(clockError) ? Math.round(clockError * 100) / 100 : null,
+    };
+    const text = JSON.stringify(message);
+    if (!force && text === t.state) return;
+    t.state = text;
+    post(message);
+  }
+
+  /**
+   * Where the player's picture is, in this frame's CSS px with the px ratio, and whether the
+   * viewport is the whole screen (full screen, the page's or the window's): only then is that
+   * also its place on the screen.
+   */
+  function reportTheater(t, force) {
+    const picture = theaterPicture(t);
+    const round = v => Math.round(v * 10) / 10;
+    // The player full screen (the page's own full screen) fills the screen by definition.
+    const full = document.fullscreenElement === t.host;
+    const message = {
+      type: 'theater', id: t.id, open: true,
+      picture: picture ? { x: round(picture.x), y: round(picture.y), width: round(picture.width), height: round(picture.height) } : null,
+      dpr: Math.round(devicePixelRatio * 1000) / 1000,
+      onScreen: full || viewportIsScreen(),
+      // What that was decided from, for the app's log.
+      view: { full, outerWidth, outerHeight, innerWidth, innerHeight, screenWidth: screen.width, screenHeight: screen.height },
+    };
+    const text = JSON.stringify(message);
+    if (!force && text === t.reported) return;
+    t.reported = text;
+    post(message);
+  }
+
+  /**
+   * Whether this frame's viewport is the whole screen (the page or the window is full screen):
+   * the window as big as the screen (screen units, which page zoom does not change) and the
+   * viewport of the screen's shape (no tab strip or toolbar left).
+   */
+  function viewportIsScreen() {
+    if (Math.abs(outerWidth - screen.width) > 2 || Math.abs(outerHeight - screen.height) > 2) return false;
+    return innerHeight > 0 && Math.abs(innerWidth / innerHeight - screen.width / screen.height) < 0.01;
+  }
+
+  /** The boxes of the player's own controls and caption over the picture (the app keeps them flat). */
+  function reportBoxes(t) {
     const boxes = [];
-    if (pic && pic.width >= 16 && pic.height >= 16) {
-      const root = typeof el.getRootNode().elementsFromPoint === 'function' ? el.getRootNode() : document;
-      const found = new Map();
-      const cache = new Map();
-      for (let gy = 0; gy < OVERLAY_GRID; gy++) {
-        for (let gx = 0; gx < OVERLAY_GRID; gx++) {
-          const x = pic.x + (gx + 0.5) * pic.width / OVERLAY_GRID, y = pic.y + (gy + 0.5) * pic.height / OVERLAY_GRID;
-          if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
-          for (const hit of root.elementsFromPoint(x, y)) {
-            // Everything above the video, down to it; its own ancestors are below it.
-            if (hit === el || hit.contains(el)) break;
-            if (found.has(hit)) break;
-            if (!drawsSomething(hit, cache)) continue;
-            found.set(hit, hit.closest(CAPTION_SELECTORS) ? 'caption' : hit.closest(CONTROL_SELECTORS) ? 'control' : 'other');
-            break;
-          }
-        }
-      }
-      const area = pic.width * pic.height;
-      for (const [node, kind] of found) {
-        const r = node.getBoundingClientRect();
-        const x0 = Math.max(r.left, pic.x), y0 = Math.max(r.top, pic.y);
-        const x1 = Math.min(r.right, pic.x + pic.width), y1 = Math.min(r.bottom, pic.y + pic.height);
-        const w = x1 - x0, h = y1 - y0;
-        // A box over most of the picture is a layer, not an overlay.
-        if (w < 2 || h < 2 || w * h > 0.5 * area) continue;
-        boxes.push({ x: x0, y: y0, width: w, height: h, kind });
-      }
-      // Caption containers usually take no clicks (pointer-events: none), so the probe above
-      // passes through them: look for them in the player itself, the video's largest ancestor
-      // not much bigger than its picture.
-      let player = el;
-      for (let up = el.parentElement, k = 0; up && k < 8; up = up.parentElement, k++) {
-        const r = up.getBoundingClientRect();
-        if (r.width * r.height > 1.6 * area) break;
-        player = up;
-      }
-      const captions = player === el ? [] : [...player.querySelectorAll(CAPTION_SELECTORS)];
-      for (const node of captions) {
-        if (captions.some(other => other !== node && other.contains(node))) continue;
-        if (!node.textContent.trim() || opacity(node, cache) < 0.05) continue;
-        const r = node.getBoundingClientRect();
-        const x0 = Math.max(r.left, pic.x), y0 = Math.max(r.top, pic.y);
-        const x1 = Math.min(r.right, pic.x + pic.width), y1 = Math.min(r.bottom, pic.y + pic.height);
-        if (x1 - x0 < 2 || y1 - y0 < 2 || (x1 - x0) * (y1 - y0) > 0.5 * area) continue;
-        if (boxes.some(b => b.kind === 'caption' && Math.abs(b.x - x0) < 1 && Math.abs(b.y - y0) < 1)) continue;
-        boxes.push({ x: x0, y: y0, width: x1 - x0, height: y1 - y0, kind: 'caption' });
-      }
-      // Native <track> captions: drawn by the browser at the bottom centre, about 5 % of the
-      // picture's height a line.
-      let lines = 0;
-      for (const track of el.textTracks) {
-        if (track.mode !== 'showing' || !track.activeCues) continue;
-        for (const cue of track.activeCues) lines += String(cue.text ?? '').split('\n').length;
-      }
-      if (lines > 0) {
-        const h = Math.min(lines * pic.height * 0.065, pic.height * 0.4), w = pic.width * 0.7;
-        boxes.push({ x: pic.x + (pic.width - w) / 2, y: pic.y + pic.height * 0.95 - h, width: w, height: h, kind: 'caption' });
-      }
+    const add = (r, kind) => {
+      if (r.width >= 2 && r.height >= 2)
+        boxes.push({ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height), kind });
+    };
+    if (t.controlsShown) {
+      for (const b of t.root.querySelectorAll('.top button, .bar .row button')) add(b.getBoundingClientRect(), 'control');
+      add(t.seek.getBoundingClientRect(), 'control');
+      add(t.time.getBoundingClientRect(), 'control');
     }
-    const round = v => Math.round(v);
-    const list = boxes.map(b => ({
-      x: round(b.x + frameOffset.x), y: round(b.y + frameOffset.y), width: round(b.width), height: round(b.height), kind: b.kind,
-    }));
-    const text = JSON.stringify(list);
-    if (text === f.overlays) return;
-    f.overlays = text;
-    post({ type: 'overlays', id: f.id, boxes: list });
+    if (!t.panel.classList.contains('hidden')) add(t.panel.getBoundingClientRect(), 'control');
+    const span = t.caption.firstChild;
+    if (span) for (const r of span.getClientRects()) add(r, 'caption');
+    const text = JSON.stringify(boxes);
+    if (text === t.boxes) return;
+    t.boxes = text;
+    post({ type: 'overlays', id: t.id, boxes });
   }
 
-  // ---- Where this frame is in the top frame ----------------------------------------------
-  // A frame cannot see its own position in its parent, so it asks; the parent's script finds
-  // the <iframe> the question came from and answers with its content box, in top-frame px.
-
-  window.addEventListener('message', e => {
-    const d = e.data;
-    if (!d || typeof d !== 'object' || !(TAG in d)) return;
-    if (d[TAG] === 'where') {
-      childAsked = performance.now();
-      if (!frameOffset || !e.source) return;
-      for (const frame of document.querySelectorAll('iframe, frame')) {
-        if (frame.contentWindow !== e.source) continue;
-        const box = frame.getBoundingClientRect();
-        const style = getComputedStyle(frame);
-        e.source.postMessage({
-          [TAG]: 'here',
-          x: frameOffset.x + box.left + frame.clientLeft + parseFloat(style.paddingLeft),
-          y: frameOffset.y + box.top + frame.clientTop + parseFloat(style.paddingTop),
-          viewport: window === window.top ? { width: innerWidth, height: innerHeight } : topViewport,
-        }, '*');
-        return;
-      }
-    } else if (d[TAG] === 'here' && e.source === window.parent) {
-      frameOffset = { x: Number(d.x) || 0, y: Number(d.y) || 0 };
-      topViewport = d.viewport ?? null;
+  /** The 3D settings panel, from the values the app last sent. */
+  function renderPanel() {
+    const t = theater;
+    if (!t || t.panel.classList.contains('hidden')) return;
+    const s = appStatus.settings;
+    if (!s) {
+      t.panel.innerHTML = '<div class="value">The 3D settings come from the ImmersiveSBS app.</div>';
+      return;
     }
-  });
+    const step = (label, less, more) =>
+      `<div class="line"><button class="round" data-act="cmd" data-command="${less}">−</button>` +
+      `<div class="value">${label}</div><button class="round" data-act="cmd" data-command="${more}">+</button></div>`;
+    const toggle = (label, command) =>
+      `<div class="line"><button class="wide" data-act="cmd" data-command="${command}">${label}</button></div>`;
+    const esc = v => String(v ?? '').replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`);
+    const plane = Number(s.plane);
+    const layout = { sideBySide: 'side-by-side 3D, shown as is', topBottom: 'top-bottom 3D, shown as is' }[s.layout] ?? '2D, converted';
+    t.panel.innerHTML =
+      step(`Model:  ${esc(s.model)}`, 'modelPrevious', 'modelNext') +
+      step(`Resolution:  ${esc(s.size)}`, 'sizePrevious', 'sizeNext') +
+      step(`Depth:  ${Number(s.depth).toFixed(1)}`, 'depthLess', 'depthMore') +
+      step(`Screen plane:  ${plane.toFixed(2)} (${plane < 0.5 ? 'behind' : plane > 0.5 ? 'in front' : 'balanced'})`, 'planeBack', 'planeForward') +
+      step(`Timing:  ${esc(s.timing)}`, 'timingLess', 'timingMore') +
+      step(`Stretch:  ×${Number(s.stretch ?? 1).toFixed(2)}`, 'stretchLess', 'stretchMore') +
+      toggle(`Video:  ${layout}`, 'layoutNext') +
+      toggle(`Snap depth edges to the picture:  ${s.edgeSnap ? 'on' : 'off'}`, 'edgeSnap') +
+      toggle(`Keep subtitles flat:  ${s.captions ? 'on' : 'off'}`, 'captions');
+  }
 
-  /** Frames with media ask, and so do frames between them and the top, to answer them. */
-  function askWhere() {
-    if (window === window.top) return;
-    if (media.size > 0 || performance.now() - childAsked < 3000) window.parent.postMessage({ [TAG]: 'where' }, '*');
+  /** The player around a video: its largest ancestor not much bigger than its picture. */
+  function playerOf(el) {
+    const pic = pictureRect(el);
+    const area = pic ? pic.width * pic.height : 0;
+    let player = el;
+    for (let up = el.parentElement, k = 0; up && k < 8 && area > 0; up = up.parentElement, k++) {
+      const r = up.getBoundingClientRect();
+      if (r.width * r.height > 1.6 * area) break;
+      player = up;
+    }
+    return player;
+  }
+
+  /**
+   * The page's captions, shown in the player: its own caption boxes' text (the page keeps
+   * drawing them under the player) and the element's native cues. Read here, never sent.
+   */
+  function updateCaption() {
+    const t = theater;
+    if (!t) return;
+    const lines = [];
+    if (t.player !== t.el) {
+      const video = t.el.getBoundingClientRect();
+      const nodes = [...t.player.querySelectorAll(CAPTION_SELECTORS)].filter(node => isCaption(node, video, t.player));
+      for (const node of nodes) {
+        if (nodes.some(other => other !== node && other.contains(node))) continue;
+        const text = (node.innerText ?? '').trim();
+        // A list (a menu of subtitle languages the class names did not give away) is no caption.
+        if (text && text.split('\n').length <= CAPTION_MAX_LINES) lines.push(text);
+      }
+    }
+    for (const track of t.el.textTracks) {
+      if (track.mode !== 'showing' || !track.activeCues) continue;
+      for (const cue of track.activeCues) {
+        const text = String(cue.text ?? '').replace(/<[^>]*>/g, '').trim();
+        if (text) lines.push(text);
+      }
+    }
+    const text = [...new Set(lines)].join('\n');
+    if (text === t.shownCaption) return;
+    t.shownCaption = text;
+    t.caption.replaceChildren();
+    if (text) {
+      const span = document.createElement('span');
+      span.textContent = text;
+      t.caption.appendChild(span);
+    }
+    reportBoxes(t);
+  }
+
+  /**
+   * Whether a box the caption selectors matched is a caption shown now: rendered and visible
+   * (a hidden box's innerText is all its text: WeTV's hidden subtitle menu), over the video, and
+   * not a control, a menu or a settings panel (players name those "subtitle" too).
+   */
+  function isCaption(node, video, player) {
+    const visible = node.checkVisibility
+      ? node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true, opacityProperty: true, visibilityProperty: true })
+      : node.getClientRects().length > 0;
+    if (!visible) return false;
+    const around = node.closest(CAPTION_NOT);
+    if ((around && player.contains(around)) || node.querySelector(CAPTION_NOT)) return false;
+    if (typeof node.className === 'string' && CAPTION_NOT_CLASS.test(node.className)) return false;
+    const r = node.getBoundingClientRect();
+    const x = Math.min(r.right, video.right) - Math.max(r.left, video.left);
+    const y = Math.min(r.bottom, video.bottom) - Math.max(r.top, video.top);
+    return r.width > 0 && r.height > 0 && x > 0 && y > 0 && x * y >= 0.5 * r.width * r.height;
+  }
+
+  /**
+   * Keeps the caption inside the picture: the app shows the picture's rectangle late (the
+   * buffer, matched timing) and the rest of the screen live, so a caption in the black bars
+   * would show before its line is spoken, and one across the edge twice. Low in the picture,
+   * above the controls while they show, never above the picture's middle.
+   */
+  function placeCaption(t) {
+    const pic = theaterPicture(t);
+    if (!pic) return;
+    const stage = t.stage.getBoundingClientRect();
+    const below = stage.bottom - (pic.y + pic.height);
+    let bottom = below + 0.05 * pic.height;
+    if (t.controlsShown) bottom = Math.max(bottom, stage.bottom - t.bar.getBoundingClientRect().top + 8);
+    bottom = Math.min(bottom, below + 0.5 * pic.height);
+    const side = 0.06 * pic.width;
+    const style = `left: ${Math.round(pic.x - stage.left + side)}px; right: ${Math.round(stage.right - pic.x - pic.width + side)}px; ` +
+      `bottom: ${Math.round(bottom)}px; font-size: clamp(16px, ${(pic.height * 0.042).toFixed(1)}px, 44px);`;
+    if (style === t.captionStyle) return;
+    t.captionStyle = style;
+    t.caption.style.cssText = style;
+  }
+
+  /** Where the canvas shows the picture, in this frame's viewport CSS px. */
+  function theaterPicture(t) {
+    const box = t.canvas.getBoundingClientRect();
+    const vw = t.canvas.width, vh = t.canvas.height;
+    if (box.width < 2 || box.height < 2 || !vw || !vh) return null;
+    const scale = Math.min(box.width / vw, box.height / vh);
+    const w = vw * scale, h = vh * scale;
+    return { x: box.left + (box.width - w) / 2, y: box.top + (box.height - h) / 2, width: w, height: h };
   }
 
   // ---- Heartbeat -------------------------------------------------------------------------
@@ -578,7 +1025,6 @@
   scan();
   setInterval(() => {
     scan();
-    askWhere();
     send();
   }, REPORT_MS);
 })();
