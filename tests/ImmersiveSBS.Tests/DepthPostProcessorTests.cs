@@ -141,4 +141,82 @@ public class DepthPostProcessorTests
         Assert.True(cut);
         Assert.True(n[0] > n[W - 1], "the new depth applies fully after a cut");
     }
+
+    [Fact]
+    public void LookingAheadTheRangeOpensBeforeTheNearObjectComes()
+    {
+        // The frame's own range is 0..1; a near object two frames on will raise it to 2. Told so,
+        // the frame is already normalised toward the wider range: its far part stays far, its
+        // nearest no longer reads as the nearest there will be.
+        var own = new DepthPostProcessor(W, H);
+        var ahead = new DepthPostProcessor(W, H);
+        var a = new float[W * H];
+        var b = new float[W * H];
+        own.Process(Ramp(1, 0), Flat(0.5f), 1 / 30.0, a);
+        (double p2, double p98) = ahead.MeasureRange(Ramp(1, 0));
+        ahead.Process(Ramp(1, 0), Flat(0.5f), 1 / 30.0, b, (p2, 2 * p98));
+        Assert.InRange(a[W - 1], 0.99f, 1f);
+        Assert.InRange(b[W - 1], 0.45f, 0.55f);
+        Assert.Equal(a[0], b[0], 2);
+    }
+
+    [Theory]
+    [InlineData(64, 36)]
+    [InlineData(756, 420)]
+    public void TheRangeIsTheExactPercentilesOfEveryFourthValue(int w, int h)
+    {
+        // Counted by histogram in parts now: the same values a full sort gives, ties and all.
+        var random = new Random(5);
+        float[] raw = Enumerable.Range(0, w * h).Select(i => i % 7 == 0 ? 0.25f : (float)Math.Pow(random.NextDouble(), 3) * 40 - 3).ToArray();
+        float[] sampled = raw.Where((_, i) => i % 4 == 0).Order().ToArray();
+        int n = sampled.Length;
+        (double p2, double p98) = new DepthPostProcessor(w, h).MeasureRange(raw);
+        Assert.Equal(sampled[(int)(0.02 * (n - 1))], p2);
+        Assert.Equal(sampled[(int)(0.98 * (n - 1))], p98);
+    }
+
+    [Fact]
+    public void FlickerIsDepthChangeWhereThePictureStoodStill()
+    {
+        // M4: the picture holds still and the model's answer jitters; the jitter shows as flicker,
+        // and a steady answer as none.
+        var p = new DepthPostProcessor(W, H) { SceneCutThreshold = 1 };
+        var n = new float[W * H];
+        var random = new Random(4);
+        p.Process(Ramp(1, 0), Flat(0.5f), 1 / 30.0, n);
+        Assert.True(double.IsNaN(p.Flicker), "no flicker on the first frame");
+
+        p.Process(Ramp(1, 0), Flat(0.5f), 1 / 30.0, n);
+        Assert.Equal(0, p.Flicker, 6);
+
+        float[] noisy = Ramp(1, 0).Select(v => v + (float)(random.NextDouble() - 0.5) * 0.2f).ToArray();
+        p.Process(noisy, Flat(0.5f), 1 / 30.0, n);
+        Assert.True(p.Flicker > 0.001, $"flicker {p.Flicker}");
+    }
+
+    [Fact]
+    public void EdgeStepsChangeOnlyTheOutputNotTheHistory()
+    {
+        // The foreground curve, soft edges and anti-aliasing work on the output: switching them
+        // off restores the model's own depth on the very next frame.
+        var raw = new float[W * H];
+        for (int i = 0; i < raw.Length; i++) raw[i] = i % W < W / 2 ? 1 : 0;
+        var plain = new DepthPostProcessor(W, H) { SceneCutThreshold = 1 };
+        var edged = new DepthPostProcessor(W, H) { SceneCutThreshold = 1, AntiAlias = true, SoftEdgePassesX = 3, SoftEdgePassesY = 1, Foreground = 2 };
+        var a = new float[W * H];
+        var b = new float[W * H];
+        for (int f = 0; f < 5; f++)
+        {
+            plain.Process(raw, Flat(0.5f), 1 / 30.0, a);
+            edged.Process(raw, Flat(0.5f), 1 / 30.0, b);
+        }
+        Assert.NotEqual(a[H / 2 * W + W / 2], b[H / 2 * W + W / 2]);
+
+        edged.SoftEdgePassesX = 0;
+        edged.AntiAlias = false;
+        edged.Foreground = 0;
+        plain.Process(raw, Flat(0.5f), 1 / 30.0, a);
+        edged.Process(raw, Flat(0.5f), 1 / 30.0, b);
+        Assert.Equal(a, b);
+    }
 }

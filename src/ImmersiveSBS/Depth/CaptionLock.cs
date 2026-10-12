@@ -19,9 +19,11 @@ public sealed class CaptionLock
     private readonly float[] mask;
     private readonly bool[] inBox;
     private readonly float[] boxValues;
+    private readonly int[] rowStrokes, rowLefts, rowRights;
     private double target = double.NaN;
     private Rectangle candidate;
     private double candidateSeconds;
+    private double sinceLost = double.PositiveInfinity;
 
     public CaptionLock(int width, int height)
     {
@@ -30,6 +32,9 @@ public sealed class CaptionLock
         mask = new float[width * height];
         inBox = new bool[width * height];
         boxValues = new float[width * height];
+        rowStrokes = new int[height];
+        rowLefts = new int[height];
+        rowRights = new int[height];
     }
 
     /// <summary>Captions are looked for below this fraction of the height.</summary>
@@ -50,6 +55,14 @@ public sealed class CaptionLock
     /// <summary>How long a band must hold still (top and bottom within a few px) to count, seconds.</summary>
     public double StableSeconds { get; set; } = 0.3;
 
+    /// <summary>
+    /// Within <see cref="RecentSeconds"/> of losing a box, a new one must hold this long: one run
+    /// logged a false box flipping between found and gone for minutes (improvement-plan.md §11).
+    /// </summary>
+    public double RecentStableSeconds { get; set; } = 1;
+
+    public double RecentSeconds { get; set; } = 5;
+
     /// <summary>How far in front of the scene behind it the caption sits, in nearness.</summary>
     public float Margin { get; set; } = 0.03f;
 
@@ -62,27 +75,53 @@ public sealed class CaptionLock
     /// <summary>
     /// Finds the caption in <paramref name="luma"/> and flattens it in <paramref name="nearness"/>
     /// (both at this size). <paramref name="screenPlane"/> is the convergence: a caption is never
-    /// put behind the screen.
+    /// put behind the screen. <paramref name="given"/>, when it has boxes, are the captions as the
+    /// page reports them (model px): they are used instead of looking (improvement-plan.md §7.4).
+    /// Text under the page's <paramref name="overlays"/> (its controls) is not taken for captions.
     /// </summary>
-    public void Apply(ReadOnlySpan<float> luma, Span<float> nearness, double dtSeconds, double screenPlane)
+    public void Apply(float[] luma, float[] nearness, double dtSeconds, double screenPlane,
+        IReadOnlyList<Rectangle>? given = null, IReadOnlyList<Rectangle>? overlays = null)
     {
         double dt = Math.Clamp(dtSeconds, 1.0 / 240, 1.0);
-        Rectangle? was = Found;
-        Found = Stable(Detect(luma), dt);
-        if ((was == null) != (Found == null)) Changed?.Invoke(Found);
-
         Array.Clear(inBox);
+        Rectangle? was = Found;
+        var frame = new Rectangle(0, 0, width, height);
+        if (given is { Count: > 0 })
+        {
+            // The page's captions: exact, and no false boxes. Detection starts afresh after.
+            Rectangle union = Rectangle.Empty;
+            foreach (Rectangle g in given)
+            {
+                Rectangle r = Rectangle.Intersect(g, frame);
+                if (r.Width <= 0 || r.Height <= 0) continue;
+                union = union.IsEmpty ? r : Rectangle.Union(union, r);
+                for (int y = r.Top; y < r.Bottom; y++)
+                    for (int x = r.Left; x < r.Right; x++) inBox[y * width + x] = true;
+            }
+            Found = union.IsEmpty ? null : union;
+            candidate = Rectangle.Empty;
+            candidateSeconds = 0;
+        }
+        else
+        {
+            Found = Stable(Detect(luma, overlays), dt);
+            if ((was == null) != (Found == null)) Changed?.Invoke(Found);
+            if (was != null && Found == null) sinceLost = 0;
+            else if (Found == null) sinceLost += dt;
+            if (Found is Rectangle detected)
+                for (int y = detected.Top; y < detected.Bottom; y++)
+                    for (int x = detected.Left; x < detected.Right; x++) inBox[y * width + x] = true;
+        }
+
         if (Found is Rectangle box && box.Width > 0 && box.Height > 0)
         {
             // In front of the nearest of what is behind it (its 90th percentile), at least at the
             // screen plane; smoothed so a caption does not pump with the scene.
             int n = 0;
             for (int y = box.Top; y < box.Bottom; y++)
-                for (int x = box.Left; x < box.Right; x++)
-                {
-                    boxValues[n++] = nearness[y * width + x];
-                    inBox[y * width + x] = true;
-                }
+                for (int i = y * width + box.Left; i < y * width + box.Right; i++)
+                    if (inBox[i]) boxValues[n++] = nearness[i];
+            if (n == 0) return;
             float p90 = Selection.Nth(boxValues.AsSpan(0, n), (int)(0.9 * (n - 1)));
             double wanted = Math.Min(1, Math.Max(p90, screenPlane) + Margin);
             target = double.IsNaN(target) ? wanted : target + (wanted - target) * (1 - Math.Exp(-dt / 0.3));
@@ -91,13 +130,17 @@ public sealed class CaptionLock
 
         // The mask rises fast and fades slowly, so a caption missed for a frame does not blink.
         float rise = (float)(1 - Math.Exp(-dt / 0.1)), fall = (float)(1 - Math.Exp(-dt / 0.4));
-        for (int i = 0; i < mask.Length; i++)
+        float level = (float)target;
+        RowBands.For(height, (_, from, to) =>
         {
-            float m = mask[i];
-            m += inBox[i] ? (1 - m) * rise : -m * fall;
-            mask[i] = m;
-            if (m > 0.001f) nearness[i] += ((float)target - nearness[i]) * m;
-        }
+            for (int i = from * width; i < to * width; i++)
+            {
+                float m = mask[i];
+                m += inBox[i] ? (1 - m) * rise : -m * fall;
+                mask[i] = m;
+                if (m > 0.001f) nearness[i] += (level - nearness[i]) * m;
+            }
+        });
     }
 
     /// <summary>A detection counts once its top and bottom have held for <see cref="StableSeconds"/>.</summary>
@@ -118,19 +161,30 @@ public sealed class CaptionLock
             candidate = box;
             candidateSeconds = 0;
         }
-        return candidateSeconds >= StableSeconds ? box : null;
+        return candidateSeconds >= (sinceLost < RecentSeconds ? RecentStableSeconds : StableSeconds) ? box : null;
     }
 
     /// <summary>
     /// The subtitle box in the search area, or null: the lowest band of text rows shaped like a
-    /// line of subtitles (short, wide enough, centred), with the line right above it if there is
-    /// one (two-line subtitles); never more than a fifth of the picture.
+    /// line of subtitles (short, wide enough, centred in the middle half), with the line right
+    /// above it if there is one (two-line subtitles); never more than a fifth of the picture.
+    /// The middle half, not the middle three fifths: a logged false box sat at the edge of the
+    /// wider band, while real subtitles in the same log stayed inside the narrower one. Not wider
+    /// than 85 % of the picture, nor mostly under a box the page draws over it: in the second
+    /// run, a player's control bar (96–99 % wide) was found and lost every few seconds.
     /// </summary>
-    private Rectangle? Detect(ReadOnlySpan<float> luma)
+    private Rectangle? Detect(float[] luma, IReadOnlyList<Rectangle>? overlays)
     {
         int top = (int)(SearchFrom * height);
         int bandStart = -1, bandEnd = -1, gap = 0, left = width, right = -1;
         var bands = new List<Rectangle>();
+
+        // Each row's strokes, rows in parallel; then the bands, in order.
+        RowBands.For(height - top, (_, from, to) =>
+        {
+            for (int y = top + from; y < top + to; y++)
+                rowStrokes[y] = Strokes(luma.AsSpan(y * width, width), out rowLefts[y], out rowRights[y]);
+        });
 
         for (int y = top; y <= height; y++)
         {
@@ -138,8 +192,9 @@ public sealed class CaptionLock
             int rowLeft = width, rowRight = -1;
             if (y < height)
             {
-                int strokes = Strokes(luma.Slice(y * width, width), out rowLeft, out rowRight);
-                text = strokes >= MinStrokes;
+                text = rowStrokes[y] >= MinStrokes;
+                rowLeft = rowLefts[y];
+                rowRight = rowRights[y];
             }
 
             if (text)
@@ -156,8 +211,9 @@ public sealed class CaptionLock
                 var band = Rectangle.FromLTRB(left, bandStart, right + 1, bandEnd + 1);
                 int centre = band.Left + band.Width / 2;
                 bool shaped = band.Height >= Math.Max(3, height / 50) && band.Height <= height / 8
-                              && band.Width >= width / 16
-                              && centre > width / 5 && centre < width - width / 5;
+                              && band.Width >= width / 16 && band.Width <= width * 85 / 100
+                              && centre > width / 4 && centre < width - width / 4
+                              && !UnderOverlay(band, overlays);
                 if (shaped) bands.Add(band);
                 bandStart = -1;
                 left = width;
@@ -176,6 +232,19 @@ public sealed class CaptionLock
         found.Inflate(2, 2);
         found.Intersect(new Rectangle(0, 0, width, height));
         return found;
+    }
+
+    /// <summary>Whether half or more of <paramref name="band"/> lies under the page's overlay boxes.</summary>
+    private static bool UnderOverlay(Rectangle band, IReadOnlyList<Rectangle>? overlays)
+    {
+        if (overlays is not { Count: > 0 }) return false;
+        long covered = 0;
+        foreach (Rectangle o in overlays)
+        {
+            Rectangle r = Rectangle.Intersect(band, o);
+            if (r.Width > 0 && r.Height > 0) covered += (long)r.Width * r.Height;
+        }
+        return covered * 2 >= (long)band.Width * band.Height;
     }
 
     /// <summary>Bright runs in a row outlined by a much darker pixel within reach on both sides.</summary>

@@ -150,6 +150,7 @@ internal static unsafe partial class Native
 
     public const uint MONITOR_DEFAULTTONULL = 0;
     public const uint GA_ROOT = 2;
+    public const uint GA_ROOTOWNER = 3;
     public const int SW_MAXIMIZE = 3;
     public const int SW_RESTORE = 9;
     public const uint SWP_NOZORDER = 0x0004;
@@ -197,7 +198,7 @@ internal static unsafe partial class Native
     public static IntPtr MonitorFromPoint(System.Drawing.Point pt, uint flags) =>
         MonitorFromPointNative(new POINT { X = pt.X, Y = pt.Y }, flags);
 
-    [LibraryImport("user32.dll")]
+    [LibraryImport("shcore.dll")]
     public static partial int GetDpiForMonitor(IntPtr monitor, int dpiType, out uint dpiX, out uint dpiY);
 
     [LibraryImport("user32.dll", EntryPoint = "GetCursorPos")]
@@ -246,8 +247,6 @@ internal static unsafe partial class Native
     [LibraryImport("user32.dll", EntryPoint = "GetClassNameW")]
     private static partial int GetClassNameW(IntPtr hwnd, char* buffer, int max);
 
-    [LibraryImport("user32.dll", EntryPoint = "GetWindowTextW")]
-    private static partial int GetWindowTextW(IntPtr hwnd, char* buffer, int max);
 
     [LibraryImport("user32.dll", EntryPoint = "WindowFromPoint")]
     private static partial IntPtr WindowFromPointNative(POINT point);
@@ -260,13 +259,51 @@ internal static unsafe partial class Native
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool IsWindow(IntPtr hwnd);
 
-    /// <summary>The top-level window at a desktop point; zero for none.</summary>
+    /// <summary>
+    /// The top-level window at a desktop point, through any popup it owns (a browser's tooltip or
+    /// status bubble over a video counts as the browser window); zero for none.
+    /// </summary>
     public static IntPtr RootWindowAt(System.Drawing.Point point)
     {
         IntPtr hwnd = WindowFromPointNative(new POINT { X = point.X, Y = point.Y });
         if (hwnd == IntPtr.Zero) return IntPtr.Zero;
-        IntPtr root = GetAncestor(hwnd, GA_ROOT);
-        return root != IntPtr.Zero ? root : hwnd;
+        IntPtr root = GetAncestor(hwnd, GA_ROOTOWNER);
+        if (root == IntPtr.Zero) root = hwnd;
+        IntPtr skip = SeeThroughWindow;
+        return skip != IntPtr.Zero && root == skip ? WindowBelow(skip, point) : root;
+    }
+
+    /// <summary>
+    /// A window of this app that <see cref="RootWindowAt"/> looks through (the theater's player
+    /// window, which covers the page whose video it shows); zero for none. Any thread.
+    /// </summary>
+    public static IntPtr SeeThroughWindow { get; set; }
+
+    private const uint GW_HWNDNEXT = 2;
+
+    [LibraryImport("user32.dll")]
+    private static partial IntPtr GetWindow(IntPtr hwnd, uint command);
+
+    private const int GWL_EXSTYLE = -20;
+    private const long WS_EX_TRANSPARENT = 0x20;
+
+    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static partial IntPtr GetWindowLongPtr(IntPtr hwnd, int index);
+
+    /// <summary>The first visible top-level window under <paramref name="above"/> in z-order that contains <paramref name="point"/>, as its root owner.</summary>
+    private static IntPtr WindowBelow(IntPtr above, System.Drawing.Point point)
+    {
+        for (IntPtr w = GetWindow(above, GW_HWNDNEXT); w != IntPtr.Zero; w = GetWindow(w, GW_HWNDNEXT))
+        {
+            if (!IsWindowVisible(w) || IsIconic(w) || !GetWindowRect(w, out RECT r)) continue;
+            if (point.X < r.Left || point.X >= r.Right || point.Y < r.Top || point.Y >= r.Bottom) continue;
+            if (DwmGetWindowAttribute(w, DWMWA_CLOAKED, out int cloaked, sizeof(int)) == 0 && cloaked != 0) continue;
+            // Click-through overlays: the point is not theirs, as for WindowFromPoint.
+            if (((long)GetWindowLongPtr(w, GWL_EXSTYLE) & WS_EX_TRANSPARENT) != 0) continue;
+            IntPtr root = GetAncestor(w, GA_ROOTOWNER);
+            return root != IntPtr.Zero ? root : w;
+        }
+        return IntPtr.Zero;
     }
 
     /// <summary>A window's client area in desktop px; empty when it is gone.</summary>
@@ -276,16 +313,6 @@ internal static unsafe partial class Native
         var origin = new POINT();
         if (!ClientToScreen(hwnd, ref origin)) return System.Drawing.Rectangle.Empty;
         return new System.Drawing.Rectangle(origin.X, origin.Y, r.Right - r.Left, r.Bottom - r.Top);
-    }
-
-    /// <summary>The process owning the top-level window at a desktop point; 0 for none.</summary>
-    public static uint ProcessAt(System.Drawing.Point point)
-    {
-        IntPtr hwnd = WindowFromPointNative(new POINT { X = point.X, Y = point.Y });
-        if (hwnd == IntPtr.Zero) return 0;
-        IntPtr root = GetAncestor(hwnd, GA_ROOT);
-        GetWindowThreadProcessId(root != IntPtr.Zero ? root : hwnd, out uint pid);
-        return pid;
     }
 
     [LibraryImport("user32.dll")]
@@ -307,11 +334,19 @@ internal static unsafe partial class Native
         return n > 0 ? new string(buffer, 0, n) : string.Empty;
     }
 
-    public static string GetWindowText(IntPtr hwnd)
+    /// <summary>The name of the program that owns a window ("msedge"), or "unknown"; never its title.</summary>
+    public static string ProcessName(IntPtr hwnd)
     {
-        char* buffer = stackalloc char[256];
-        int n = GetWindowTextW(hwnd, buffer, 256);
-        return n > 0 ? new string(buffer, 0, n) : string.Empty;
+        GetWindowThreadProcessId(hwnd, out uint pid);
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById((int)pid);
+            return process.ProcessName;
+        }
+        catch (Exception)
+        {
+            return "unknown";
+        }
     }
 
     [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16)]

@@ -1,25 +1,68 @@
 namespace ImmersiveSBS.Depth;
 
+/// <summary>How the eye images are made from the picture and its depth.</summary>
+public enum WarpMode
+{
+    /// <summary>Each source pixel moved to its place in each eye; gaps filled (improvement-plan.md §2.1).</summary>
+    Splat,
+
+    /// <summary>Each eye pixel looks up the source pixel that lands there; nothing left empty (§8).</summary>
+    Lookup,
+}
+
+/// <summary>A switch whose automatic choice depends on the model.</summary>
+public enum AutoSwitch
+{
+    Auto,
+    On,
+    Off,
+}
+
 /// <summary>
 /// The fine controls of AI 3D, edited live in the tuning panel and stored with the settings.
-/// Defaults are the plan's (video-3d-plan.md §6–§7).
+/// Defaults are the plan's (video-3d-plan.md §6–§7, improvement-plan.md §7).
 /// </summary>
 public sealed record StereoTuning
 {
-    /// <summary>
-    /// Foreground dilation radius, px (§6.4): pushes edge errors onto the background. 1 since edge
-    /// snapping: wider drags a sliver of background along with every object, a visible halo.
-    /// </summary>
-    public int DilateRadius { get; init; } = 1;
+    /// <summary>The defaults' version; settings saved before it get the new defaults (<see cref="Migrated"/>).</summary>
+    public const int CurrentVersion = 2;
 
-    /// <summary>Snap the model's soft depth edges to the picture's own edges (outlines, hair).</summary>
-    public bool EdgeSnap { get; init; } = true;
+    /// <summary>The version of the defaults these settings were saved with; 0 before versions were kept.</summary>
+    public int Version { get; init; }
+
+    /// <summary>
+    /// Foreground dilation at screen resolution, px (§6.4): a hard maximum that keeps every depth
+    /// step a step, so the warp opens a hole at each (improvement-plan.md §2.1). 0 since soft
+    /// edges grow the near side at model resolution instead.
+    /// </summary>
+    public int DilateRadius { get; init; }
+
+    /// <summary>
+    /// Snap the model's soft depth edges to the picture's own edges (outlines, hair). Off by
+    /// default: a snapped edge is a sharp step, and the forward warp opens a hole at every one.
+    /// </summary>
+    public bool EdgeSnap { get; init; }
 
     /// <summary>Find subtitles and keep them flat, just in front of the scene (<see cref="CaptionLock"/>).</summary>
     public bool Captions { get; init; } = true;
 
-    /// <summary>Colour sigma of the guided upsample (§6.3): smaller keeps depth edges tighter on picture edges.</summary>
-    public double EdgeSoftness { get; init; } = 0.1;
+    /// <summary>
+    /// Soft depth edges (improvement-plan.md §7.1): passes across, 0–4; −1 (Auto) picks enough
+    /// for the depth strength and the video's size. The guided upsample softens with them.
+    /// </summary>
+    public int SoftEdges { get; init; } = -1;
+
+    /// <summary>Depth anti-aliasing (§7.2); Auto is on for Depth Anything V2 and 3, off for Distill-Any-Depth.</summary>
+    public AutoSwitch AntiAlias { get; init; }
+
+    /// <summary>
+    /// Foreground scale (improvement-plan.md §11 item 4, <see cref="ForegroundCurve"/>): −3..3;
+    /// above 0 near things get more of the depth range, for scenes where people look flat.
+    /// </summary>
+    public int Foreground { get; init; }
+
+    /// <summary>The warp: the forward splat until the lookup warp has been compared in the glasses (§8).</summary>
+    public WarpMode Warp { get; init; }
 
     /// <summary>Per-frame blend where nothing moves, at 30 fps (§6.2): smaller is steadier, slower.</summary>
     public double Smoothing { get; init; } = 0.2;
@@ -33,5 +76,17 @@ public sealed record StereoTuning
     /// <summary>Subtitles and logos at the screen plane (§6.5); experimental, off by default.</summary>
     public bool StaticOverlays { get; init; }
 
-    public static readonly StereoTuning Default = new();
+    public static readonly StereoTuning Default = new() { Version = CurrentVersion };
+
+    /// <summary>
+    /// These settings with the defaults that changed since they were saved: version 2 (the edge
+    /// pipeline) turned screen dilation and edge snapping off, which a saved file would otherwise
+    /// keep on.
+    /// </summary>
+    public StereoTuning Migrated()
+    {
+        StereoTuning t = this;
+        if (t.Version < 2) t = t with { DilateRadius = 0, EdgeSnap = false };
+        return t.Version == CurrentVersion ? t : t with { Version = CurrentVersion };
+    }
 }

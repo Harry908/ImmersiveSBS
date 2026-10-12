@@ -70,20 +70,27 @@ public sealed record BrowserMedia(
     /// of its client area, under the tab strip and toolbar (in full screen it fills it all), so the
     /// viewport's size in physical px places it.
     /// </summary>
-    public Rectangle? ScreenRect(Rectangle client)
+    public Rectangle? ScreenRect(Rectangle client) =>
+        Rect is { } r && ToScreen(r, client) is Rectangle picture && picture.Width >= 16 && picture.Height >= 16 ? picture : null;
+
+    /// <summary>
+    /// A box on this element's page (top-frame CSS px) on the screen, physical px, cut to the
+    /// page; null when the page is not this window's or the box is not on it.
+    /// </summary>
+    public Rectangle? ToScreen(CssRect r, Rectangle client)
     {
-        if (Rect is not { } r || Viewport is not { } v || Dpr <= 0 || r.Width < 2 || r.Height < 2) return null;
+        if (Viewport is not { } v || Dpr <= 0 || r.Width < 2 || r.Height < 2) return null;
         double viewWidth = v.Width * Dpr, viewHeight = v.Height * Dpr;
         // Another window's page cannot be bigger than this window (a few px of rounding allowed).
         if (viewWidth > client.Width + 4 || viewHeight > client.Height + 4) return null;
         double left = client.Left, top = client.Bottom - viewHeight;
         var view = new Rectangle(client.Left, (int)Math.Round(top), (int)Math.Round(viewWidth), (int)Math.Round(viewHeight));
-        var picture = Rectangle.FromLTRB(
+        var box = Rectangle.FromLTRB(
             (int)Math.Round(left + r.X * Dpr), (int)Math.Round(top + r.Y * Dpr),
             (int)Math.Round(left + (r.X + r.Width) * Dpr), (int)Math.Round(top + (r.Y + r.Height) * Dpr));
         // Scrolled partly out of the page, only the shown part is on the screen.
-        picture.Intersect(view);
-        return picture.Width >= 16 && picture.Height >= 16 ? picture : null;
+        box.Intersect(view);
+        return box.Width > 0 && box.Height > 0 ? box : null;
     }
 
     /// <summary>Intersection over union of two rectangles, 0 to 1.</summary>

@@ -5,7 +5,11 @@ namespace ImmersiveSBS.Depth;
 /// §6.1–6.2), at model resolution on the CPU. The model's scale and offset change every frame,
 /// so raw output "breathes"; this normalizes by smoothed percentiles and filters per pixel,
 /// following quickly where the picture moves and settling where it is still. A scene cut resets
-/// everything. Pure: no GPU, no Windows state.
+/// everything. Then, on the output only (the temporal state keeps the model's own values, so
+/// switching any of them off restores its depth at once): the foreground curve, depth
+/// anti-aliasing and soft edges (improvement-plan.md §11, §7), then static overlays and subtitles at the screen plane, so text
+/// stays flat and sharp-edged. Pure: no GPU, no Windows state. Every per-pixel step runs over
+/// bands of rows on several cores (<see cref="RowBands"/>); one call at a time.
 /// </summary>
 public sealed class DepthPostProcessor
 {
@@ -15,7 +19,12 @@ public sealed class DepthPostProcessor
     private readonly float[] sample;
     private readonly float[] staticTime;
     private readonly float[] staticWeight;
+    private readonly float[] previousOutput;
+    private readonly float[] pageMask;
+    private readonly bool[] inPageBox;
     private readonly CaptionLock captions;
+    private readonly SoftEdges softEdges;
+    private readonly DepthAntiAlias antiAlias;
     private double globalChange;
     private bool hasHistory;
     private double low;
@@ -31,7 +40,12 @@ public sealed class DepthPostProcessor
         sample = new float[(count + SampleStride - 1) / SampleStride];
         staticTime = new float[count];
         staticWeight = new float[count];
+        previousOutput = new float[count];
+        pageMask = new float[count];
+        inPageBox = new bool[count];
         captions = new CaptionLock(width, height);
+        softEdges = new SoftEdges(width, height);
+        antiAlias = new DepthAntiAlias(width, height);
         // In the log, so a wrong lock (a flattened block of scene) can be told from a right one.
         captions.Changed += box => Log.Write(box is System.Drawing.Rectangle b
             ? $"Depth: subtitles found at {b.X},{b.Y} {b.Width}×{b.Height} (of {width}×{height}); kept flat."
@@ -87,8 +101,43 @@ public sealed class DepthPostProcessor
     /// <summary>Smoothed mean luma change above which the picture counts as moving (not paused).</summary>
     public double StaticGlobalChange { get; set; } = 0.008;
 
+    /// <summary>Smooths stair-stepped depth edges along their direction (improvement-plan.md §7.2).</summary>
+    public bool AntiAlias { get; set; }
+
+    /// <summary>Soft-edge passes along x (§7.1); 0 = off.</summary>
+    public int SoftEdgePassesX { get; set; }
+
+    /// <summary>Soft-edge passes along y, at most <see cref="SoftEdgePassesX"/>.</summary>
+    public int SoftEdgePassesY { get; set; }
+
+    /// <summary>The foreground-scale curve's level (<see cref="ForegroundCurve"/>), −3..3; 0 = linear.</summary>
+    public int Foreground
+    {
+        get => curve.Level;
+        set
+        {
+            if (Math.Clamp(value, -ForegroundCurve.MaxLevel, ForegroundCurve.MaxLevel) != curve.Level) curve = new ForegroundCurve(value);
+        }
+    }
+
+    private ForegroundCurve curve = new(0);
+
+    /// <summary>
+    /// What the page draws over the picture (improvement-plan.md §7.4), model px: overlays are held
+    /// at the screen plane, captions replace the subtitle detection while there are any. Null: no
+    /// page data.
+    /// </summary>
+    public PageBoxes? PageBoxes { get; set; }
+
     /// <summary>The smoothed 2nd and 98th percentiles of raw depth, for diagnostics.</summary>
     public (double Low, double High) Range => (low, high);
+
+    /// <summary>
+    /// Flicker of the last frame (improvement-plan.md M4): the mean change of the output over
+    /// pixels whose picture did not change (luma by less than <see cref="StaticEpsilon"/>), where
+    /// any change of depth is noise; NaN after a reset or with no such pixel.
+    /// </summary>
+    public double Flicker { get; private set; } = double.NaN;
 
     public void Reset() => hasHistory = false;
 
@@ -96,20 +145,32 @@ public sealed class DepthPostProcessor
     /// Processes one frame. <paramref name="luma"/> is the model input's luma in [0, 1] at the
     /// same resolution. Returns true when the frame was taken as a scene cut.
     /// </summary>
-    public bool Process(ReadOnlySpan<float> raw, ReadOnlySpan<float> luma, double dtSeconds, Span<float> nearness)
+    /// <param name="lookAhead">
+    /// The depth range to normalise toward instead of this frame's own 2nd and 98th percentiles:
+    /// the lowest and highest over this frame and the ones after it, when they are already known
+    /// (the buffer, improvement-plan.md §10): the range opens before a near object comes in.
+    /// </param>
+    public bool Process(float[] raw, float[] luma, double dtSeconds, float[] nearness,
+        (double Low, double High)? lookAhead = null)
     {
         if (raw.Length != count || luma.Length != count || nearness.Length != count)
             throw new ArgumentException("Buffers must match the processor's size.");
 
         double dt = Math.Clamp(dtSeconds, 1.0 / 240, 1.0);
+        int bands = RowBands.Count(Height);
+        var partial = new double[bands];
 
         bool cut = false;
         double meanChange = 0;
         if (hasHistory)
         {
-            double sum = 0;
-            for (int i = 0; i < count; i++) sum += Math.Abs(luma[i] - previousLuma[i]);
-            meanChange = sum / count;
+            RowBands.For(Height, (band, from, to) =>
+            {
+                double sum = 0;
+                for (int i = from * Width; i < to * Width; i++) sum += Math.Abs(luma[i] - previousLuma[i]);
+                partial[band] = sum;
+            });
+            meanChange = partial.Sum() / count;
             cut = meanChange > SceneCutThreshold;
         }
         bool reset = !hasHistory || cut;
@@ -123,8 +184,8 @@ public sealed class DepthPostProcessor
             Array.Clear(staticWeight);
         }
 
-        // §6.1: percentiles of this frame, then an exponential moving average.
-        (double p2, double p98) = Percentiles(raw);
+        // §6.1: percentiles of this frame (or of the frames ahead), then an exponential moving average.
+        (double p2, double p98) = lookAhead ?? MeasureRange(raw);
         if (reset)
         {
             low = p2;
@@ -140,61 +201,183 @@ public sealed class DepthPostProcessor
         double span = Math.Max(high - low, 1e-6);
         // §6.2: AlphaMin is per 30 fps frame; the same settling time at any frame rate.
         double alphaMin = 1 - Math.Pow(1 - AlphaMin, dt * 30);
+        double lowNow = low, gamma = Gamma, motionGain = MotionGain;
+        bool staticOverlays = StaticOverlays;
+        double staticEpsilon = StaticEpsilon, staticSeconds = StaticSeconds, staticEdge = StaticEdge;
+        ForegroundCurve curveNow = curve;
 
-        for (int i = 0; i < count; i++)
+        RowBands.For(Height, (_, from, to) =>
         {
-            double n = Math.Clamp((raw[i] - low) / span, 0, 1);
-            if (Gamma != 1.0) n = Math.Pow(n, Gamma);
-
-            if (!reset)
+            for (int i = from * Width; i < to * Width; i++)
             {
-                double motion = Math.Clamp(MotionGain * Math.Abs(luma[i] - previousLuma[i]), 0, 1);
-                double alpha = alphaMin + (1 - alphaMin) * motion;
-                n = previousNearness[i] + (n - previousNearness[i]) * alpha;
-            }
+                double n = Math.Clamp((raw[i] - lowNow) / span, 0, 1);
+                if (gamma != 1.0) n = Math.Pow(n, gamma);
 
-            previousNearness[i] = (float)n;
-
-            // §6.5: a pixel that has not changed for StaticSeconds while the picture moves, on a
-            // strong edge (text, logo outlines), goes to the screen plane. The temporal state
-            // above keeps the model's own value, so switching this off restores depth at once.
-            if (StaticOverlays && !reset)
-            {
-                if (Math.Abs(luma[i] - previousLuma[i]) < StaticEpsilon) staticTime[i] += (float)dt;
-                else staticTime[i] = 0;
-
-                if (pictureMoving)
+                if (!reset)
                 {
-                    int x = i % Width;
-                    double edge = Math.Max(
-                        x > 0 ? Math.Abs(luma[i] - luma[i - 1]) : 0,
-                        i >= Width ? Math.Abs(luma[i] - luma[i - Width]) : 0);
-                    float target = staticTime[i] >= StaticSeconds && edge > StaticEdge ? 1 : 0;
-                    staticWeight[i] += (target - staticWeight[i]) * (float)Math.Min(1, dt / 0.3);
+                    double motion = Math.Clamp(motionGain * Math.Abs(luma[i] - previousLuma[i]), 0, 1);
+                    double alpha = alphaMin + (1 - alphaMin) * motion;
+                    n = previousNearness[i] + (n - previousNearness[i]) * alpha;
                 }
-                n += (StaticNearness - n) * staticWeight[i];
-            }
 
-            nearness[i] = (float)n;
-            previousLuma[i] = luma[i];
+                previousNearness[i] = (float)n;
+                nearness[i] = (float)n;
+
+                // §6.5: a pixel that has not changed for StaticSeconds while the picture moves, on a
+                // strong edge (text, logo outlines), goes to the screen plane (applied below).
+                if (staticOverlays && !reset)
+                {
+                    if (Math.Abs(luma[i] - previousLuma[i]) < staticEpsilon) staticTime[i] += (float)dt;
+                    else staticTime[i] = 0;
+
+                    if (pictureMoving)
+                    {
+                        int x = i % Width;
+                        double edge = Math.Max(
+                            x > 0 ? Math.Abs(luma[i] - luma[i - 1]) : 0,
+                            i >= Width ? Math.Abs(luma[i] - luma[i - Width]) : 0);
+                        float target = staticTime[i] >= staticSeconds && edge > staticEdge ? 1 : 0;
+                        staticWeight[i] += (target - staticWeight[i]) * (float)Math.Min(1, dt / 0.3);
+                    }
+                }
+            }
+            // §11 item 4 on the output (point by point, so here).
+            curveNow.Apply(nearness.AsSpan(from * Width, (to - from) * Width));
+        });
+
+        // §7: anti-alias first, then soften (soft edges hide much of the stair-stepping too).
+        if (AntiAlias) antiAlias.Apply(nearness);
+        if (SoftEdgePassesX > 0) softEdges.Apply(nearness, SoftEdgePassesX, Math.Min(SoftEdgePassesY, SoftEdgePassesX));
+
+        ApplyPageOverlays(nearness, dt);
+
+        if (StaticOverlays && !reset)
+        {
+            float plane = (float)StaticNearness;
+            for (int i = 0; i < count; i++)
+                if (staticWeight[i] > 0) nearness[i] += (plane - nearness[i]) * staticWeight[i];
         }
 
-        // Like the static overlays, only the output: the temporal state keeps the model's value.
-        if (Captions) captions.Apply(luma, nearness, dt, StaticNearness);
+        if (Captions) captions.Apply(luma, nearness, dt, StaticNearness, PageBoxes?.Captions, PageBoxes?.Overlays);
+
+        // M4, then the history for the next frame.
+        var stillCounts = new int[bands];
+        RowBands.For(Height, (band, from, to) =>
+        {
+            double flicker = 0;
+            int still = 0;
+            for (int i = from * Width; i < to * Width; i++)
+            {
+                if (!reset && Math.Abs(luma[i] - previousLuma[i]) < staticEpsilon)
+                {
+                    flicker += Math.Abs(nearness[i] - previousOutput[i]);
+                    still++;
+                }
+                previousOutput[i] = nearness[i];
+                previousLuma[i] = luma[i];
+            }
+            partial[band] = flicker;
+            stillCounts[band] = still;
+        });
+        int stillTotal = stillCounts.Sum();
+        Flicker = stillTotal > 0 ? partial.Sum() / stillTotal : double.NaN;
 
         hasHistory = true;
         return cut;
     }
 
-    private (double P2, double P98) Percentiles(ReadOnlySpan<float> raw)
+    /// <summary>
+    /// The page's overlay boxes at the screen plane, N ← N + (c − N)·M, through a mask that rises
+    /// with τ = 0.1 s and fades with τ = 0.4 s (as the captions'), so controls fading in and out
+    /// do not pop. After the soft edges: the boxes stay flat and their edges sharp.
+    /// </summary>
+    private void ApplyPageOverlays(float[] nearness, double dt)
     {
-        int n = 0;
-        for (int i = 0; i < count; i += SampleStride) sample[n++] = raw[i];
-        Span<float> s = sample.AsSpan(0, n);
-        int low = (int)(0.02 * (n - 1)), high = (int)(0.98 * (n - 1));
-        float p2 = Selection.Nth(s, low);
-        // Everything after the 2nd percentile is at least it: the 98th is found among those.
-        float p98 = high == low ? p2 : Selection.Nth(s[(low + 1)..], high - low - 1);
-        return (p2, p98);
+        IReadOnlyList<System.Drawing.Rectangle> boxes = PageBoxes?.Overlays ?? [];
+        Array.Clear(inPageBox);
+        var frame = new System.Drawing.Rectangle(0, 0, Width, Height);
+        foreach (System.Drawing.Rectangle b in boxes)
+        {
+            System.Drawing.Rectangle r = System.Drawing.Rectangle.Intersect(b, frame);
+            for (int y = r.Top; y < r.Bottom; y++)
+                for (int x = r.Left; x < r.Right; x++) inPageBox[y * Width + x] = true;
+        }
+        float rise = (float)(1 - Math.Exp(-dt / 0.1)), fall = (float)(1 - Math.Exp(-dt / 0.4));
+        float plane = (float)StaticNearness;
+        RowBands.For(Height, (_, from, to) =>
+        {
+            for (int i = from * Width; i < to * Width; i++)
+            {
+                float m = pageMask[i];
+                if (m == 0 && !inPageBox[i]) continue;
+                m += inPageBox[i] ? (1 - m) * rise : -m * fall;
+                if (m < 0.001f) m = 0;
+                pageMask[i] = m;
+                nearness[i] += (plane - nearness[i]) * m;
+            }
+        });
     }
+
+    /// <summary>
+    /// The 2nd and 98th percentiles of a raw depth map (every 4th value), exactly: a histogram
+    /// of the values, counted in parts on several cores, says which bin each rank falls in, and
+    /// only that bin's values are searched. Not thread-safe.
+    /// </summary>
+    public (double P2, double P98) MeasureRange(float[] raw)
+    {
+        int n = (count + SampleStride - 1) / SampleStride;
+        int parts = RowBands.RangeCount(n);
+        var lows = new float[parts];
+        var highs = new float[parts];
+        RowBands.ForRange(n, (part, from, to) =>
+        {
+            float lo = float.MaxValue, hi = float.MinValue;
+            for (int j = from; j < to; j++)
+            {
+                float v = raw[j * SampleStride];
+                lo = Math.Min(lo, v);
+                hi = Math.Max(hi, v);
+            }
+            lows[part] = lo;
+            highs[part] = hi;
+        });
+        float min = lows.Min(), max = highs.Max();
+        if (!(max > min)) return (min, min);
+
+        // Bins rise with the value, so every value in a lower bin is below every value in a higher one.
+        float scale = (Bins - 1e-3f) / (max - min);
+        if (histograms.Length < parts) histograms = new int[parts][];
+        RowBands.ForRange(n, (part, from, to) =>
+        {
+            int[] h = histograms[part] ??= new int[Bins];
+            Array.Clear(h);
+            for (int j = from; j < to; j++) h[Bin(raw[j * SampleStride])]++;
+        });
+        Array.Clear(histogram);
+        for (int p = 0; p < parts; p++)
+            for (int b = 0; b < Bins; b++) histogram[b] += histograms[p][b];
+
+        int low = (int)(0.02 * (n - 1)), high = (int)(0.98 * (n - 1));
+        return (Nth(low), Nth(high));
+
+        int Bin(float v) => Math.Clamp((int)((v - min) * scale), 0, Bins - 1);
+
+        // The k-th smallest: its bin from the counts, then among that bin's values only.
+        float Nth(int k)
+        {
+            int bin = 0, before = 0;
+            while (before + histogram[bin] <= k) before += histogram[bin++];
+            int m = 0;
+            for (int j = 0; j < n; j++)
+            {
+                float v = raw[j * SampleStride];
+                if (Bin(v) == bin) sample[m++] = v;
+            }
+            return Selection.Nth(sample.AsSpan(0, m), k - before);
+        }
+    }
+
+    private const int Bins = 4096;
+    private readonly int[] histogram = new int[Bins];
+    private int[][] histograms = [];
 }

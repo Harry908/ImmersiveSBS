@@ -10,7 +10,7 @@ namespace ImmersiveSBS.Depth;
 
 /// <summary>
 /// The GPU half of AI 3D, on the render device (video-3d-plan.md §4.1 stages 2–3 and 5–6):
-/// the luma grid for <see cref="RegionTracker"/>, the model input tensor, and from a nearness
+/// the luma grid (which frames changed, already-3D video), the model input tensor, and from a nearness
 /// map the two eye images of the video region: guided upsample (§6.3), edge snapping,
 /// foreground dilation (§6.4), forward splat with a depth test, hole fill from the background
 /// and gather (§7.3).
@@ -34,12 +34,14 @@ public sealed class StereoSynth : IDisposable
             float bandRight;    // and on the right eye's right edge
             int snapRadius;     // edge snapping search radius, px; 0 = off
             float snapStep;     // nearness range within the radius that counts as a depth edge
-            int2 pad;
+            int lookupSkip;     // lookup warp: jump spans that cannot hold the root
+            int pad;
         };
 
         Texture2D<float4> Source : register(t0);
         Texture2D<float> Depth : register(t1);
         Texture2D<float> NearIn : register(t2);
+        Texture2D<float> BlockMax : register(t3);
         SamplerState Linear : register(s0);
 
         static const float3 LumaWeights = float3(0.299, 0.587, 0.114);
@@ -167,6 +169,33 @@ public sealed class StereoSynth : IDisposable
             NearOut[id.xy] = n;
         }
 
+        // --- Slope limit (improvement-plan.md §2.1): the forward splat leaves a hole wherever
+        // nearness changes by more than 2/S per px, so every step becomes a ramp no steeper than
+        // that: n'(x) = max over d of n(x + d) − g·|d|, with g just under 2/S, a dilation by a
+        // cone. The ramp lies on the far side (the background beside an object is stretched over
+        // it, as iw3 and Depth3D do), and depth that is already gentle is left as it is. Beyond
+        // 1/g px nothing can win (nearness spans at most 1).
+        #define RAMP_GROUP 256
+        #define MAX_RAMP 64
+        groupshared float rampRow[RAMP_GROUP + 2 * MAX_RAMP];
+        [numthreads(RAMP_GROUP, 1, 1)]
+        void SlopeLimit(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_GroupIndex)
+        {
+            int start = (int)(gid.x * RAMP_GROUP) - MAX_RAMP;
+            int row = min((int)id.y, rect.w - 1);
+            for (uint i = gi; i < RAMP_GROUP + 2 * MAX_RAMP; i += RAMP_GROUP)
+                rampRow[i] = NearIn.Load(int3(clamp(start + (int)i, 0, rect.z - 1), row, 0));
+            GroupMemoryBarrierWithGroupSync();
+            if (id.x >= (uint)rect.z || id.y >= (uint)rect.w) return;
+            float g = 1.9 / max(strength, 1e-3);
+            int reach = min((int)ceil(1 / g), MAX_RAMP);
+            int c = gi + MAX_RAMP;
+            float n = rampRow[c];
+            for (int d = 1; d <= reach; d++)
+                n = max(n, max(rampRow[c - d], rampRow[c + d]) - g * d);
+            NearOut[id.xy] = n;
+        }
+
         // --- Forward splat with a depth test (§7.3): key = nearness << 16 | (source x + 2) in 12.4.
         RWStructuredBuffer<uint> Keys : register(u0);
         [numthreads(8, 8, 1)]
@@ -204,11 +233,9 @@ public sealed class StereoSynth : IDisposable
         // from the edge and softly blurred. (Continuing past the neighbour instead reads the
         // foreground's own edge pixels and draws a second outline beside it.)
         RWTexture2D<unorm float4> Eyes : register(u1);
-        [numthreads(8, 8, 1)]
-        void Resolve(uint3 id : SV_DispatchThreadID)
+        bool ResolvePixel(uint3 id)
         {
             uint w = rect.z, plane = rect.z * rect.w;
-            if (id.x >= 2 * w || id.y >= (uint)rect.w) return;
             uint eye = id.x / w;
             int t = id.x % w;
             uint row = eye * plane + id.y * w;
@@ -246,6 +273,139 @@ public sealed class StereoSynth : IDisposable
             // video's side edge, a black band moves that edge forward too.
             if ((eye == 0 && t < bandLeft) || (eye == 1 && t >= (int)w - bandRight)) c = 0;
             Eyes[id.xy] = float4(c, 1);
+            // Holes beside outlines count; those at the side edges (picture shifted in from
+            // outside the frame, which the floating window covers) do not.
+            int border = (int)ceil(0.5 * strength) + 1;
+            return hole && t >= border && t < (int)w - border;
+        }
+
+        // Hole pixels counted for the statistics (improvement-plan.md M2): per group first, so
+        // the counter in memory sees one atomic per 64 pixels.
+        RWStructuredBuffer<uint> Holes : register(u2);
+        groupshared uint groupHoles;
+        [numthreads(8, 8, 1)]
+        void Resolve(uint3 id : SV_DispatchThreadID, uint gi : SV_GroupIndex)
+        {
+            if (gi == 0) groupHoles = 0;
+            GroupMemoryBarrierWithGroupSync();
+            // (HLSL's && does not short-circuit.)
+            bool hole = false;
+            if (id.x < 2 * (uint)rect.z && id.y < (uint)rect.w) hole = ResolvePixel(id);
+            if (hole) InterlockedAdd(groupHoles, 1);
+            GroupMemoryBarrierWithGroupSync();
+            if (gi == 0 && groupHoles > 0) InterlockedAdd(Holes[0], groupHoles);
+        }
+
+        // --- Lookup warp (improvement-plan.md §8): for every output pixel, the source pixel that
+        // lands on it, so nothing is left empty. Left eye: the smallest root of
+        // g(x) = x + s(n(x)) − u on [u − s_max, u − s_min] (of two source pixels landing on u
+        // the left one is nearer and hides the other); right eye: g(x) = x − s(n(x)) − u, the
+        // largest root. With x_t = u ∓ s_max ± t·h both read G(t) = t·h − s_max + S/2·(n(x_t) − c),
+        // rising from S/2·(n − 1) ≤ 0 to S/2·n ≥ 0: marched at a sample per px, refined linearly.
+        // Where the two samples around the root differ by more than τ = 0.1 the root is at a
+        // depth edge and the pixel shows what was hidden behind it: the farther sample is taken
+        // (the background stretches, not the object), blended in over τ..2τ so it never flickers.
+        // Optionally, spans that cannot hold the root are jumped (Depth3D's "nearest depth chain",
+        // exact): in a block of 8 px whose nearest depth is M, G ≤ (distance to the block's far
+        // end) + S/2·(M − c); below 0 the whole block is passed by.
+        #define LOOKUP_BLOCK 8
+        [numthreads(64, 1, 1)]
+        void BlockMaxima(uint3 id : SV_DispatchThreadID)
+        {
+            uint blocks = (rect.z + LOOKUP_BLOCK - 1) / LOOKUP_BLOCK;
+            if (id.x >= blocks || id.y >= (uint)rect.w) return;
+            float m = 0;
+            // Through the first pixel of the next block: a sample between the two reads it too.
+            for (int k = 0; k <= LOOKUP_BLOCK; k++)
+                m = max(m, NearIn.Load(int3(min((int)id.x * LOOKUP_BLOCK + k, rect.z - 1), id.y, 0)));
+            NearOut[id.xy] = saturate(m);
+        }
+
+        float NearAt(float x, int y)
+        {
+            x = clamp(x, 0, rect.z - 1);
+            int x0 = (int)x;
+            int x1 = min(x0 + 1, rect.z - 1);
+            return saturate(lerp(NearIn.Load(int3(x0, y, 0)), NearIn.Load(int3(x1, y, 0)), x - x0));
+        }
+
+        [numthreads(8, 8, 1)]
+        void Lookup(uint3 id : SV_DispatchThreadID)
+        {
+            uint w = rect.z;
+            if (id.x >= 2 * w || id.y >= (uint)rect.w) return;
+            uint eye = id.x / w;
+            int column = id.x % w;
+            int y = id.y;
+            float u = column;
+            float half = 0.5 * strength;
+            float sMax = half * (1 - convergence);
+            float dir = eye == 0 ? 1 : -1;
+            int steps = max(1, (int)ceil(half));
+            float h = half / steps;
+            float start = u - dir * sMax;
+
+            float xPrev = start, nPrev = NearAt(start, y);
+            float gPrev = -sMax + half * (nPrev - convergence);
+            float xs = start;
+            if (gPrev < 0)
+            {
+                xs = start + dir * half;   // G(end) = S/2·n ≥ 0, so only rounding ends here
+                int lastBlock = -1;
+                for (int k = 1; k <= steps; k++)
+                {
+                    float x = start + dir * k * h;
+                    if (lookupSkip != 0 && x >= 0 && x <= w - 1)
+                    {
+                        int j = (int)x / LOOKUP_BLOCK;
+                        if (j != lastBlock)
+                        {
+                            lastBlock = j;
+                            float far = dir > 0 ? (j + 1) * LOOKUP_BLOCK : j * LOOKUP_BLOCK;
+                            if (dir * (far - u) + half * (BlockMax.Load(int3(j, y, 0)) - convergence) < 0)
+                            {
+                                // No root here: on to the last sample inside the block.
+                                int last = dir > 0 ? (int)ceil((far - start) / h) - 1 : (int)floor((start - far) / h);
+                                if (last > k && last <= steps)
+                                {
+                                    k = last;
+                                    x = start + dir * k * h;
+                                }
+                                xPrev = x;
+                                nPrev = NearAt(x, y);
+                                gPrev = k * h - sMax + half * (nPrev - convergence);
+                                continue;
+                            }
+                        }
+                    }
+                    float n = NearAt(x, y);
+                    float g = k * h - sMax + half * (n - convergence);
+                    if (g >= 0)
+                    {
+                        float root = xPrev + dir * h * (-gPrev / max(g - gPrev, 1e-6));
+                        // At a depth edge G jumps, and the line through the two samples misses.
+                        // Each side's own root (as if its depth went on) is exact where that side
+                        // really is: the nearer side if it reaches this pixel, else the farther;
+                        // if neither, the pixel is in the gap and the farther sample stretches.
+                        bool nearIsNext = n > nPrev;
+                        float nNear = max(n, nPrev), nFar = min(n, nPrev);
+                        float xNear = start + dir * (sMax - half * (nNear - convergence));
+                        float xFar = start + dir * (sMax - half * (nFar - convergence));
+                        float edge = abs(NearAt(xNear, y) - nNear) < 0.05 ? xNear
+                                   : abs(NearAt(xFar, y) - nFar) < 0.05 ? xFar
+                                   : nearIsNext ? xPrev : x;
+                        xs = lerp(root, edge, smoothstep(0.1, 0.2, abs(n - nPrev)));
+                        break;
+                    }
+                    xPrev = x;
+                    nPrev = n;
+                    gPrev = g;
+                }
+            }
+            xs = clamp(xs, 0, w - 1);
+            float3 c = Source.SampleLevel(Linear, float2(rect.x + xs + 0.5, rect.y + y + 0.5) / sourceSize, 0).rgb;
+            if ((eye == 0 && column < bandLeft) || (eye == 1 && column >= (int)w - bandRight)) c = 0;
+            Eyes[id.xy] = float4(c, 1);
         }
 
         // --- Video that is already 3D (§7.4): each half stretched to the whole region.
@@ -281,26 +441,30 @@ public sealed class StereoSynth : IDisposable
         public float BandRight;
         public int SnapRadius;
         public float SnapStep;
-        public Int2 Pad;
+        public int LookupSkip;
+        public int Pad;
     }
 
     private readonly ID3D11Device device;
     private readonly ID3D11DeviceContext context;
-    private readonly ID3D11ComputeShader preprocess, lumaGrid, upsample, snap, dilate, splat, resolve, nativeSplit;
+    private readonly ID3D11ComputeShader preprocess, lumaGrid, upsample, snap, dilate, slopeLimit, splat, resolve, blockMaxima, lookup, nativeSplit;
     private readonly ID3D11Buffer constants;
     private readonly ID3D11SamplerState linear;
+    /// <summary>Signalled when the GPU has made the queued model input's copy.</summary>
+    private readonly ID3D11Query inputDone;
 
     private IntPtr sourceKey;
     private ID3D11ShaderResourceView? sourceView;
 
-    private GpuBuffer? tensor, grid, keys;
+    private GpuBuffer? tensor, grid, keys, holes;
     private ID3D11Texture2D? depthTexture;
     private ID3D11ShaderResourceView? depthView;
     private Size depthSize;
-    private Texture? nearA, nearB, eyes;
+    private Texture? nearA, nearB, eyes, blocks;
     private Size regionSize;
     private uint[] gridValues = [];
     private int gridCount, tensorCount;
+    private long holePixels, queuedHolePixels;
 
     public StereoSynth(ID3D11Device device)
     {
@@ -311,15 +475,22 @@ public sealed class StereoSynth : IDisposable
         upsample = Compile("Upsample");
         snap = Compile("Snap");
         dilate = Compile("Dilate");
+        slopeLimit = Compile("SlopeLimit");
         splat = Compile("Splat");
         resolve = Compile("Resolve");
+        blockMaxima = Compile("BlockMaxima");
+        lookup = Compile("Lookup");
         nativeSplit = Compile("NativeSplit");
         constants = device.CreateBuffer(new BufferDescription(
             (uint)Marshal.SizeOf<Params>(), BindFlags.ConstantBuffer, ResourceUsage.Dynamic, CpuAccessFlags.Write));
         linear = device.CreateSamplerState(SamplerDescription.LinearClamp);
+        inputDone = device.CreateQuery(new QueryDescription(QueryType.Event, QueryFlags.None));
     }
 
-    /// <summary>Foreground dilation radius in source px.</summary>
+    /// <summary>Times each pass on the GPU when set (improvement-plan.md M5).</summary>
+    public Presentation.GpuTimer? Timer { get; set; }
+
+    /// <summary>Foreground dilation radius in source px; 0 skips the pass.</summary>
     public int DilateRadius { get; set; } = 3;
 
     /// <summary>Colour sigma of the guided upsample (per channel, 0..1).</summary>
@@ -327,6 +498,24 @@ public sealed class StereoSynth : IDisposable
 
     /// <summary>Snaps depth edges to the picture's edges at full resolution (see the Snap shader).</summary>
     public bool EdgeSnap { get; set; } = true;
+
+    /// <summary>
+    /// Turns every depth step into a ramp gentle enough for the forward warp to stretch over
+    /// instead of tearing a hole (the SlopeLimit shader, improvement-plan.md §2.1). The lookup
+    /// warp needs none.
+    /// </summary>
+    public bool LimitSlope { get; set; } = true;
+
+    /// <summary>The lookup warp (the Lookup shader, improvement-plan.md §8) instead of the forward splat.</summary>
+    public bool Lookup { get; set; }
+
+    /// <summary>
+    /// The lookup warp jumps 8-px spans that cannot hold the source pixel (exact). Off: at the
+    /// default strength its search is only S/2 ≈ 17 px, and the extra reads and diverging threads
+    /// cost more than the steps saved (on this RTX 3060 Laptop, 1.09 ms a frame against 0.84 ms
+    /// at 1920×1080; the splat takes 0.90 ms).
+    /// </summary>
+    public bool LookupSkip { get; set; }
 
     /// <summary>A nearness range at least this wide within the snapping radius is a depth edge.</summary>
     public const float SnapStep = 0.1f;
@@ -352,6 +541,7 @@ public sealed class StereoSynth : IDisposable
         SetParams(Rectangle.Empty, Size.Empty, src, 0, 0, 0);
         Dispatch(lumaGrid, grid!.Uav, (cells.Width + 7) / 8, (cells.Height + 7) / 8);
         grid.QueueRead(context);
+        Timer?.Mark("grid");
         return cells;
     }
 
@@ -379,7 +569,23 @@ public sealed class StereoSynth : IDisposable
         SetParams(region, modelSize, src, 0, 0, 0);
         Dispatch(preprocess, tensor!.Uav, (modelSize.Width + 7) / 8, (modelSize.Height + 7) / 8);
         tensor.QueueRead(context);
+        context.End(inputDone);
+        Timer?.Mark("input");
     }
+
+    /// <summary>The queued model input's copy is made: reading it now does not wait. Never waits itself.</summary>
+    public unsafe bool QueuedModelInputReady
+    {
+        get
+        {
+            if (tensor is not { Pending: true }) return false;
+            int done = 0;
+            return context.GetData(inputDone, (IntPtr)(&done), sizeof(int), AsyncGetDataFlags.DoNotFlush).Code == 0 && done != 0;
+        }
+    }
+
+    /// <summary>Sends the work queued so far to the GPU now, rather than at the next present.</summary>
+    public void Flush() => context.Flush();
 
     /// <summary>The queued model input; false when none is queued. Waits for the GPU if it is not done.</summary>
     public bool ReadQueuedModelInput(float[] destination)
@@ -391,6 +597,33 @@ public sealed class StereoSynth : IDisposable
 
     /// <summary>The queued model input's length in floats.</summary>
     public int QueuedModelInputLength => tensorCount;
+
+    /// <summary>Forgets the queued model input without reading it.</summary>
+    public void DiscardQueuedModelInput() => tensor?.Discard();
+
+    /// <summary>
+    /// Queues the count of hole pixels (filled, not warped) since the last call, for
+    /// <see cref="ReadQueuedHoles"/>, and starts counting again (improvement-plan.md M2).
+    /// </summary>
+    public void QueueHoleCount()
+    {
+        if (holes == null || holePixels == 0) return;
+        holes.QueueRead(context);
+        context.ClearUnorderedAccessView(holes.Uav, new Int4(0, 0, 0, 0));
+        queuedHolePixels = holePixels;
+        holePixels = 0;
+    }
+
+    /// <summary>The queued hole count as a share of the eye pixels built meanwhile; false when none is queued.</summary>
+    public bool ReadQueuedHoles(out double fraction)
+    {
+        fraction = 0;
+        if (holes is not { Pending: true }) return false;
+        Span<uint> count = stackalloc uint[1];
+        holes.ReadQueued(context, MemoryMarshal.AsBytes(count));
+        fraction = queuedHolePixels > 0 ? count[0] / (double)queuedHolePixels : 0;
+        return true;
+    }
 
     /// <summary>Uploads a post-processed nearness map (model resolution).</summary>
     public unsafe void UploadNearness(DepthFrame frame)
@@ -441,30 +674,75 @@ public sealed class StereoSynth : IDisposable
         context.CSSetShaderResource(1, depthView);
         Dispatch(upsample, nearA!.Uav, gx, gy);
         context.CSSetShaderResource(1, null!);
+        Timer?.Mark("upsample");
 
-        Texture dilateInput = nearA!;
+        // Ping-pong: each step reads whichever texture holds the nearness and writes the other.
+        Texture near = nearA!;
         if (EdgeSnap)
         {
-            context.CSSetShaderResource(2, nearA.Srv);
+            context.CSSetShaderResource(2, near.Srv);
             Dispatch(snap, nearB!.Uav, (region.Width + 63) / 64, region.Height);
             context.CSSetShaderResource(2, null!);
-            dilateInput = nearB;
+            near = nearB;
+            Timer?.Mark("snap");
         }
 
-        // Ping-pong: dilation reads whichever texture holds the nearness and writes the other.
-        Texture dilated = dilateInput == nearA ? nearB! : nearA;
-        context.CSSetShaderResource(2, dilateInput.Srv);
-        Dispatch(dilate, dilated.Uav, (region.Width + 63) / 64, region.Height);
-        context.CSSetShaderResource(2, null!);
+        if (DilateRadius > 0)
+        {
+            Texture dilated = near == nearA ? nearB! : nearA;
+            context.CSSetShaderResource(2, near.Srv);
+            Dispatch(dilate, dilated.Uav, (region.Width + 63) / 64, region.Height);
+            context.CSSetShaderResource(2, null!);
+            near = dilated;
+            Timer?.Mark("dilate");
+        }
+
+        if (holes == null)
+        {
+            holes = new GpuBuffer(device, 1, 4);
+            context.ClearUnorderedAccessView(holes.Uav, new Int4(0, 0, 0, 0));
+        }
+
+        if (Lookup)
+        {
+            // Nothing is left empty: its pixels count toward M2 with no holes.
+            int blockCount = (region.Width + 7) / 8;
+            context.CSSetShaderResource(2, near.Srv);
+            Dispatch(blockMaxima, blocks!.Uav, (blockCount + 63) / 64, region.Height);
+            context.CSSetShaderResource(3, blocks.Srv);
+            context.CSSetUnorderedAccessView(1, eyes!.Uav);
+            Dispatch(lookup, keys!.Uav, (2 * region.Width + 7) / 8, gy);
+            context.CSSetUnorderedAccessView(1, null!);
+            context.CSSetShaderResource(3, null!);
+            context.CSSetShaderResource(2, null!);
+            holePixels += 2L * region.Width * region.Height;
+            Timer?.Mark("lookup");
+            return eyes.Srv;
+        }
+
+        if (LimitSlope && strength > 0)
+        {
+            Texture limited = near == nearA ? nearB! : nearA;
+            context.CSSetShaderResource(2, near.Srv);
+            Dispatch(slopeLimit, limited.Uav, (region.Width + 255) / 256, region.Height);
+            context.CSSetShaderResource(2, null!);
+            near = limited;
+            Timer?.Mark("slope");
+        }
 
         context.ClearUnorderedAccessView(keys!.Uav, new Int4(0, 0, 0, 0));
-        context.CSSetShaderResource(2, dilated.Srv);
+        context.CSSetShaderResource(2, near.Srv);
         Dispatch(splat, keys.Uav, gx, gy);
         context.CSSetShaderResource(2, null!);
+        Timer?.Mark("splat");
 
         context.CSSetUnorderedAccessView(1, eyes!.Uav);
+        context.CSSetUnorderedAccessView(2, holes.Uav);
         Dispatch(resolve, keys.Uav, (2 * region.Width + 7) / 8, gy);
+        context.CSSetUnorderedAccessView(2, null!);
         context.CSSetUnorderedAccessView(1, null!);
+        holePixels += 2L * region.Width * region.Height;
+        Timer?.Mark("resolve");
 
         return eyes.Srv;
     }
@@ -481,6 +759,7 @@ public sealed class StereoSynth : IDisposable
         context.CSSetUnorderedAccessView(1, eyes!.Uav);
         Dispatch(nativeSplit, keys!.Uav, (2 * region.Width + 7) / 8, (region.Height + 7) / 8);
         context.CSSetUnorderedAccessView(1, null!);
+        Timer?.Mark("split");
         return eyes.Srv;
     }
 
@@ -515,6 +794,7 @@ public sealed class StereoSynth : IDisposable
             // The model's soft edges span about two model pixels each way.
             SnapRadius = model.Width > 0 ? Math.Clamp((int)Math.Round(2.5 * region.Width / model.Width), 2, 16) : 0,
             SnapStep = SnapStep,
+            LookupSkip = LookupSkip ? 1 : 0,
         };
         MappedSubresource m = context.Map(constants, MapMode.WriteDiscard);
         *(Params*)m.DataPointer = p;
@@ -538,6 +818,8 @@ public sealed class StereoSynth : IDisposable
         nearA?.Dispose();
         nearB?.Dispose();
         eyes?.Dispose();
+        blocks?.Dispose();
+        blocks = new Texture(device, (size.Width + 7) / 8, size.Height, Format.R16_Float);
         nearA = new Texture(device, size.Width, size.Height, Format.R16_Float);
         nearB = new Texture(device, size.Width, size.Height, Format.R16_Float);
         eyes = new Texture(device, 2 * size.Width, size.Height, Format.R8G8B8A8_UNorm);
@@ -558,14 +840,17 @@ public sealed class StereoSynth : IDisposable
         tensor?.Dispose();
         grid?.Dispose();
         keys?.Dispose();
+        holes?.Dispose();
         depthView?.Dispose();
         depthTexture?.Dispose();
         nearA?.Dispose();
         nearB?.Dispose();
         eyes?.Dispose();
+        blocks?.Dispose();
         linear.Dispose();
+        inputDone.Dispose();
         constants.Dispose();
-        foreach (var s in new[] { preprocess, lumaGrid, upsample, snap, dilate, splat, resolve, nativeSplit }) s.Dispose();
+        foreach (var s in new[] { preprocess, lumaGrid, upsample, snap, dilate, slopeLimit, splat, resolve, blockMaxima, lookup, nativeSplit }) s.Dispose();
     }
 
     /// <summary>

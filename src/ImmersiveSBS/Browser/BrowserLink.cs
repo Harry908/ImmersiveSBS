@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -5,8 +6,16 @@ using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using ImmersiveSBS.Depth;
 
 namespace ImmersiveSBS.Browser;
+
+/// <summary>A box the page draws over the followed video's picture, top-frame CSS px.</summary>
+/// <param name="Kind">"caption", "control" or "other".</param>
+public sealed record PageBox(CssRect Box, string Kind)
+{
+    public bool IsCaption => Kind == "caption";
+}
 
 /// <summary>
 /// One browser (one profile) with the ImmersiveSBS link extension, connected. Its media list is
@@ -17,6 +26,8 @@ public sealed class BrowserConnection
     private readonly WebSocket socket;
     private readonly SemaphoreSlim sendGate = new(1, 1);
     private volatile IReadOnlyList<BrowserMedia> media = [];
+    private volatile PageVideo? followed;
+    private volatile IReadOnlyList<PageBox> overlays = [];
     private double requestedDelay;
 
     internal BrowserConnection(int number, WebSocket socket)
@@ -32,6 +43,28 @@ public sealed class BrowserConnection
 
     public string ExtensionVersion { get; internal set; } = "";
 
+    /// <summary>The extension's protocol: 1 reports the media list; 2 also the followed video's frames, state and overlays.</summary>
+    public int Protocol { get; internal set; } = 1;
+
+    /// <summary>The video this browser was asked to follow, with what it reports about it as it comes; null when none.</summary>
+    public PageVideo? Followed => followed;
+
+    /// <summary>The boxes over the followed video's picture, as last reported.</summary>
+    public IReadOnlyList<PageBox> Overlays
+    {
+        get => overlays;
+        internal set => overlays = value;
+    }
+
+    /// <summary>Follows <paramref name="mediaId"/> (null: none); false when it already was.</summary>
+    internal bool SetFollowed(string? mediaId)
+    {
+        if (followed?.MediaId == mediaId) return false;
+        followed = mediaId == null ? null : new PageVideo(mediaId);
+        overlays = [];
+        return true;
+    }
+
     public IReadOnlyList<BrowserMedia> Media
     {
         get => media;
@@ -41,8 +74,15 @@ public sealed class BrowserConnection
     /// <summary>The delay last asked of this browser, seconds.</summary>
     public double RequestedDelay => Volatile.Read(ref requestedDelay);
 
-    internal bool SetRequestedDelay(double seconds) =>
-        Interlocked.Exchange(ref requestedDelay, seconds) != seconds;
+    /// <summary>The tab whose sound is delayed, or null for every tab.</summary>
+    public int? RequestedTab { get; private set; }
+
+    internal bool SetRequestedDelay(double seconds, int? tab)
+    {
+        bool tabChanged = RequestedTab != tab;
+        RequestedTab = tab;
+        return (Interlocked.Exchange(ref requestedDelay, seconds) != seconds) | tabChanged;
+    }
 
     internal async Task SendAsync(object message, CancellationToken cancel)
     {
@@ -67,8 +107,8 @@ public sealed class BrowserConnection
 /// accepts connections only from the extension's own origin (a fixed ID, from the key in its
 /// manifest; a web page cannot claim another origin). The extension reports the pages' video and
 /// audio elements and plays their sound late inside the page when asked, which keeps the sound at
-/// full quality on its usual output: no capture, no turning down, no clock to follow (the
-/// process-loopback path, <see cref="Audio.AudioDelay"/>, stays for everything else).
+/// full quality on its usual output: no capture, no turning down, no clock to follow. It is the
+/// only way the app delays sound: without it there is no buffer.
 /// </summary>
 public sealed class BrowserLink : IDisposable
 {
@@ -128,19 +168,47 @@ public sealed class BrowserLink : IDisposable
     }
 
     /// <summary>
-    /// Asks <paramref name="connection"/> to play all its pages' sound <paramref name="seconds"/>
-    /// late (0: live); sent only when it changes. Any thread.
+    /// Asks <paramref name="connection"/> to play the sound of tab <paramref name="tab"/>'s pages
+    /// <paramref name="seconds"/> late (0: live), and every other tab's live; sent only when it
+    /// changes. Extensions before 1.2.1 ignore the tab and delay every page. Any thread.
     /// </summary>
-    public void SetDelay(BrowserConnection connection, double seconds)
+    public void SetDelay(BrowserConnection connection, double seconds, int? tab = null)
     {
         seconds = Math.Round(Math.Max(0, seconds), 3);
-        if (!connection.SetRequestedDelay(seconds)) return;
-        Send(connection, new { type = "delay", seconds });
+        if (seconds == 0) tab = null;
+        if (!connection.SetRequestedDelay(seconds, tab)) return;
+        Send(connection, tab is int t ? new { type = "delay", seconds, tab = t } : (object)new { type = "delay", seconds });
     }
 
     /// <summary>Plays or pauses one element.</summary>
     public void TogglePlay(BrowserConnection connection, string mediaId) =>
         Send(connection, new { type = "toggle", id = mediaId });
+
+    /// <summary>Moves one element <paramref name="seconds"/> on (back when negative); extensions before 1.2.2 ignore it.</summary>
+    public void Seek(BrowserConnection connection, string mediaId, double seconds) =>
+        Send(connection, new { type = "seek", id = mediaId, by = seconds });
+
+    /// <summary>Moves one element to <paramref name="seconds"/> into it; extensions before 1.2.3 ignore it.</summary>
+    public void SeekTo(BrowserConnection connection, string mediaId, double seconds) =>
+        Send(connection, new { type = "seek", id = mediaId, to = Math.Round(Math.Max(0, seconds), 2) });
+
+    /// <summary>Mutes or unmutes one element; extensions before 1.2.3 ignore it.</summary>
+    public void ToggleMute(BrowserConnection connection, string mediaId) =>
+        Send(connection, new { type = "mute", id = mediaId });
+
+    /// <summary>
+    /// Asks <paramref name="connection"/> to report the frames, state and overlays of one video
+    /// (protocol 2), or of none; sent only when it changes. Returns what it reports, as it comes.
+    /// </summary>
+    public PageVideo? Follow(BrowserConnection connection, string? mediaId)
+    {
+        if (connection.Protocol < 2) mediaId = null;
+        if (connection.SetFollowed(mediaId)) Send(connection, new { type = "follow", id = mediaId });
+        return connection.Followed;
+    }
+
+    /// <summary>This process's clock in ms, as the extension's clock sync and frame times use it.</summary>
+    public static double ClockMs(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
 
     private void Send(BrowserConnection connection, object message) =>
         _ = connection.SendAsync(message, stop.Token).ContinueWith(
@@ -289,12 +357,14 @@ public sealed class BrowserLink : IDisposable
             message.Write(buffer, 0, result.Count);
             if (message.Length > MaxMessageBytes) throw new WebSocketException("Message too large.");
             if (!result.EndOfMessage) continue;
-            if (result.MessageType == WebSocketMessageType.Text) Handle(connection, message.GetBuffer().AsSpan(0, (int)message.Length));
+            // When it arrived, for the clock sync: before any parsing.
+            long received = Stopwatch.GetTimestamp();
+            if (result.MessageType == WebSocketMessageType.Text) Handle(connection, message.GetBuffer().AsSpan(0, (int)message.Length), received);
             message.SetLength(0);
         }
     }
 
-    private void Handle(BrowserConnection connection, ReadOnlySpan<byte> utf8)
+    private void Handle(BrowserConnection connection, ReadOnlySpan<byte> utf8, long received)
     {
         JsonDocument document;
         try
@@ -315,12 +385,47 @@ public sealed class BrowserLink : IDisposable
                 case "hello":
                     connection.Browser = Text(root, "browser");
                     connection.ExtensionVersion = Text(root, "version");
-                    Log.Write($"Browser: {connection} connected (extension {connection.ExtensionVersion}).");
+                    connection.Protocol = Math.Max(1, (int)Number(root, "protocol", 1));
+                    Log.Write($"Browser: {connection} connected (extension {connection.ExtensionVersion}, protocol {connection.Protocol}).");
                     Changed?.Invoke();
                     break;
                 case "media":
                     if (root.TryGetProperty("media", out JsonElement list)) connection.Media = BrowserMedia.ParseList(list);
                     Changed?.Invoke();
+                    break;
+                case "clock":
+                    // The page's clock ping: answered at once with when it arrived and when the
+                    // answer leaves (NTP-style; the page works out the offset).
+                    Send(connection, new
+                    {
+                        type = "clock",
+                        key = Text(root, "key"),
+                        t0 = Number(root, "t0", 0),
+                        t1 = ClockMs(received),
+                        t2 = ClockMs(Stopwatch.GetTimestamp()),
+                    });
+                    break;
+                case "frame":
+                    if (FollowedBy(connection, root) is { } page)
+                    {
+                        double display = Number(root, "display", double.NaN), mediaTime = Number(root, "media", double.NaN);
+                        long presented = (long)Number(root, "presented", -1);
+                        if (double.IsFinite(display) && double.IsFinite(mediaTime) && presented >= 0)
+                            page.AddFrame(new PageVideo.FrameEvent(presented, mediaTime, (long)(display * Stopwatch.Frequency / 1000)));
+                    }
+                    break;
+                case "state":
+                    if (FollowedBy(connection, root) is { } followed)
+                    {
+                        followed.SetState(Flag(root, "paused"), Flag(root, "seeking"), (int)Number(root, "seeks", 0));
+                        followed.SetPosition(Number(root, "time", double.NaN), Number(root, "duration", double.NaN), Flag(root, "muted"));
+                        double error = Number(root, "clockError", double.NaN);
+                        if (double.IsFinite(error)) followed.ClockErrorMs = error;
+                    }
+                    break;
+                case "overlays":
+                    if (FollowedBy(connection, root) != null && root.TryGetProperty("boxes", out JsonElement boxes))
+                        connection.Overlays = ParseBoxes(boxes);
                     break;
             }
         }
@@ -328,6 +433,34 @@ public sealed class BrowserLink : IDisposable
 
     private static string Text(JsonElement root, string name) =>
         root.TryGetProperty(name, out JsonElement e) && e.ValueKind == JsonValueKind.String ? e.GetString() ?? "" : "";
+
+    private static double Number(JsonElement root, string name, double fallback) =>
+        root.TryGetProperty(name, out JsonElement e) && e.ValueKind == JsonValueKind.Number && e.TryGetDouble(out double v) && double.IsFinite(v)
+            ? v : fallback;
+
+    private static bool Flag(JsonElement root, string name) =>
+        root.TryGetProperty(name, out JsonElement e) && e.ValueKind == JsonValueKind.True;
+
+    /// <summary>The followed video, if the message is about it (others are left over from before a change).</summary>
+    private static PageVideo? FollowedBy(BrowserConnection connection, JsonElement root) =>
+        connection.Followed is { } page && page.MediaId == Text(root, "id") ? page : null;
+
+    /// <summary>The boxes of an "overlays" message; malformed ones are left out, and at most 64 kept.</summary>
+    internal static IReadOnlyList<PageBox> ParseBoxes(JsonElement list)
+    {
+        if (list.ValueKind != JsonValueKind.Array) return [];
+        var result = new List<PageBox>();
+        foreach (JsonElement b in list.EnumerateArray())
+        {
+            if (b.ValueKind != JsonValueKind.Object || result.Count >= 64) continue;
+            double x = Number(b, "x", double.NaN), y = Number(b, "y", double.NaN);
+            double w = Number(b, "width", double.NaN), h = Number(b, "height", double.NaN);
+            if (!double.IsFinite(x + y + w + h) || w <= 0 || h <= 0) continue;
+            string kind = Text(b, "kind") is "caption" or "control" ? Text(b, "kind") : "other";
+            result.Add(new PageBox(new CssRect(x, y, w, h), kind));
+        }
+        return result;
+    }
 
     public void Dispose()
     {

@@ -28,7 +28,8 @@ public sealed record SessionStats(
     double DisplayLatencyAvgMs, double DisplayLatencyMaxMs,
     double VideoMemoryMb,
     string? Ai = null,
-    double PrivateMemoryMb = 0, double ManagedMemoryMb = 0, double VideoMemoryBudgetMb = 0)
+    double PrivateMemoryMb = 0, double ManagedMemoryMb = 0, double VideoMemoryBudgetMb = 0,
+    string? Measures = null, string? Gpu = null)
 {
     public override string ToString() =>
         $"Capture   {Method}, {SourceWidth}×{SourceHeight}, {CaptureFps:0.0} fps, cursor {PointerUpdatesPerSecond:0}/s\n" +
@@ -37,7 +38,9 @@ public sealed record SessionStats(
         $"Capture → Present  avg {PresentLatencyAvgMs:0.0} ms, max {PresentLatencyMaxMs:0.0} ms\n" +
         $"Capture → vblank   {(DisplayLatencyAvgMs > 0 ? $"avg {DisplayLatencyAvgMs:0.0} ms, max {DisplayLatencyMaxMs:0.0} ms" : "no frame statistics")}\n" +
         $"VRAM (this process, render adapter)  {VideoMemoryMb:0} MB of {VideoMemoryBudgetMb:0} MB budget; memory {PrivateMemoryMb:0} MB ({ManagedMemoryMb:0} MB managed)" +
-        (Ai != null ? "\n" + Ai : "");
+        (Ai != null ? "\n" + Ai : "") +
+        (Measures != null ? "\n" + Measures : "") +
+        (Gpu != null ? "\n" + Gpu : "");
 }
 
 /// <summary>
@@ -53,7 +56,7 @@ public sealed class Session
     private volatile StereoSettings stereo = StereoSettings.Off;
     private volatile DepthService? depth;
     private volatile int stereoVersion;
-    private volatile bool audioDelayed;
+    private double soundDelay;
     private volatile VideoHint? browserVideo;
     private volatile bool theaterActive;
     private readonly TheaterUi theaterUi = new();
@@ -61,9 +64,7 @@ public sealed class Session
     private long monitorBoundsTime;
     private readonly object delayLock = new();
     private Rectangle delayRegion;
-    private Rectangle videoRegion;
-    private bool pickRequested;
-    private Point? pickPoint;
+    private double delaySeconds;
     private readonly object boundsLock = new();
     private Rectangle? requestedBounds;
 
@@ -93,15 +94,41 @@ public sealed class Session
     }
 
     /// <summary>
-    /// Set by the controller while the app under <see cref="DelayRegion"/> has its sound played
-    /// <see cref="StereoSettings.BufferSeconds"/> late; the video is delayed only then, so the two
-    /// can never drift apart. Any thread.
+    /// Set by the controller: how late the page plays the sound of the video under
+    /// <see cref="DelayRegion"/> now, seconds (0: live). The picture follows it, so the two can
+    /// never drift apart. Any thread.
     /// </summary>
-    public bool AudioDelayed
+    public double SoundDelay
     {
-        get => audioDelayed;
-        set => audioDelayed = value;
+        get => Volatile.Read(ref soundDelay);
+        set => Volatile.Write(ref soundDelay, value);
     }
+
+    /// <summary>
+    /// Set by the controller: the browser extension follows the video and can delay its sound in
+    /// the page. Only then are delays longer than lip sync allows (the buffer, matched timing over
+    /// 90 ms) used; the app never delays sound itself. Any thread.
+    /// </summary>
+    public bool PageCanDelay
+    {
+        get => Volatile.Read(ref pageCanDelay);
+        set => Volatile.Write(ref pageCanDelay, value);
+    }
+
+    private bool pageCanDelay;
+
+    /// <summary>
+    /// Set by the controller: the videos the browser extension reports visible on the virtual
+    /// monitor (its px), where the "3D theater" button is offered; null while no browser is
+    /// connected (no button then). Any thread.
+    /// </summary>
+    public IReadOnlyList<Rectangle>? PageVideos
+    {
+        get => Volatile.Read(ref pageVideos);
+        set => Volatile.Write(ref pageVideos, value);
+    }
+
+    private IReadOnlyList<Rectangle>? pageVideos;
 
     /// <summary>
     /// The video region (virtual monitor px) whose sound should be delayed, or empty; read by the
@@ -112,51 +139,32 @@ public sealed class Session
         get { lock (delayLock) return delayRegion; }
     }
 
-    private void SetDelayRegion(Rectangle r)
+    /// <summary>
+    /// How late that sound should be, seconds; kept while the region is lost for a moment, 0 when
+    /// no delay is wanted (stop at once). Any thread.
+    /// </summary>
+    public double DelaySeconds
     {
-        lock (delayLock) delayRegion = r;
+        get { lock (delayLock) return delaySeconds; }
+    }
+
+    private void SetDelay(Rectangle r, double seconds)
+    {
+        lock (delayLock)
+        {
+            delayRegion = r;
+            delaySeconds = seconds;
+        }
     }
 
     /// <summary>
-    /// The video found on the virtual monitor (its px), or empty; the controller matches it with
-    /// what the browser extension reports. Any thread.
+    /// The video's exact place from the browser extension (virtual monitor px), or null: the only
+    /// way AI 3D and the theater find a video. Any thread.
     /// </summary>
-    public Rectangle VideoRegion
-    {
-        get { lock (delayLock) return videoRegion; }
-        private set { lock (delayLock) videoRegion = value; }
-    }
-
-    /// <summary>The video's exact place from the browser extension (virtual monitor px), or null. Any thread.</summary>
     public VideoHint? BrowserVideo
     {
         get => browserVideo;
         set => browserVideo = value;
-    }
-
-    /// <summary>
-    /// Picks the video at <paramref name="point"/> (virtual monitor px) and locks it, or releases
-    /// a lock (also when <paramref name="point"/> is null); applied on the next frame. Any thread.
-    /// </summary>
-    public void RequestPick(Point? point)
-    {
-        lock (delayLock)
-        {
-            pickRequested = true;
-            pickPoint = point;
-        }
-        Interlocked.Increment(ref stereoVersion);
-    }
-
-    private bool TakePick(out Point? point)
-    {
-        lock (delayLock)
-        {
-            point = pickPoint;
-            bool requested = pickRequested;
-            pickRequested = false;
-            return requested;
-        }
     }
 
     /// <summary>Where on-screen button clicks are caught; set by the controller. Any thread.</summary>
@@ -191,14 +199,28 @@ public sealed class Session
         Interlocked.Increment(ref stereoVersion);
     }
 
+    /// <summary>The followed video's playback for the theater's bottom bar, while the page reports it.</summary>
+    private static TheaterMedia? MediaOf(VideoHint? hint) =>
+        hint?.Page is { } page && page.Fresh(System.Diagnostics.Stopwatch.GetTimestamp())
+            ? new TheaterMedia(page.Paused, page.Time, page.Duration, page.Muted)
+            : null;
+
     /// <summary>The theater panel's values from the settings and the loaded model.</summary>
     private TheaterPanel PanelOf(StereoSettings stereo)
     {
         DepthModel? m = Depth?.Model;
         StereoTuning tuning = stereo.Tuning ?? StereoTuning.Default;
-        string size = m == null ? "-" : m.FixedSize ? $"{m.Width}×{m.Height} (fixed)" : $"{m.Preset} ({m.Width}×{m.Height})";
+        string size = m == null ? "-" : $"{m.Preset} ({m.Width}×{m.Height})";
+        string timing = stereo.BufferSeconds > 0
+            ? PageCanDelay ? $"buffer {stereo.BufferSeconds:0.#} s" : "auto (buffer needs the extension)"
+            : stereo.Timing switch
+        {
+            VideoTiming.Live => "live",
+            VideoTiming.Matched => "matched",
+            _ => "auto",
+        };
         return new TheaterPanel(m == null ? "none" : DepthModel.Name(m.Tier), size, stereo.Strength, stereo.Convergence,
-            stereo.BufferSeconds, tuning.EdgeSnap, tuning.Captions);
+            timing, tuning.EdgeSnap, tuning.Captions);
     }
 
     /// <summary>The virtual monitor's desktop bounds, re-read once a second (render thread).</summary>
@@ -253,6 +275,7 @@ public sealed class Session
         IDXGIAdapter3? adapter = null;
         ICaptureSource? capture = null;
         AiStereo? ai = null;
+        GpuTimer? gpuTimer = null;
         Renderer? renderer = null;
         IntPtr hwnd = IntPtr.Zero;
 
@@ -294,8 +317,9 @@ public sealed class Session
                 ? new DuplicationCapture(device, SourceGdiName)
                 : new GraphicsCapture(device, SourceGdiName);
 
-            ai = new AiStereo(device);
-            Loop(adapter, capture, renderer, hwnd, ai);
+            gpuTimer = new GpuTimer(device);
+            ai = new AiStereo(device) { Timer = gpuTimer };
+            Loop(adapter, capture, renderer, hwnd, ai, gpuTimer);
         }
         catch (Exception e)
         {
@@ -305,6 +329,7 @@ public sealed class Session
         finally
         {
             ai?.Dispose();
+            gpuTimer?.Dispose();
             capture?.Dispose();
             renderer?.Dispose();
             if (hwnd != IntPtr.Zero) Native.DestroyWindow(hwnd);
@@ -320,7 +345,7 @@ public sealed class Session
     private string? SourceGdiName() =>
         DisplayConfigurationService.Resolve(options.Source, retryWhileTargetUnavailable: false)?.Identity.GdiDeviceName;
 
-    private void Loop(IDXGIAdapter3 adapter, ICaptureSource capture, Renderer renderer, IntPtr hwnd, AiStereo ai)
+    private void Loop(IDXGIAdapter3 adapter, ICaptureSource capture, Renderer renderer, IntPtr hwnd, AiStereo ai, GpuTimer gpuTimer)
     {
         void Place(Rectangle target, string why)
         {
@@ -339,6 +364,8 @@ public sealed class Session
         int seenStereoVersion = stereoVersion;
         DepthServiceState? seenModelState = null;
         string? aiStatus = null;
+        Func<Rectangle, bool?> changed = capture.Changed;
+        (string?, string?) Measures(double seconds) => (ai.TakeMeasures(seconds, Depth, PageData()), gpuTimer.TakeSummary());
 
         while (!stopRequested)
         {
@@ -386,6 +413,8 @@ public sealed class Session
 
             CaptureUpdate update = capture.Acquire(redraw ? 0 : 16);
             meter.OnCapture(update);
+            // The depth model gets the new frame now, not after waiting for the swap chain.
+            if (update.Frame && renderer.SideBySide && capture.Texture is { } arrived) ai.HandOverEarly(arrived, Depth, changed, capture.ResetChanges);
 
             // New depth or new AI settings change the picture even when the desktop did not.
             // The model's state shows as a badge in the glasses, and its loading ends a flat picture.
@@ -396,7 +425,7 @@ public sealed class Session
             seenModelState = modelState;
             if (!update.Any && !redraw && !aiChanged)
             {
-                meter.Publish(this, adapter, renderer, capture, aiStatus);
+                meter.Publish(this, adapter, renderer, capture, aiStatus, Measures);
                 continue;
             }
 
@@ -404,50 +433,65 @@ public sealed class Session
             Native.WaitForSingleObjectEx(renderer.Waitable, 100, true);
             CaptureUpdate late = capture.Acquire(0);
             meter.OnCapture(late);
+            ai.SubmitReadyInput(Depth);
             long content = Math.Max(update.ContentQpc, late.ContentQpc);
 
             // AI 3D only exists in side-by-side; in 2D and in the window the frame stays flat.
             StereoOverlay? overlay = null;
             UiLayer? ui = null;
             StereoSettings stereo = Stereo;
+            gpuTimer.BeginFrame();
             if (renderer.SideBySide && capture.Texture is { } frame)
             {
                 var fd = frame.Description;
                 var eye = new Size(renderer.Width / 2, renderer.Height);
                 double scale = Math.Min((double)eye.Width / fd.Width, (double)eye.Height / fd.Height);
-                if (TakePick(out Point? pick)) ai.Pick(pick);
-                overlay = ai.Process(frame, update.Frame || late.Frame, stereo, Depth, eye, scale, AudioDelayed, BrowserVideo);
+                overlay = ai.Process(frame, update.Frame || late.Frame, stereo, Depth, eye, scale, SoundDelay, PageCanDelay, BrowserVideo, changed, content);
                 aiStatus = ai.Status;
                 Rectangle monitor = MonitorBounds();
                 ui = theaterUi.Build(overlay, ai.FoundRegion, stereo.Theater, monitor, eye, new Size((int)fd.Width, (int)fd.Height),
-                    stereo.Target, Depth?.State, stereo.Theater ? PanelOf(stereo) : null);
+                    stereo.Target, Depth?.State, stereo.Theater ? PanelOf(stereo) : null, stereo.OfferTheater, PageVideos,
+                    stereo.Theater ? MediaOf(BrowserVideo) : null);
                 TheaterActive = stereo.Theater && overlay != null;
                 TheaterDesktop = TheaterActive && overlay is StereoOverlay o
                     ? new Rectangle(o.Source.X + monitor.X, o.Source.Y + monitor.Y, o.Source.Width, o.Source.Height)
                     : Rectangle.Empty;
-                SetDelayRegion(ai.DelayRegion);
-                VideoRegion = ai.FoundRegion;
+                SetDelay(ai.DelayRegion, ai.DelaySeconds);
             }
             else
             {
                 aiStatus = stereo.Target == AiTarget.Off ? null : "AI 3D: works when the glasses are in 3D mode";
-                SetDelayRegion(Rectangle.Empty);
-                VideoRegion = Rectangle.Empty;
+                SetDelay(Rectangle.Empty, 0);
                 theaterUi.Hide();
                 TheaterActive = false;
                 TheaterDesktop = Rectangle.Empty;
             }
 
+            capture.ResetChanges();
             renderer.Render(capture.Texture, options.Method == CaptureMethod.DesktopDuplication ? capture.Pointer : null, overlay, ui);
+            gpuTimer.Mark("draw");
+            gpuTimer.EndFrame();
             long presentQpc = Stopwatch.GetTimestamp();
             uint presentCount = renderer.Present();
-            ai.CollectReadbacks();
+            ai.CollectReadbacks(Depth);
+            gpuTimer.Collect();
             meter.OnPresent(presentCount, content, presentQpc);
             if (renderer.TryGetFrameStatistics(out FrameStatistics fs)) meter.OnFrameStatistics(fs);
             redraw = false;
 
-            meter.Publish(this, adapter, renderer, capture, aiStatus);
+            meter.Publish(this, adapter, renderer, capture, aiStatus, Measures);
         }
+    }
+
+    /// <summary>What the browser extension tells about the video, for the measures (M7).</summary>
+    private string PageData()
+    {
+        if (BrowserVideo is not { } hint) return "none";
+        if (hint.Page is not { } page || !page.Fresh(Stopwatch.GetTimestamp())) return "the video's place (protocol 1)";
+        double fps = page.FrameRate, error = page.ClockErrorMs;
+        return "the video's place and frames (protocol 2" + (fps > 0 ? $", {fps:0.#} fps" : "") +
+               (double.IsFinite(error) ? $", clock within {error:0.0} ms" : "") +
+               (hint.Captions != null ? $", {hint.Captions.Count} caption boxes" : "") + $", {hint.Overlays.Count} overlay boxes)";
     }
 
     /// <summary>Accumulates one second of measurements on the render thread.</summary>
@@ -511,7 +555,8 @@ public sealed class Session
             displayMax = Math.Max(displayMax, ms);
         }
 
-        public void Publish(Session session, IDXGIAdapter3 adapter, Renderer renderer, ICaptureSource capture, string? ai)
+        public void Publish(Session session, IDXGIAdapter3 adapter, Renderer renderer, ICaptureSource capture, string? ai,
+            Func<double, (string? Measures, string? Gpu)> measures)
         {
             long now = Stopwatch.GetTimestamp();
             double seconds = (now - windowStart) / (double)Stopwatch.Frequency;
@@ -533,6 +578,7 @@ public sealed class Session
 
             var src = capture.Texture?.Description;
             int measured = presents > 0 ? presents : 1;
+            (string? aiMeasures, string? gpu) = measures(seconds);
             var s = new SessionStats(method,
                 (int)(src?.Width ?? 0), (int)(src?.Height ?? 0),
                 renderer.Width, renderer.Height, renderer.SideBySide,
@@ -542,7 +588,7 @@ public sealed class Session
                 vram, ai,
                 // A steady climb here over minutes is a leak (Windows flagged one once, at a model load).
                 System.Diagnostics.Process.GetCurrentProcess().PrivateMemorySize64 / (1024.0 * 1024.0),
-                GC.GetTotalMemory(false) / (1024.0 * 1024.0), budget);
+                GC.GetTotalMemory(false) / (1024.0 * 1024.0), budget, ai != null ? aiMeasures : null, gpu);
             session.stats = s;
 
             if (now >= nextLog)

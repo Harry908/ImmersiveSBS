@@ -11,7 +11,7 @@ namespace ImmersiveSBS.Depth;
 /// %LOCALAPPDATA%\ImmersiveSBS\engines; later starts load that in about a second instead of
 /// building the engine again (12–18 s, video-3d-plan.md §0). Not thread-safe: one caller.
 /// </summary>
-public sealed class DepthEstimator : IDisposable
+public sealed class DepthEstimator : IDepthRunner
 {
     private readonly InferenceSession session;
     private readonly string inputName;
@@ -63,7 +63,7 @@ public sealed class DepthEstimator : IDisposable
         OrtEpDevice device = devices[0];
         string gpu = $"{device.HardwareDevice.VendorId:x4}-{device.HardwareDevice.DeviceId:x4}";
         Directory.CreateDirectory(EnginesDirectory);
-        string compiled = Path.Combine(EnginesDirectory, $"{model.Stem}.trtrtx-{TensorRtRtx.Version}.{gpu}.ctx.onnx");
+        string compiled = Path.Combine(EnginesDirectory, EngineFileName(model, gpu));
 
         var watch = Stopwatch.StartNew();
         if (!File.Exists(compiled))
@@ -111,6 +111,39 @@ public sealed class DepthEstimator : IDisposable
         return options;
     }
 
+    /// <summary>
+    /// The cached engine's file name: the model, a fingerprint of its file (size and time written),
+    /// the provider version and the GPU. Without the fingerprint a model file replaced under the
+    /// same name (an fp16 conversion of it, say) kept running its old engine.
+    /// </summary>
+    public static string EngineFileName(DepthModel model, string gpu)
+    {
+        var file = new FileInfo(model.FilePath);
+        string fingerprint = $"{file.Length:x}-{file.LastWriteTimeUtc.Ticks:x}";
+        return $"{model.Stem}.{fingerprint}.trtrtx-{TensorRtRtx.Version}.{gpu}.ctx.onnx";
+    }
+
+    /// <summary>Removes this model's engines for other files, providers or GPUs (100–400 MB each).</summary>
+    private static void DeleteOtherEngines(DepthModel model, string keep)
+    {
+        foreach (string path in Directory.EnumerateFiles(EnginesDirectory, model.Stem + ".*.ctx.onnx"))
+        {
+            if (string.Equals(path, keep, StringComparison.OrdinalIgnoreCase)) continue;
+            try
+            {
+                File.Delete(path);
+                Log.Write($"Depth: removed the old engine {Path.GetFileName(path)}.");
+            }
+            catch (IOException)
+            {
+                // In use by a running copy of the app; removed next time.
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
     /// <summary>Compiles to an EPContext model with the engine embedded; false keeps the plain model.</summary>
     private static bool TryCompile(DepthModel model, OrtEpDevice device, string output)
     {
@@ -126,6 +159,7 @@ public sealed class DepthEstimator : IDisposable
             compile.CompileModel();
             File.Move(temp, output, overwrite: true);
             Log.Write($"Depth: compiled {model} in {watch.Elapsed.TotalSeconds:0.0} s to {Path.GetFileName(output)}.");
+            DeleteOtherEngines(model, output);
             return true;
         }
         catch (Exception e)
@@ -149,7 +183,17 @@ public sealed class DepthEstimator : IDisposable
         // Depth → inverse depth, which is what disparity follows and what the post-processor
         // normalises; the floor keeps sky and far walls finite.
         if (Model.OutputIsDepth)
-            for (int i = 0; i < output.Length; i++) output[i] = 1 / Math.Max(output[i], 1e-3f);
+        {
+            int v = System.Numerics.Vector<float>.Count;
+            RowBands.ForRange(output.Length, (_, from, to) =>
+            {
+                var floor = new System.Numerics.Vector<float>(1e-3f);
+                int i = from;
+                for (; i + v <= to; i += v)
+                    (System.Numerics.Vector<float>.One / System.Numerics.Vector.Max(new System.Numerics.Vector<float>(output, i), floor)).CopyTo(output, i);
+                for (; i < to; i++) output[i] = 1 / Math.Max(output[i], 1e-3f);
+            });
+        }
     }
 
     public void Dispose()

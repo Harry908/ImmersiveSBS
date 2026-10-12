@@ -52,6 +52,13 @@ public sealed class GraphicsCapture : ICaptureSource
 
     public PointerState Pointer { get; } = new();
 
+    /// <summary>Not told: the dirty regions of a capture frame need Windows 11 24H2.</summary>
+    public bool? Changed(System.Drawing.Rectangle area) => null;
+
+    public void ResetChanges()
+    {
+    }
+
     public CaptureUpdate Acquire(int timeoutMs)
     {
         if (session == null || closed)

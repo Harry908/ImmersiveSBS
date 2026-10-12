@@ -7,12 +7,19 @@ using ImmersiveSBS.Presentation;
 namespace ImmersiveSBS.Theater;
 
 /// <summary>What the theater's 3D settings panel shows, from the session's current settings.</summary>
-public sealed record TheaterPanel(string Model, string Size, double Depth, double Plane, double Buffer, bool EdgeSnap, bool Captions);
+public sealed record TheaterPanel(string Model, string Size, double Depth, double Plane, string Timing, bool EdgeSnap, bool Captions);
+
+/// <summary>
+/// The theater video's playback, as the browser extension reports it, for the bottom bar: paused,
+/// where it is and how long it is (seconds; NaN while unknown or live), muted.
+/// </summary>
+public sealed record TheaterMedia(bool Paused, double Time, double Duration, bool Muted);
 
 /// <summary>
 /// Builds the on-screen layer each frame on the render thread: in theater mode the region fitted
-/// to the whole eye with Play/Pause and Exit buttons; otherwise a "3D theater" button at the
-/// video's top-right corner while the mouse is over the video. Buttons show while the mouse moves
+/// to the whole eye with 3D settings and Exit at the top and a player's bar at the bottom (seek
+/// bar, time, back / play-pause / on, mute; it stays while the video is paused); otherwise a
+/// "3D theater" button at the top of the video while the mouse is over it. Buttons show while the mouse moves
 /// and fade after <see cref="ShowSeconds"/>, like a video player's controls. Where a click must
 /// land to press each button is published to <see cref="Buttons"/> for <see cref="TheaterInput"/>.
 /// In theater mode a "3D settings" button opens a panel of − / + rows (model, resolution, depth,
@@ -35,6 +42,7 @@ public sealed class TheaterUi
     private Point lastCursor;
     private long lastMove;
     private bool shown;
+    private bool pinned;
     private volatile bool panelOpen;
     private DepthServiceState? lastModel;
     private long readySince;
@@ -49,7 +57,7 @@ public sealed class TheaterUi
     /// due to turn, or "3D ready" due to go.
     /// </summary>
     public bool NeedsRedraw =>
-        (shown && !panelOpen && Stopwatch.GetElapsedTime(lastMove).TotalSeconds >= ShowSeconds)
+        (shown && !panelOpen && !pinned && Stopwatch.GetElapsedTime(lastMove).TotalSeconds >= ShowSeconds)
         || (panelOpen && Stopwatch.GetElapsedTime(lastMove).TotalSeconds >= PanelSeconds)
         || (drawnBadge is BadgeKind.Loading or BadgeKind.Preparing && ButtonImages.SpinnerFrame() != drawnFrame)
         || (drawnBadge == BadgeKind.Ready && Stopwatch.GetElapsedTime(readySince).TotalSeconds >= ReadySeconds);
@@ -63,8 +71,16 @@ public sealed class TheaterUi
     /// <param name="target">What AI 3D converts (the theater's video included).</param>
     /// <param name="model">The depth model's state; null when there is none.</param>
     /// <param name="panel">The settings panel's values (theater only).</param>
+    /// <param name="offer">Offer the "3D theater" button at all (the setting).</param>
+    /// <param name="media">The theater video's playback from the extension; null without it (the bar then has play/pause only, by the media key).</param>
+    /// <param name="videos">
+    /// The videos the browser extension reports on the virtual monitor (source px): the button is
+    /// offered only over these, at the one under the cursor. Null without the extension: no button
+    /// (the video found in the picture can be any moving area, the desktop included).
+    /// </param>
     public UiLayer? Build(StereoOverlay? overlay, Rectangle found, bool theater, Rectangle monitor, Size eye, Size source,
-        AiTarget target, DepthServiceState? model, TheaterPanel? panel = null)
+        AiTarget target, DepthServiceState? model, TheaterPanel? panel = null, bool offer = true, IReadOnlyList<Rectangle>? videos = null,
+        TheaterMedia? media = null)
     {
         BadgeKind? badge = Badge(target, model);
         Native.GetCursorPos(out Point cursor);
@@ -75,18 +91,24 @@ public sealed class TheaterUi
         }
         double idle = Stopwatch.GetElapsedTime(lastMove).TotalSeconds;
         if (panelOpen && (!theater || idle >= PanelSeconds)) panelOpen = false;
-        bool recent = idle < ShowSeconds || panelOpen;
+        // A paused video keeps its controls, as in a player.
+        pinned = theater && media is { Paused: true };
+        bool recent = idle < ShowSeconds || panelOpen || pinned;
         var onMonitor = new Point(cursor.X - monitor.X, cursor.Y - monitor.Y);
 
         // Where the video is drawn: the overlay's place (stretch included) or where it was found.
         Rectangle videoRect = overlay?.Region ?? found;
-        if (videoRect.IsEmpty || source.Width <= 0)
+        Rectangle? offered = OfferedVideo(offer, theater, videos, onMonitor);
+        if ((videoRect.IsEmpty && offered == null) || source.Width <= 0)
         {
             Publish([]);
             // The whole screen has no video to wait for; a video does.
             if (target != AiTarget.WholeScreen) badge = null;
             return WithBadge(new UiLayer { Images = [] }, badge, new Rectangle(Point.Empty, eye));
         }
+
+        // Only the button, no found video: no badge to place on one.
+        if (videoRect.IsEmpty && target != AiTarget.WholeScreen) badge = null;
 
         var buttons = new List<(TheaterAction Action, Rectangle Eye, Rectangle Desktop)>();
         var labels = new Dictionary<int, Func<bool, UiImage>>();   // button index → its picture, when not a plain button
@@ -102,12 +124,13 @@ public sealed class TheaterUi
                 buttons.Add((action, place, ToDesktop(TheaterGeometry.Map(place, e, o.Source))));
             }
 
+            var under = new List<(UiImage, Rectangle)>();   // drawn under the buttons: the bar's backdrop and track
             if (recent)
             {
-                Rectangle[] places = TheaterGeometry.TopRight(e, 3);
+                Rectangle[] places = TheaterGeometry.TopCentre(e, 2);
                 Add(TheaterAction.Settings, places[0]);
-                Add(TheaterAction.PlayPause, places[1]);
-                Add(TheaterAction.ExitTheater, places[2]);
+                Add(TheaterAction.ExitTheater, places[1]);
+                AddBottomBar(e, media, under, Add, cursor, place => ToDesktop(TheaterGeometry.Map(place, e, o.Source)));
             }
             if (panelOpen && panel != null)
             {
@@ -132,9 +155,9 @@ public sealed class TheaterUi
             {
                 Theater = e,
                 TheaterCursor = TheaterGeometry.Map(onMonitor, o.Source, e),
-                Images = buttons.Select((b, i) => (labels.TryGetValue(i, out var picture)
+                Images = under.Concat(buttons.Select((b, i) => (labels.TryGetValue(i, out var picture)
                     ? picture(b.Desktop.Contains(cursor))
-                    : ButtonImages.For(b.Action, hover: b.Desktop.Contains(cursor)), b.Eye)).ToList(),
+                    : ButtonImages.For(b.Action, hover: b.Desktop.Contains(cursor)), b.Eye))).ToList(),
             };
         }
         else
@@ -147,11 +170,10 @@ public sealed class TheaterUi
                 (int)Math.Round(source.Width * scale),
                 (int)Math.Round(source.Height * scale));
             var whole = new Rectangle(Point.Empty, source);
-            Rectangle regionEye = TheaterGeometry.Map(videoRect, whole, fitted);
-            badgeArea = target == AiTarget.WholeScreen ? fitted : regionEye;
-            if (recent && videoRect.Contains(onMonitor))
+            badgeArea = target == AiTarget.WholeScreen || videoRect.IsEmpty ? fitted : TheaterGeometry.Map(videoRect, whole, fitted);
+            if (recent && offered is Rectangle video)
             {
-                Rectangle place = TheaterGeometry.TopRight(regionEye, 1)[0];
+                Rectangle place = TheaterGeometry.TopCentre(TheaterGeometry.Map(video, whole, fitted), 1)[0];
                 buttons.Add((TheaterAction.EnterTheater, place, ToDesktop(TheaterGeometry.Map(place, fitted, whole))));
             }
             layer = new UiLayer { Images = Images(buttons, cursor) };
@@ -161,6 +183,58 @@ public sealed class TheaterUi
         return WithBadge(layer, badge, layer.Theater ?? badgeArea);
 
         Rectangle ToDesktop(Rectangle onSource) => new(onSource.X + monitor.X, onSource.Y + monitor.Y, onSource.Width, onSource.Height);
+    }
+
+    /// <summary>
+    /// The player's bar along the bottom of <paramref name="e"/> (eye px): a darkened strip, the
+    /// seek bar with its handle and the time when the video's length is known, back / play-pause
+    /// / on, and mute. Without the extension's report only play/pause (the media key).
+    /// </summary>
+    private static void AddBottomBar(Rectangle e, TheaterMedia? media, List<(UiImage, Rectangle)> under,
+        Action<TheaterAction, Rectangle, Func<bool, UiImage>?> add, Point cursor, Func<Rectangle, Rectangle> toDesktop)
+    {
+        var bar = TheaterGeometry.BottomBar(e);
+        under.Add((ButtonImages.Solid(Color.FromArgb(150, 0, 0, 0)), bar.Backdrop));
+        bool paused = media?.Paused ?? false;
+        add(TheaterAction.PlayPause, bar.Play, hover => ButtonImages.Icon(paused ? ButtonImages.PlayGlyph : ButtonImages.PauseGlyph, hover));
+        if (media == null) return;
+
+        add(TheaterAction.SeekBack, bar.Back, hover => ButtonImages.Icon(ButtonImages.BackGlyph, hover));
+        add(TheaterAction.SeekForward, bar.Forward, hover => ButtonImages.Icon(ButtonImages.ForwardGlyph, hover));
+        add(TheaterAction.Mute, bar.Mute, hover => ButtonImages.Icon(media.Muted ? ButtonImages.MutedGlyph : ButtonImages.VolumeGlyph, hover));
+        bool known = double.IsFinite(media.Duration) && media.Duration > 0;
+        string time = known ? $"{TheaterGeometry.Clock(media.Time)} / {TheaterGeometry.Clock(media.Duration)}"
+                      : double.IsFinite(media.Time) ? TheaterGeometry.Clock(media.Time) : "Live";
+        add(TheaterAction.Panel, bar.Time, _ => ButtonImages.Label(time, bar.Time.Width, hover: false, centred: false));
+        if (!known) return;
+
+        // The seek bar: its height and some above and below take the click; the track thickens
+        // under the cursor. Its click area is drawn by the track and handle, under the buttons.
+        Rectangle hit = Rectangle.Inflate(bar.Seek, 0, TheaterGeometry.SeekReach);
+        bool hover = toDesktop(hit).Contains(cursor);
+        Rectangle track = hover ? Rectangle.Inflate(bar.Seek, 0, 3) : bar.Seek;
+        double fraction = Math.Clamp(double.IsFinite(media.Time) ? media.Time / media.Duration : 0, 0, 1);
+        int done = (int)Math.Round(track.Width * fraction);
+        under.Add((ButtonImages.Solid(Color.FromArgb(90, 255, 255, 255)), track));
+        under.Add((ButtonImages.Solid(Color.FromArgb(255, 96, 205, 255)), new Rectangle(track.X, track.Y, done, track.Height)));
+        UiImage knob = ButtonImages.Knob();
+        under.Add((knob, new Rectangle(track.X + done - knob.Width / 2, track.Y + track.Height / 2 - knob.Height / 2, knob.Width, knob.Height)));
+        add(TheaterAction.SeekBar, hit, _ => ButtonImages.Solid(Color.Transparent));
+    }
+
+    /// <summary>
+    /// The video to offer the "3D theater" button on, or null: the video the browser extension
+    /// reports under the cursor (<paramref name="videos"/>), never anything else. Without the
+    /// extension (null) none: a video guessed from the picture was any moving area, and the button showed over the
+    /// desktop (the tray and the shortcut still open the theater on it). None in the theater or
+    /// with the button turned off. All in virtual monitor px.
+    /// </summary>
+    public static Rectangle? OfferedVideo(bool offer, bool theater, IReadOnlyList<Rectangle>? videos, Point cursor)
+    {
+        if (!offer || theater || videos == null) return null;
+        foreach (Rectangle v in videos)
+            if (v.Contains(cursor)) return v;
+        return null;
     }
 
     /// <summary>Opens or closes the theater's settings panel; any thread.</summary>
@@ -178,7 +252,7 @@ public sealed class TheaterUi
         ($"Depth:  {p.Depth:0.0}", TheaterAction.DepthLess, TheaterAction.DepthMore, null),
         ($"Screen plane:  {p.Plane:0.00} ({(p.Plane < 0.5 ? "behind" : p.Plane > 0.5 ? "in front" : "balanced")})",
             TheaterAction.PlaneBack, TheaterAction.PlaneForward, null),
-        ($"Buffer:  {(p.Buffer > 0 ? $"{p.Buffer:0.#} s" : "off (live)")}", TheaterAction.BufferLess, TheaterAction.BufferMore, null),
+        ($"Timing:  {p.Timing}", TheaterAction.BufferLess, TheaterAction.BufferMore, null),
         ($"Snap depth edges to the picture:  {(p.EdgeSnap ? "on" : "off")}", null, null, TheaterAction.ToggleEdgeSnap),
         ($"Keep subtitles flat:  {(p.Captions ? "on" : "off")}", null, null, TheaterAction.ToggleCaptions),
     ];

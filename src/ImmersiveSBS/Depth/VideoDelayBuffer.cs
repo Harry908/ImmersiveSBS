@@ -30,6 +30,12 @@ public sealed class VideoDelayBuffer : IDisposable
         /// <summary>Where on the source the frame was cropped from, px.</summary>
         public Rectangle Region { get; internal set; }
 
+        /// <summary>The video's own time of the frame, seconds, when the page reports it; NaN otherwise.</summary>
+        public double MediaTime { get; internal set; } = double.NaN;
+
+        /// <summary>Counts the video's jumps (seeks): depth is never blended across one.</summary>
+        public int Segment { get; internal set; }
+
         /// <summary>Nearness at model resolution, once the depth for this frame has arrived.</summary>
         public float[]? Nearness { get; internal set; }
 
@@ -63,7 +69,8 @@ public sealed class VideoDelayBuffer : IDisposable
     /// Copies <paramref name="region"/> of <paramref name="source"/> in, stamped with its capture
     /// time (Stopwatch ticks). Returns false when the frame was skipped to stay within memory.
     /// </summary>
-    public bool Push(ID3D11Texture2D source, Rectangle region, long time, long id, TimeSpan delay, long ticksPerSecond)
+    public bool Push(ID3D11Texture2D source, Rectangle region, long time, long id, TimeSpan delay, long ticksPerSecond,
+        double mediaTime = double.NaN, int segment = 0)
     {
         if (region.Size != size)
         {
@@ -97,7 +104,7 @@ public sealed class VideoDelayBuffer : IDisposable
         device.ImmediateContext.CopySubresourceRegion(texture, 0, 0, 0, 0, source, 0,
             new Box(region.Left, region.Top, 0, region.Right, region.Bottom, 1));
 
-        frames.Add(new Frame { Texture = texture, Time = time, Id = id, Region = region });
+        frames.Add(new Frame { Texture = texture, Time = time, Id = id, Region = region, MediaTime = mediaTime, Segment = segment });
         lastPush = time;
         return true;
     }
@@ -133,23 +140,96 @@ public sealed class VideoDelayBuffer : IDisposable
     /// weights 1-2-3-2-1: look-ahead smoothing the delay makes possible. Only neighbours cropped
     /// the same way count (another crop's depth would not line up). False when none has depth.
     /// </summary>
-    public bool SmoothedNearness(int index, float[] output)
+    public bool SmoothedNearness(int index, float[] output) => SmoothedNearness(index, output, out _);
+
+    /// <inheritdoc cref="SmoothedNearness(int, float[])"/>
+    /// <param name="nearestTicks">How far in time the nearest frame whose depth was used is (0: its own).</param>
+    public bool SmoothedNearness(int index, float[] output, out long nearestTicks)
     {
-        Array.Clear(output);
-        float total = 0;
-        Rectangle crop = frames[index].Region;
+        nearestTicks = long.MaxValue;
+        int count = 0;
+        Frame frame = frames[index];
         for (int d = -2; d <= 2; d++)
         {
             int i = index + d;
-            if (i < 0 || i >= frames.Count || frames[i].Region != crop) continue;
-            if (frames[i].Nearness is not float[] n || n.Length != output.Length) continue;
-            float w = 3 - Math.Abs(d);
-            for (int k = 0; k < output.Length; k++) output[k] += w * n[k];
-            total += w;
+            if (!HasDepth(i, frame, output.Length)) continue;
+            blendMaps[count] = frames[i].Nearness!;
+            blendWeights[count++] = 3 - Math.Abs(d);
+            nearestTicks = Math.Min(nearestTicks, Math.Abs(frames[i].Time - frame.Time));
         }
-        if (total == 0) return false;
-        for (int k = 0; k < output.Length; k++) output[k] /= total;
+        if (count == 0) return false;
+        NearnessBlend.Weighted(blendMaps, blendWeights, count, output);
+        Array.Clear(blendMaps);
         return true;
+    }
+
+    private readonly float[][] blendMaps = new float[5][];
+    private readonly float[] blendWeights = new float[5];
+
+    /// <summary>How <see cref="InterpolatedNearness"/> found depth for a frame.</summary>
+    public enum DepthMatch
+    {
+        /// <summary>No frame cropped the same way has depth.</summary>
+        None,
+
+        /// <summary>The frame's own depth.</summary>
+        Exact,
+
+        /// <summary>Blended from the nearest frames with depth before and after it.</summary>
+        Interpolated,
+
+        /// <summary>The nearest frame with depth on one side only: the delay is too short for the depth.</summary>
+        Held,
+    }
+
+    /// <summary>
+    /// Nearness for frame <paramref name="index"/> in matched timing (improvement-plan.md §6):
+    /// its own depth, or n = (1 − λ)·n_a + λ·n_b between the nearest frames a before and b after
+    /// it that have depth, λ = (t − t_a)/(t_b − t_a) in the video's own time when the page
+    /// reports it, else in capture time. Only frames cropped the same way count.
+    /// </summary>
+    /// <param name="ageTicks">For <see cref="DepthMatch.Held"/>, how far in time the depth used is; else 0.</param>
+    public DepthMatch InterpolatedNearness(int index, float[] output, out long ageTicks)
+    {
+        ageTicks = 0;
+        Frame f = frames[index];
+        if (HasDepth(index, f, output.Length))
+        {
+            f.Nearness!.CopyTo(output, 0);
+            return DepthMatch.Exact;
+        }
+        int a = index - 1, b = index + 1;
+        while (a >= 0 && !HasDepth(a, f, output.Length)) a--;
+        while (b < frames.Count && !HasDepth(b, f, output.Length)) b++;
+        bool before = a >= 0, after = b < frames.Count;
+        if (before && after)
+        {
+            Frame fa = frames[a], fb = frames[b];
+            bool media = !double.IsNaN(f.MediaTime) && !double.IsNaN(fa.MediaTime) && !double.IsNaN(fb.MediaTime)
+                         && fb.MediaTime > fa.MediaTime;
+            double lambda = media
+                ? (f.MediaTime - fa.MediaTime) / (fb.MediaTime - fa.MediaTime)
+                : fb.Time > fa.Time ? (double)(f.Time - fa.Time) / (fb.Time - fa.Time) : 0.5;
+            float l = (float)Math.Clamp(lambda, 0, 1);
+            NearnessBlend.Lerp(fa.Nearness!, fb.Nearness!, l, output);
+            return DepthMatch.Interpolated;
+        }
+        if (!before && !after) return DepthMatch.None;
+        Frame held = frames[before ? a : b];
+        held.Nearness!.CopyTo(output, 0);
+        ageTicks = Math.Abs(f.Time - held.Time);
+        return DepthMatch.Held;
+    }
+
+    /// <summary>Frame <paramref name="index"/> has depth that fits <paramref name="like"/>: the same crop, no jump between them.</summary>
+    private bool HasDepth(int index, Frame like, int length) =>
+        index >= 0 && index < frames.Count && frames[index].Region == like.Region && frames[index].Segment == like.Segment
+        && frames[index].Nearness is { } n && n.Length == length;
+
+    /// <summary>Forgets every held frame's depth, e.g. after a seek: nothing is blended across the jump.</summary>
+    public void ForgetDepth()
+    {
+        foreach (Frame f in frames) f.Nearness = null;
     }
 
     private void Recycle(int index)

@@ -9,12 +9,12 @@ public class CaptionLockTests
     private const double Dt = 1.0 / 30, ScreenPlane = 0.35;
 
     /// <summary>Mid-grey picture; a line of "letters" (2 px white strokes with a black 1 px outline every 6 px) over the given rows.</summary>
-    private static float[] Picture(int rowFrom = -1, int rowTo = -1, int strokeWidth = 2, int pitch = 6)
+    private static float[] Picture(int rowFrom = -1, int rowTo = -1, int strokeWidth = 2, int pitch = 6, int left = 150, int right = 370)
     {
         var luma = new float[W * H];
         Array.Fill(luma, 0.45f);
         for (int y = Math.Max(0, rowFrom); y < rowTo; y++)
-            for (int x = 150; x < 370; x += pitch)
+            for (int x = left; x < right; x += pitch)
             {
                 luma[y * W + x - 1] = 0.05f;
                 for (int k = 0; k < strokeWidth; k++) luma[y * W + x + k] = 0.95f;
@@ -128,6 +128,58 @@ public class CaptionLockTests
         for (int frame = 0; frame < 30; frame++)
             caption.Apply(Picture(200 + 2 * frame, 212 + 2 * frame), Scene(), Dt, ScreenPlane);
         Assert.Null(caption.Found);
+    }
+
+    [Fact]
+    public void APlayersControlBarIsNotASubtitle()
+    {
+        // The 2026-10-11 run: a box at 13,267 496×12 (the player's control bar, 96 % wide) was
+        // found and lost every few seconds.
+        var caption = new CaptionLock(W, H);
+        float[] bar = Picture(267, 279, left: 15, right: 507);
+        for (int frame = 0; frame < 60; frame++) caption.Apply(bar, Scene(), Dt, ScreenPlane);
+        Assert.Null(caption.Found);
+
+        // Text under a box the page reports over the picture (its controls) is not taken either.
+        var under = new CaptionLock(W, H);
+        float[] text = Picture(240, 254);
+        Rectangle[] overlays = [new(100, 230, 320, 40)];
+        for (int frame = 0; frame < 60; frame++) under.Apply(text, Scene(), Dt, ScreenPlane, overlays: overlays);
+        Assert.Null(under.Found);
+    }
+
+    [Fact]
+    public void TheLoggedFalseBoxIsOutsideTheMiddleHalf()
+    {
+        // The 2026-10-10 run: a box at x 323, 180 wide (centre 413 of 518) flipped between found
+        // and gone for minutes. It is now outside the band (129.5, 388.5)...
+        var caption = new CaptionLock(W, H);
+        float[] luma = Picture(240, 254, left: 326, right: 500);
+        for (int frame = 0; frame < 60; frame++) caption.Apply(luma, Scene(), Dt, ScreenPlane);
+        Assert.Null(caption.Found);
+
+        // ...and the real ones from the same log (centres 132 to 284) are inside it.
+        var real = new CaptionLock(W, H);
+        float[] centred = Picture(240, 254, left: 200, right: 370);
+        for (int frame = 0; frame < 30; frame++) real.Apply(centred, Scene(), Dt, ScreenPlane);
+        Assert.NotNull(real.Found);
+    }
+
+    [Fact]
+    public void ABoxThatComesBackSoonMustHoldForASecond()
+    {
+        var caption = new CaptionLock(W, H);
+        float[] text = Picture(240, 254), none = Picture();
+        for (int frame = 0; frame < 30; frame++) caption.Apply(text, Scene(), Dt, ScreenPlane);
+        Assert.NotNull(caption.Found);
+        for (int frame = 0; frame < 10; frame++) caption.Apply(none, Scene(), Dt, ScreenPlane);
+        Assert.Null(caption.Found);
+
+        // Back within 5 s: not after 0.5 s, only after a full second.
+        for (int frame = 0; frame < 15; frame++) caption.Apply(text, Scene(), Dt, ScreenPlane);
+        Assert.Null(caption.Found);
+        for (int frame = 0; frame < 20; frame++) caption.Apply(text, Scene(), Dt, ScreenPlane);
+        Assert.NotNull(caption.Found);
     }
 
     [Fact]

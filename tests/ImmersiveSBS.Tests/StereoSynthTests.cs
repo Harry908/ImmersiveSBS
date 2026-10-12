@@ -28,7 +28,8 @@ public sealed class StereoSynthTests : IDisposable
         }
         device = d!;
         source = CreateSource((_, _) => 0);
-        synth = new StereoSynth(device) { DilateRadius = 0 };
+        // The splat's own invariants: no slope limit (tested on its own below).
+        synth = new StereoSynth(device) { DilateRadius = 0, LimitSlope = false };
     }
 
     /// <summary>The ramp source (red = 4·x, green = 8·y) with <paramref name="blue"/> added.</summary>

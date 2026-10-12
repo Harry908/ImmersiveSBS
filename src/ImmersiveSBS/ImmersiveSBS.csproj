@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <!-- 10.0.19041 (Windows 10 2004): Windows.Graphics.Capture and process loopback audio. -->
+    <!-- 10.0.19041 (Windows 10 2004): Windows.Graphics.Capture. -->
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
     <Platforms>x64</Platforms>
@@ -27,7 +27,6 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" />
-    <PackageReference Include="NAudio.Wasapi" Version="3.1.0" />
     <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
   </ItemGroup>

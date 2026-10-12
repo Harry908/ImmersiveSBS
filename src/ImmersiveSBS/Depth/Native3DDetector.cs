@@ -28,7 +28,11 @@ public enum Native3DMode
 /// Recognises side-by-side and top-bottom 3D video on the coarse luma grid (video-3d-plan.md
 /// §7.4): the normalised cross-correlation of one half against the other, at the best small
 /// horizontal offset (the views differ by disparity), must stay above 0.85 for 2 s; dropping out
-/// takes as long below 0.7. Pure: no GPU, no Windows state.
+/// takes as long below 0.7. Only the detail counts: each row's straight-line fit is taken out of
+/// a side-by-side comparison and each column's out of a top-bottom one. Whole-block correlation
+/// took ordinary video for side-by-side whenever its brightness changed mostly from top to
+/// bottom (sky over ground): both halves share that profile (the 2026-10-12 run, where it
+/// flipped a 2D video to "shown as is" every few seconds). Pure: no GPU, no Windows state.
 /// </summary>
 public sealed class Native3DDetector
 {
@@ -63,8 +67,8 @@ public sealed class Native3DDetector
         int w = region.Width / cellSize, h = region.Height / cellSize;
         if (w < 8 || h < 8) return Layout;
 
-        double sbs = BestCorrelation(grid, gridWidth, x0, y0, w / 2, h, dx: w / 2, dy: 0);
-        double tb = BestCorrelation(grid, gridWidth, x0, y0, w, h / 2, dx: 0, dy: h / 2);
+        double sbs = BestCorrelation(grid, gridWidth, x0, y0, w / 2, h, dx: w / 2, dy: 0, byRow: true);
+        double tb = BestCorrelation(grid, gridWidth, x0, y0, w, h / 2, dx: 0, dy: h / 2, byRow: false);
 
         switch (Layout)
         {
@@ -94,29 +98,42 @@ public sealed class Native3DDetector
 
     /// <summary>
     /// NCC of the block (x0, y0, w, h) against the block displaced by (dx, dy), maximised over
-    /// small horizontal offsets of the second block.
+    /// small horizontal offsets of the second block, with each row's (<paramref name="byRow"/>)
+    /// or each column's straight-line fit taken out of both blocks: a brightness ramp, which
+    /// both halves of a 2D picture share, is not detail.
     /// </summary>
-    private double BestCorrelation(ReadOnlySpan<byte> grid, int gridWidth, int x0, int y0, int w, int h, int dx, int dy)
+    private double BestCorrelation(ReadOnlySpan<byte> grid, int gridWidth, int x0, int y0, int w, int h, int dx, int dy, bool byRow)
     {
         int maxOffset = Math.Max(1, (int)Math.Round(w * MaxOffsetFraction));
         double best = -1;
         for (int off = -maxOffset; off <= maxOffset; off++)
         {
-            double sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
+            int xFrom = Math.Max(0, -off), xTo = w - Math.Max(0, off);
+            if (xTo <= xFrom) continue;
+            double cov = 0, va = 0, vb = 0;
             int n = 0;
-            for (int y = 0; y < h; y++)
+            // Lines are rows (side-by-side) or columns (top-bottom). The residuals r = v − (m + β·j)
+            // of a least-squares line give Σ ra·rb = Cab − Caj·Cbj / Cjj (C: centred sums).
+            int lines = byRow ? h : xTo - xFrom, along = byRow ? xTo - xFrom : h;
+            if (along < 3) continue;
+            double sj = along * (along - 1) / 2.0;
+            double cjj = (along - 1.0) * along * (along + 1) / 12;
+            for (int i = 0; i < lines; i++)
             {
-                for (int x = Math.Max(0, -off); x < w - Math.Max(0, off); x++)
+                double sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0, saj = 0, sbj = 0;
+                for (int j = 0; j < along; j++)
                 {
+                    int y = byRow ? i : j, x = byRow ? xFrom + j : xFrom + i;
                     double a = grid[(y0 + y) * gridWidth + x0 + x];
                     double b = grid[(y0 + y + dy) * gridWidth + x0 + x + dx + off];
-                    sa += a; sb += b; saa += a * a; sbb += b * b; sab += a * b;
-                    n++;
+                    sa += a; sb += b; saa += a * a; sbb += b * b; sab += a * b; saj += a * j; sbj += b * j;
                 }
+                double caj = saj - sa * sj / along, cbj = sbj - sb * sj / along;
+                cov += sab - sa * sb / along - caj * cbj / cjj;
+                va += saa - sa * sa / along - caj * caj / cjj;
+                vb += sbb - sb * sb / along - cbj * cbj / cjj;
+                n += along;
             }
-            if (n == 0) continue;
-            double cov = sab - sa * sb / n;
-            double va = saa - sa * sa / n, vb = sbb - sb * sb / n;
             // A flat block (e.g. black) says nothing about stereo.
             if (va < n * 4 || vb < n * 4) continue;
             best = Math.Max(best, cov / Math.Sqrt(va * vb));

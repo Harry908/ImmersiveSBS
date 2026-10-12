@@ -211,8 +211,9 @@ public sealed class StrayWindowGuard : IDisposable
             Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_NOOWNERZORDER);
         if (maximized) Native.ShowWindow(hwnd, Native.SW_MAXIMIZE);
 
-        // Moving an elevated program's window fails from a normal process (UIPI).
-        Log.Write($"StrayWindowGuard: {(ok ? "moved" : "could not move")} \"{Native.GetWindowText(hwnd)}\" " +
+        // Moving an elevated program's window fails from a normal process (UIPI). The program and
+        // window class only: a window's title can name what the user watches or reads.
+        Log.Write($"StrayWindowGuard: {(ok ? "moved" : "could not move")} a {Native.ProcessName(hwnd)} window " +
                   $"({Native.GetClassName(hwnd)}) from {rect} to {x},{y}{(maximized ? ", maximized" : "")}.");
     }
 

@@ -490,6 +490,16 @@ glitchy picture.
   is depth, inverted in `DepthEstimator` (`DepthModel.OutputIsDepth`). Time per frame: Small
   15 ms Balanced / 46 ms Quality; Base 36 / 109. The originals are in `models\download\da3-*`;
   the converter script lives in the session scratchpad (not the repo).
+- **DA3 in fp16** (2026-10-09): the converter failed on the dynamic export's shape arithmetic
+  (Shape/Gather/Range and the casts between them, rotary tables included). Folding it into
+  constants first (ORT's basic optimizer on the static fp32 model; standard ops only) leaves a
+  graph the fp16 converter handles; checked against fp32 on ORT CPU (mean error 0.015 %, max
+  0.07 %), and the speed test's near/far check passes. Time per frame now: Small 7.5 ms
+  Balanced / 10.4 Quality; Base 11.9 / 19.2 (2–5.7× faster). Files 40–45 % smaller; the fp32
+  ones are kept in `models\download\da3-*\fp32`. Engine cache names now carry a fingerprint
+  of the model file (size, time written): replaced under the same name, a model kept running
+  its old engine. Every model's engine is rebuilt once (about 20 s on first use) and the old
+  one removed.
 - **Video Depth Anything Small** (Apache-2.0) exists as an ONNX pair (per-frame encoder at
   518×910 + a 32-frame temporal head); the head needs the last 32 frames' encoder features
   (~15 MB each) per call, so it needs GPU-resident inputs (ORT IOBinding), not the CPU arrays
@@ -564,11 +574,14 @@ being reset or jumped.
   (`Depth/Selection`), linear and in place.
 - GPU buffers make their staging copy only when read back (the splat's key buffer, 16 MB at
   1080p, never is).
-- `IsIconic` was imported from shcore.dll (it is in user32.dll), which would have thrown in
-  `StrayWindowGuard`.
+- **Start-up crash, made and fixed in this pass:** a supposed fix (IsIconic "imported from
+  shcore.dll", a misread listing; it never was) was a search-and-replace that moved
+  `GetDpiForMonitor`, which is in shcore.dll, to user32.dll, and the app stopped at start.
+  Restored; `NativeImportTests` now resolves every native import against its DLL, so a wrong
+  DLL fails a test instead of the app.
 
-Tests: 110 (delay line jitter, catch-up and restart; held frames across a region change;
-quickselect against a sort).
+Tests: 109 (delay line jitter, catch-up and restart; held frames across a region change;
+quickselect against a sort; every native import resolves).
 
 ## Browser extension for the buffer (2026-10-09, branch `browser-extension`)
 
@@ -610,9 +623,307 @@ video).
    `Browser:` lines), the theater (enter, exit, Play/Pause, cursor alignment), stretch, tuning
    panel; the outline, captions and edge snapping (A/B in the tuning panel); compare the models,
    DA3 included. The user's saved tuning still has dilation 3 (Reset in the tuning panel gives 1).
-2. DA3 in fp16 (2–3× faster) once its casts are fixed; Video Depth Anything with IOBinding.
+2. Video Depth Anything with IOBinding.
 3. P6 packaging (installer with the driver, model download, README), or P3 once the hardware
    3D button test with the glasses removed from the desktop is done.
+
+## Improvement plan, phases 0–5 (2026-10-10, not yet seen in the glasses)
+
+`docs/improvement-plan.md`, implemented in its order. Every new method sits beside the old one
+and can be switched in the tuning panel; the measures below are in the `Stats:` line.
+
+- **Phase 0, measures.** `Presentation/GpuTimer` times every GPU pass (M5: timestamp queries,
+  read a few frames later, never waited on); `Resolve` counts hole pixels (M2, side edges
+  excluded); the post-processor reports flicker on still pixels (M4); `AiStereo` samples the
+  depth age of every frame shown (M1, mean and p95) and counts hand-overs, skipped repeats and
+  the model's busy share (M7). The depth status splits model, post and waiting time (M6).
+  Two lines join the `Stats:` line: `Measures: …` and `GPU ms per frame: …`.
+- **Phase 4 step 0, only changed frames to the model.** Desktop Duplication's dirty and move
+  rectangles say whether the video's area changed; the luma grid checks after the present
+  (and decides with Windows.Graphics.Capture), drops exact repeats, and after 3 misses within
+  10 s the dirty rectangles are no longer trusted (logged). While the page says the video is
+  paused, nothing is handed over (unless the picture keeps changing for 0.5 s). The buffer and
+  matched timing hold only changed frames too.
+- **Phase 2, edges.** `Depth/EdgeFilters`: soft edges (k passes across from §7.1's formula,
+  one down) and depth anti-aliasing (structure tensor, 5-tap folded Gaussian along the edge)
+  on the output only, before the overlays and captions. New defaults (settings version 2
+  migrates saved files): screen dilation 0, edge snapping off, soft edges Auto, anti-aliasing
+  Auto (on for DA2 and DA3). **Added beyond the plan:** a screen-resolution slope limit
+  (`SlopeLimit` shader, n′(x) = max_d n(x+d) − g|d|, g = 1.9/S), because for a step of 0.8 soft
+  edges alone still left 0.08–0.09 % holes. Measured on a 1920×1080 test scene at σ 0.6:
+  holes 0.13 % (Δn 0.4) and 0.34 % (Δn 0.8) with the old chain, 0 with the new one; edge
+  straightness (M3) 0.07–0.09 px RMS on staircase edges. Anti-aliasing thresholds are
+  smoothstep(0.5, 0.8) instead of the plan's (0.7, 0.9): a gentle staircase only reaches
+  coherence 0.8, and the plan's values halved its effect (slope ⅓: 0.274 → 0.165 px; now 0.081).
+- **Phase 1, matched timing.** A timing setting: Live, Auto (default; matched once μ + 2σ + T̄
+  of the depth age passes 60 ms, live below 45 ms), Matched, Buffer 0.5–2 s (settings window,
+  tray, theater panel). `MatchedDelay` sets the delay (plus 20 ms present latency, 10 ms steps
+  or whole video frames, follows only after 20 ms for 2 s); held frames get their own depth or
+  depth interpolated in time (video time with the extension). Up to 90 ms the sound stays live
+  unless the page can delay it; beyond, the delayed-sound path runs at exactly that delay. The
+  session now reports the wanted delay and the controller the sound's actual delay
+  (`SoundDelay`, replacing `AudioDelayed`).
+- **Phase E, extension protocol 2** (extension 1.1.0). The app follows one video; its frame
+  reports each presented frame (requestVideoFrameCallback), its state at once on change and
+  twice a second, the boxes over its picture (an 8×8 `elementsFromPoint` probe plus the
+  player's caption containers and native `<track>` cues), and keeps an NTP-style clock offset
+  to the app (best of 8 round trips, every 5 s). App side: `PageVideo` (thread-safe, read by the
+  render thread), `BrowserLink.Follow`, boxes mapped to the screen by the controller. Uses:
+  media times for matched interpolation and frame-exact delays, pause and seek, overlays held
+  at the screen plane (§7.4 mask, rise 0.1 s, fade 0.4 s) and the page's captions instead of the
+  detection. Trust rules (§3.5): the tracker must disagree for 1 s before its box wins again,
+  its search runs at 4 Hz while the page's box is used, page data older than 1 s is ignored.
+  **Deviation:** the change test for hand-overs stays with the capture (dirty rectangles are
+  exact per captured frame; frame events arrive on their own schedule), the page's frame events
+  stamp media times.
+- **Phase 6.1, subtitles.** Band narrowed to the middle half (the logged false box at centre 413
+  of 518 is outside); a box that comes back within 5 s must hold for 1 s.
+- **Phase 4 steps 1–2.** Post-processing has its own thread, alongside the next frame's model.
+  A new frame's model input is queued as soon as it is captured (live timing), before waiting
+  for the swap chain, and handed over once the GPU has copied it.
+- **Phase 3, lookup warp.** `Lookup` shader (smallest/largest root, linear refinement, each
+  side's own root at sharp edges, farther sample in gaps); Warp setting in the tuning panel,
+  Splat by default until compared in the glasses. GPU time at 1920×1080, σ 0.6, kept busy:
+  splat 0.90 ms, lookup 0.84 ms. The plan's span skipping is there (exact) but off: with a
+  17 px search it cost more (1.09 ms) than it saved.
+- **Phase 5.1, look-ahead in the buffer.** The depth thread holds K frames (as many as fit in
+  the delay less 0.3 s, at most 30) and normalises each toward the range of those after it, up
+  to the next scene cut; held frames go after 200 ms without new ones.
+- **Phase 6.4, foreground scale.** `Depth/ForegroundCurve`, a softplus curve on the output
+  (k = 8, b = 0.15·L): "Foreground" in the tuning panel, −3..3, 0 by default. At +1/+2/+3 the
+  nearest part's slope is 1.22/1.44/1.80 and the farthest's 0.28/0.12/0.05; negative levels are
+  the inverse curves. It works in output nearness, so the screen plane (c) sits at a different
+  place in the scene once it is on.
+- **§14 "Use page data".** A Settings checkbox (on by default). Off: the extension still delays
+  the sound, but the app stops following the video and the page's place, frames, pause, seeks
+  and boxes no longer reach the picture. The way out when a page reports wrongly.
+- **Phase 4 step 4, the spike's risk question.** The TensorRT for RTX packages (EP 1.8 and 2)
+  ship `cudart64_12.dll`, but it does not load from outside its package; the driver's
+  `nvcuda.dll` exports the whole interop path (`cuD3D11GetDevice`,
+  `cuGraphicsD3D11RegisterResource`, `cuGraphicsMapResources`,
+  `cuGraphicsResourceGetMappedPointer_v2`). The model input is already a structured D3D11
+  buffer of planar floats, so it maps to a linear device pointer with no copy. Still open: an
+  ONNX Runtime IOBinding to that pointer, in the EP's CUDA context (the primary context). The
+  step itself waits until the glasses' numbers show the depth path is the bottleneck.
+
+**Measured, and to remember:** a Debug build runs the depth post-processing 5–7 times slower
+(518×294 with anti-aliasing and two soft passes: 55 ms against 8 ms a frame in Release; the
+app now logs a warning). Runs in the glasses must use a Release build. In Release the edge
+steps add about 4–5 ms of CPU a frame (anti-aliasing ≈ 2 ms, a soft pass ≈ 1 ms), on its own
+thread; moving post-processing to the GPU (Phase 4 step 3) removes it.
+
+Tests: 188, in Debug and Release.
+
+Not done, each waiting on something:
+- Phase 4 step 3 (post-processing on the GPU): the plan does it only if post-processing shows
+  in M6. It now runs alongside the model, so it costs only when post > model.
+- Phase 4 step 4 (input kept on the GPU): feasible; only if steps 1–3 leave the depth path the
+  bottleneck.
+- Phase 5.2 (Video Depth Anything streaming): needs an export and a 3–5 session spike.
+- Phase 6.2 (needs a salient-object model) and 6.3 (only if the lookup warp's stretch still
+  shows).
+
+### Next
+
+1. In the glasses, Release build, with and without the extension, DA2 S, DAD B and DAD L: the
+   `Measures:` and `GPU ms` lines (Phase 0's done-when), tearing in Auto/Matched timing,
+   shadows and jagged edges with the new edge defaults, the lookup warp A/B, page captions and
+   controls held flat, the `Browser: the followed video` line (fps, clock error).
+2. Then decide from the numbers: matched thresholds, soft-edge passes, lookup as default.
+3. Phase 4 step 3 if post-processing shows in M6.
+
+## First glasses run of the improvement plan (2026-10-11, 20:57–21:19, Release)
+
+WeTV in Edge with extension 1.1.0; DA3 S, DA2 S/B/L, DAD B/L, 518×294 and 756×420; Auto,
+Matched and Buffer 0.5/1 s; theater on and off; splat, then lookup.
+
+**Seen:** DA2 Small looked great; the other models tore slightly. Hair fine; a slight blur and
+bend beside some edges (a wing), only on close look. The buffer glitched (pauses, missing
+frames, interruptions). The user could not tell whether the extension worked, and heard the
+sound only from the browser (by design: the page delays it).
+
+**Log:**
+- The extension worked throughout: protocol 2, the video followed at 30 fps, clock within
+  0.5–0.85 ms, 1–11 overlay boxes, the page's sound delayed as asked.
+- No holes (M2 0.00 %) with any model. Flicker 0.002–0.03.
+- DA2 S/B at 518: model 9–11 ms, post 10–14 ms alongside, about 31 depth frames/s; matched
+  needed 74–101 ms. DA3 S at 756: model 9–10 ms, **post 20–26 ms** (now the larger part; Phase
+  4 step 3's condition is met there). DA2 L at 756: model 60–113 ms, GPU 96–99 % busy, capture
+  down to 8–12 fps (too heavy for this GPU at that size).
+- **The matched delay hopped** 100 ↔ 133 ↔ 167 ↔ 300 ms every 10–20 s: the target crossed a
+  33 ms frame boundary, and the ±20 ms / 2 s rule followed it each time. Each move skips or
+  repeats a frame, and the page bends the sound's pitch for a moment (`setTargetAtTime`).
+- **The followed video was lost for one tick** (about 0.3 s) seven times, mostly around theater
+  on/off. Each time the page's delay went back to live, the app captured the sound for 0.3 s,
+  and the page then restarted its delay line: a gap in the sound, and the buffer restarted
+  (the pauses).
+- The subtitle detector found and lost the player's control bar (13,267 496×12 of 518; 710–746
+  of 756 wide) every few seconds.
+
+**Fixed:**
+- The followed video is kept as last seen for 1.5 s when it is missed. `RootWindowAt` looks
+  through owned popups (`GA_ROOTOWNER`), so a browser tooltip or bubble over the video no longer
+  counts as another window.
+- `MatchedDelay`: up after 0.5 s; down only after 10 s with the target more than a step (and
+  20 ms) below, then to the target plus a step. A target wandering across one boundary is
+  never followed.
+- `CaptionLock`: bands wider than 85 % of the picture, or half under a page overlay box, are
+  not captions.
+- Extension 1.2.0: a toolbar badge ("off" red: no app, "on" grey: connected, "3D" green: the
+  followed tab; hover for the sound's delay). The README says how to pin it and what each means.
+- Post-processing split over bands of rows on up to 8 cores (`RowBands`; soft edges,
+  anti-aliasing, the temporal pass, overlays, captions' row scan and mask, flicker). Release, in
+  `EdgeFilterTests`: 756×420 with anti-aliasing and 2 soft passes 16.5 → 7–8 ms, 518×294 8 → 4 ms.
+  This stands in for Phase 4 step 3 (see the plan's status).
+- More of it split, and measured on a real clip (`ParallelSpeedTests`: 48 frames of Big Buck
+  Bunny from `%LOCALAPPDATA%\ImmersiveSBS\samples`, decoded with `MediaComposition`, depth from
+  DA3 Small on TensorRT; one core against the bands on the same frames, outputs identical):
+
+  | ms per frame | 518×294 one core | parallel | 756×420 one core | parallel |
+  |---|---|---|---|---|
+  | post-processing (AA, 2 soft passes, captions) | 8.5 | 3.3 | 16.5 | 5.7 |
+  | luma, depth thread (now SIMD) | 0.18 | 0.11 | 0.32 | 0.16 |
+  | buffer blend of 5, render thread (now one SIMD pass) | 0.28 | 0.16 | 0.40 | 0.20 |
+  | matched blend of 2, render thread | 0.07 | 0.05 | 0.14 | 0.07 |
+
+  16 bands on at most 8 threads (twice the bands balanced the edge pixels: 2.1–2.6× → 2.6–2.9×;
+  all 16 threads would give 5.1 ms but leave the render thread fewer cores). The percentiles
+  now come from a histogram counted in parts and a search of the one bin (exact, as a sort).
+  DA3's depth-to-inverse step and the look-ahead's change measure are split too.
+
+- **Fewer models** (user request): Distill-Any-Depth Large (one 518×518 size squeezing 16:9,
+  41 ms), Depth Anything V2 Base (non-commercial, no better than DAD Base at the same cost) and
+  V2 Large (non-commercial; at 756×420 the GPU 96–99 % busy, capture 8–12 fps) are gone from
+  `DepthTier`, the settings list and the theater's model buttons. Left: DA2 Small, DAD Base
+  (default), DA3 Small, DA3 Base, all Apache-2.0 or MIT. A saved file naming a removed model
+  loads it as DAD Base (`DepthTierConverter`); the rest of the file is kept. Their files are
+  still in the models folder.
+- **The models' outputs agree once converted** (`ModelAgreementTests`, 12 frames of the sample
+  clip at 518×294). DA2 and DAD give inverse depth at their own scales (p2..p98 0.25..5.7 and
+  0.73..12.6); DA3 gives depth (0.34..1.7), which `DepthEstimator` inverts. After the
+  percentile normalisation every model orders near and far like DA2 Small (Spearman ρ: DAD B
+  0.99, DA3 S 0.96, DA3 B 0.97; mean |Δn| 0.04–0.055, the models' own differences). No DA3
+  pixel reaches the inversion's floor. Read like V2's output instead (depth flipped, not
+  inverted), DA3's nearness would move by 0.19–0.24 on average: the "blown-out" DA3 that V2
+  pipelines show.
+
+### Sound only in the page (2026-10-11, user request)
+
+The browser's volume still dropped to 1 % in the run: each time the followed video was missed,
+the app fell back to capturing Edge's sound (`AudioDelay`, which turns the live sound down to
+v = 0.01 so the capture can replace it). The standalone path is gone: `AudioDelay`,
+`AudioDelayLine`, `ProcessTree`, `SessionAttenuator`, their tests and the NAudio package.
+
+- **Only the extension delays sound.** The controller sets `Session.PageCanDelay` each tick (the
+  extension follows the video and can delay its media). Without it: no buffer (a saved buffer
+  runs as Auto, the status says why; the buffer choices are greyed with "needs the browser
+  extension" in the tray, the settings and the theater panel's steps), and matched timing is
+  capped at 90 ms with the sound live (before: dropped to live beyond 90 ms).
+- **Only the followed video's tab is delayed** (extension 1.2.1, `delay` message with `tab`):
+  before, every tab's sound went late with it, music elsewhere included.
+- **Found while checking the logic:** whenever the page's actual delay differed from the
+  buffer's (a page not yet delaying, a paused element not yet taken in), the buffer fell back to
+  live and **emptied itself**, then froze for its whole length when the delay came: the
+  run's "pauses". Now the picture's delay follows the sound's (`AiStereo.ShownDelay`): until
+  the page delays, 90 ms with the sound live; a longer delay is reached by holding the frame
+  (the page's new delay line is silent as long), a shorter one at once. In the buffer, frames
+  whose neighbours have no depth yet take the nearest depth instead of showing flat.
+- Not changed, noted: the page's sound goes through Web Audio, whose output latency the log
+  gives as 50 ms; against the element's own path that may leave the sound some 20–40 ms late.
+  Within lip-sync tolerance; Sound offset trims it.
+
+### Theater button only on real videos (2026-10-11, user request)
+
+The button showed "everywhere": it followed the tracker's box, and any moving area (scrolling,
+animations) looks like a video to it. With a browser connected it is now offered only over the
+videos the extension reports visible (at least 160×90, in the browser window under the cursor
+or the followed video's, that window on top at the video's centre), at the top centre of the
+one under the cursor. Pressing it opens the theater on that video: the controller follows it
+at once (the tracker's box is not consulted for 2 s, nor in the theater), and `AiStereo` gives
+a newly reported box its own second of trust. Without a browser, the tracker's box as before.
+The "Show a 3D theater button" setting now also applies with AI 3D on (it did not).
+
+### Privacy: no window titles; the extension's data used in every timing (2026-10-11)
+
+- **Video names in the log came from the app, not the extension:** `StrayWindowGuard` logged
+  the title of each window it moved, and a browser's title names the page ("… EP1 … | WeTV").
+  It now logs the program and window class only, and `Native.GetWindowText` is gone. The 15
+  such lines in the existing log were redacted. The extension sends no titles, addresses,
+  sources or text (its README now lists what it sends).
+- **"The extension does not work in live timing":** the log showed AI 3D running for minutes
+  without following the browser's video. The controller found it only through the tracker's
+  box (≥ 50 % overlap), and the tracker had another area or an offset box. Now, when that
+  match fails, it follows the largest playing video the extension reports on the virtual
+  monitor; a followed paused video gives way to one that plays (not in the theater or right
+  after a pick); and `AiStereo` takes the page's playing video over a tracker box elsewhere
+  entirely (overlap < 0.05; the one-second trust rule stays for a partly overlapping box).
+- `DepthServiceTests` joined the "Timing" collection: its 200 ms idle rule failed under load.
+
+Tests: 186, Debug (the user's Release build was running).
+
+### Theater redone as a player window (2026-10-11, user request)
+
+The run at 23:37–23:45 (extension 1.2.1 working: page sound 2.00 s late in the buffer,
+protocol 2 at 25 fps) showed three theater problems:
+
+- **The button over the desktop:** without a connected browser (after 23:44:40 the extension
+  disconnected) the button fell back to the tracker's box, which can be any moving area. Now it
+  is offered only over the videos the extension reports, and not at all without it.
+- **A double click resized and cropped the page's video:** the theater was drawn only in the
+  glasses, so clicks went through to the player under it; a double click turned YouTube full
+  screen, and the theater kept the old box. The theater is now a real window of the app's own
+  (`TheaterWindow`) over the whole virtual monitor, left out of the capture so the video is still
+  captured under it. Clicks and keys land on it: Esc or a double click leave, Space/K
+  play/pause, ←/→ and J/L seek 5 s (extension 1.2.2, `seek` message). It is a tool window so
+  Chromium does not count the browser as covered (a covered browser stops painting), and
+  `Native.RootWindowAt` looks through it, so the followed video stays followed.
+- **Jumps:** in the theater the page's exact box is always trusted and followed (the tracker
+  cannot be watching another video there), and kept while it is missed.
+
+Not yet seen in the glasses: that Desktop Duplication leaves the window out (it should, as for
+`WDA_EXCLUDEFROMCAPTURE` in other capture tools) and that Edge keeps painting under it.
+
+### Theater controls; a false "3D video" broke the delayed sound (2026-10-12)
+
+The run at 23:59–00:06 (player window in use; no crash, no error but one `AcquireNextFrame`
+0x887A0026 at the mode switch, recovered) showed:
+
+- **The delayed sound restarted every 20–40 s** ("plays the sound live again", then 0.50 s
+  again ~5 s later), each time with seconds of silence. The `Stats:` lines alternate with
+  "side-by-side 3D video, shown as is": `Native3DDetector` took the 2D video for side-by-side
+  (whole-block correlation of the halves is high whenever brightness changes mostly from top to
+  bottom), showed each half to one eye, and the native path zeroed the delay. The detector now
+  correlates only detail: each row's (side-by-side) or column's (top-bottom) straight-line fit
+  is taken out. Tested on drawn gradients and on Big Buck Bunny, which stays 2D while its
+  squeezed side-by-side version is still recognised. A detection in Auto no longer zeroes the
+  delay at once (the controller's 5 s grace applies).
+- **Theater controls (user request):** play/pause left the top (3D settings and Exit stay);
+  a bottom bar has a seek bar (click to jump there), the time, 10 s back, play/pause, 10 s on
+  and mute, and stays while paused. Extension 1.2.3 adds `time`, `duration` and `muted` to the
+  followed video's `state` message, `seek` to a time, and `mute`. The renderer now frees UI
+  textures not drawn once it holds over 256 (the time label is a new image each second).
+
+### Video found only by the extension (2026-10-12, user request)
+
+"Remove the guessing video location": `RegionTracker` (and its tests) is gone. AI 3D "Video",
+stretch and the theater use only the box of the video the extension reports; without the
+extension, only Whole screen converts, and the theater says it needs the extension. The
+controller no longer matches the extension's videos against a guessed box: it keeps the
+followed element while it is visible and on top in its window, a paused one gives way to a
+playing one (not in the theater or within 2 s of a pick), and otherwise it takes the largest
+playing video it finds on the virtual monitor (windows looked up under the cursor and at nine
+points). The pick shortcut (Ctrl+Alt+Shift+D) now follows the reported video under the cursor.
+With page data off, the video's place is still used (only frames, state and boxes are not).
+`StereoSettings.FindVideo` became `OfferTheater`: nothing runs for the button any more.
+
+### Next
+
+1. Same run again (reload the extension: 1.2.2): no hops in the `matched … ms` value, no
+   "no longer following" around theater toggles, sound without gaps in the buffer, and the
+   `post … ms` part of the depth status at 756×420 (expected under 10 ms).
+2. The edge blur: compare Soft edges Auto against 1 and 0, and Warp Splat against Lookup, on
+   the same scene.
+3. DA2 Large stays too heavy at 756×420 on this GPU (capture fell to 8–12 fps): Balanced only.
 
 ## Carried over from the DesktopSbS session
 

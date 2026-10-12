@@ -99,6 +99,31 @@ public sealed class BrowserLinkTests : IDisposable
     }
 
     [Fact]
+    public async Task ADelayNamesTheFollowedVideosTab()
+    {
+        // Only that tab plays late; music in another tab stays live. Moving to another tab at the
+        // same delay is a change too; going live drops the tab.
+        using ClientWebSocket socket = await ConnectAsync(ExtensionOrigin);
+        await SendAsync(socket, Hello2);
+        BrowserConnection c = await WaitForAsync(c => c.Browser != "");
+
+        link.SetDelay(c, 0.5, tab: 12);
+        link.SetDelay(c, 0.5, tab: 12);
+        link.SetDelay(c, 0.5, tab: 14);
+        link.SetDelay(c, 0, tab: 14);
+
+        JsonElement first = await ReceiveAsync(socket);
+        Assert.Equal(12, first.GetProperty("tab").GetInt32());
+        Assert.Equal(0.5, first.GetProperty("seconds").GetDouble());
+        JsonElement second = await ReceiveAsync(socket);
+        Assert.Equal(14, second.GetProperty("tab").GetInt32());
+        JsonElement third = await ReceiveAsync(socket);
+        Assert.Equal(0, third.GetProperty("seconds").GetDouble());
+        Assert.False(third.TryGetProperty("tab", out _));
+        Assert.Null(c.RequestedTab);
+    }
+
+    [Fact]
     public async Task ABrowserThatLeavesIsForgotten()
     {
         ClientWebSocket socket = await ConnectAsync(ExtensionOrigin);
@@ -110,6 +135,88 @@ public sealed class BrowserLinkTests : IDisposable
         {
             timeout.Token.ThrowIfCancellationRequested();
             await Task.Delay(10);
+        }
+    }
+
+    private const string Hello2 = """{"type":"hello","protocol":2,"version":"1.1.0","browser":"Google Chrome 140"}""";
+
+    [Fact]
+    public async Task AFollowedVideoReportsItsFramesStateAndOverlays()
+    {
+        using ClientWebSocket socket = await ConnectAsync(ExtensionOrigin);
+        await SendAsync(socket, Hello2);
+        BrowserConnection c = await WaitForAsync(c => c.Protocol == 2);
+
+        Depth.PageVideo? page = link.Follow(c, "7:0:abc#1");
+        Assert.NotNull(page);
+        JsonElement follow = await ReceiveAsync(socket);
+        Assert.Equal("follow", follow.GetProperty("type").GetString());
+        Assert.Equal("7:0:abc#1", follow.GetProperty("id").GetString());
+        Assert.Same(page, link.Follow(c, "7:0:abc#1"));   // unchanged: nothing sent again
+
+        double now = BrowserLink.ClockMs(System.Diagnostics.Stopwatch.GetTimestamp());
+        await SendAsync(socket, $$"""{"type":"frame","id":"7:0:abc#1","presented":41,"media":12.5,"display":{{now + 16}},"width":1920,"height":1080}""");
+        await SendAsync(socket, """{"type":"frame","id":"7:0:other#2","presented":99,"media":1,"display":1}""");
+        await SendAsync(socket, """{"type":"state","id":"7:0:abc#1","paused":true,"seeking":false,"seeks":3,"rate":1,"clockError":0.4}""");
+        await SendAsync(socket, """
+            {"type":"overlays","id":"7:0:abc#1","boxes":[{"x":10,"y":300,"width":620,"height":40,"kind":"control"},
+              {"x":100,"y":250,"width":400,"height":30,"kind":"caption"},{"x":"bad"},{"x":1,"y":1,"width":-5,"height":3}]}
+            """);
+
+        while (c.Overlays.Count == 0)
+        {
+            timeout.Token.ThrowIfCancellationRequested();
+            await Task.Delay(10);
+        }
+        Assert.Equal(41, page.Latest!.Value.Presented);
+        Assert.Equal(12.5, page.Latest.Value.MediaTime);
+        Assert.True(page.Paused);
+        Assert.Equal(3, page.Seeks);
+        Assert.Equal(0.4, page.ClockErrorMs);
+        Assert.Equal(2, c.Overlays.Count);
+        Assert.True(c.Overlays[1].IsCaption);
+        Assert.Equal(new CssRect(10, 300, 620, 40), c.Overlays[0].Box);
+
+        // Following none: nothing is kept.
+        Assert.Null(link.Follow(c, null));
+        Assert.Empty(c.Overlays);
+    }
+
+    [Fact]
+    public async Task AProtocolOneBrowserIsNeverAskedToFollow()
+    {
+        using ClientWebSocket socket = await ConnectAsync(ExtensionOrigin);
+        await SendAsync(socket, Hello);
+        BrowserConnection c = await WaitForAsync(c => c.Browser != "");
+        Assert.Null(link.Follow(c, "1:0:a#1"));
+    }
+
+    [Fact]
+    public async Task TheClockSyncIsWithinHalfTheRoundTrip()
+    {
+        // The page's clock runs 123 456.7 ms behind the app's; the page works out the offset from
+        // the app's answers, NTP-style, with one-way delays of 0.1–5 ms either way.
+        using ClientWebSocket socket = await ConnectAsync(ExtensionOrigin);
+        await SendAsync(socket, Hello2);
+        await WaitForAsync(c => c.Protocol == 2);
+        const double offset = 123456.7;
+        double PageNow() => BrowserLink.ClockMs(System.Diagnostics.Stopwatch.GetTimestamp()) - offset;
+        var random = new Random(3);
+        for (int i = 0; i < 12; i++)
+        {
+            double t0 = PageNow();
+            await Task.Delay(TimeSpan.FromMilliseconds(0.1 + random.NextDouble() * 5));
+            await SendAsync(socket, $$"""{"type":"clock","key":"5:0:x","t0":{{t0}}}""");
+            JsonElement answer = await ReceiveAsync(socket);
+            await Task.Delay(TimeSpan.FromMilliseconds(0.1 + random.NextDouble() * 5));
+            double t3 = PageNow();
+            Assert.Equal("clock", answer.GetProperty("type").GetString());
+            Assert.Equal("5:0:x", answer.GetProperty("key").GetString());
+            Assert.Equal(t0, answer.GetProperty("t0").GetDouble(), 6);
+            double t1 = answer.GetProperty("t1").GetDouble(), t2 = answer.GetProperty("t2").GetDouble();
+            Assert.True(t2 >= t1);
+            double theta = ((t1 - t0) + (t2 - t3)) / 2, delta = (t3 - t0) - (t2 - t1);
+            Assert.InRange(theta - offset, -delta / 2 - 0.01, delta / 2 + 0.01);
         }
     }
 

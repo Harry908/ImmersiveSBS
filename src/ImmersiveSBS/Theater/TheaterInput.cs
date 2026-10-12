@@ -54,9 +54,10 @@ public sealed class TheaterInput : IDisposable
     private volatile uint threadId;
     private IntPtr hook;
     private TheaterAction? pressed;
+    private Point pressedAt;
 
-    /// <summary>Raised on the hook thread when a button is clicked; marshal real work elsewhere.</summary>
-    public event Action<TheaterAction>? Clicked;
+    /// <summary>Raised on the hook thread when a button is clicked, with where it was pressed (desktop px); marshal real work elsewhere.</summary>
+    public event Action<TheaterAction, Point>? Clicked;
 
     public TheaterInput(TheaterButtons buttons)
     {
@@ -99,6 +100,7 @@ public sealed class TheaterInput : IDisposable
                     if (buttons.Hit(data.pt) is TheaterAction action)
                     {
                         pressed = action;
+                        pressedAt = data.pt;
                         return 1;
                     }
                 }
@@ -106,7 +108,7 @@ public sealed class TheaterInput : IDisposable
                 {
                     // The release belongs to a swallowed press: swallow it too, then act.
                     pressed = null;
-                    Clicked?.Invoke(action);
+                    Clicked?.Invoke(action, pressedAt);
                     return 1;
                 }
             }

@@ -257,6 +257,7 @@ public sealed class Renderer : IDisposable
                     context.PSSetShaderResource(0, ViewOf(image));
                     context.Draw(4, 0);
                 }
+                ForgetUnusedImages(ui.Images);
             }
         }
 
@@ -286,6 +287,21 @@ public sealed class Renderer : IDisposable
     /// <summary>A rectangle in eye px as NDC of the whole-eye viewport.</summary>
     private Vector4 EyeNdc(Rectangle r, int eyeW) => new(
         r.Left * 2f / eyeW - 1, 1 - r.Top * 2f / Height, r.Right * 2f / eyeW - 1, 1 - r.Bottom * 2f / Height);
+
+    /// <summary>
+    /// Frees the textures of UI images not drawn this frame once there are many: the theater's
+    /// time label is a new image every second, which kept would grow without end.
+    /// </summary>
+    private void ForgetUnusedImages(IReadOnlyList<(UiImage Image, Rectangle EyeRect)> drawn)
+    {
+        if (uiViews.Count <= 256) return;
+        var keep = new HashSet<UiImage>(drawn.Select(d => d.Image));
+        foreach (UiImage image in uiViews.Keys.Where(i => !keep.Contains(i)).ToList())
+        {
+            uiViews[image].Dispose();
+            uiViews.Remove(image);
+        }
+    }
 
     /// <summary>The uploaded texture of a UI image (uploaded on first use, kept).</summary>
     private ID3D11ShaderResourceView ViewOf(UiImage image)

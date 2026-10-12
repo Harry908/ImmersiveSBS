@@ -94,6 +94,68 @@ public static class ButtonImages
         return ToImage(bitmap);
     }
 
+    private static readonly Dictionary<(string, bool), UiImage> Icons = [];
+    private static readonly Dictionary<int, UiImage> Solids = [];
+
+    /// <summary>Segoe icons of the theater's bottom bar.</summary>
+    public const string PlayGlyph = "", PauseGlyph = "", BackGlyph = "", ForwardGlyph = "",
+        VolumeGlyph = "", MutedGlyph = "";
+
+    /// <summary>A round button of <see cref="TheaterGeometry.IconSize"/> with one icon.</summary>
+    public static UiImage Icon(string glyph, bool hover)
+    {
+        lock (Icons)
+        {
+            if (!Icons.TryGetValue((glyph, hover), out UiImage? image))
+            {
+                Size size = TheaterGeometry.IconSize;
+                using var bitmap = new Bitmap(size.Width, size.Height, PixelFormat.Format32bppArgb);
+                using (Graphics g = Graphics.FromImage(bitmap))
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                    g.Clear(Color.Transparent);
+                    DrawPill(g, size, hover);
+                    using var icon = new Font(IconFont(), 22, GraphicsUnit.Pixel);
+                    using var white = new SolidBrush(Color.White);
+                    var centre = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                    g.DrawString(glyph, icon, white, new RectangleF(0, 1, size.Width, size.Height), centre);
+                }
+                Icons[(glyph, hover)] = image = ToImage(bitmap);
+            }
+            return image;
+        }
+    }
+
+    /// <summary>One pixel of a colour, which the renderer stretches over a rectangle (the seek bar, the backdrop).</summary>
+    public static UiImage Solid(Color colour)
+    {
+        lock (Solids)
+        {
+            if (!Solids.TryGetValue(colour.ToArgb(), out UiImage? image))
+                Solids[colour.ToArgb()] = image = new UiImage([colour.B, colour.G, colour.R, colour.A], 1, 1);
+            return image;
+        }
+    }
+
+    private static UiImage? knob;
+
+    /// <summary>The seek bar's round handle.</summary>
+    public static UiImage Knob()
+    {
+        if (knob != null) return knob;
+        const int d = 22;
+        using var bitmap = new Bitmap(d, d, PixelFormat.Format32bppArgb);
+        using (Graphics g = Graphics.FromImage(bitmap))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(Color.Transparent);
+            using var white = new SolidBrush(Color.White);
+            g.FillEllipse(white, 1, 1, d - 2, d - 2);
+        }
+        return knob = ToImage(bitmap);
+    }
+
     /// <summary>The spinner picture due now.</summary>
     public static int SpinnerFrame() =>
         (int)(Stopwatch.GetTimestamp() * SpinnerFrames / Stopwatch.Frequency % SpinnerFrames);

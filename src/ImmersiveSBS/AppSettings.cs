@@ -8,6 +8,22 @@ using Microsoft.Win32;
 
 namespace ImmersiveSBS;
 
+/// <summary>
+/// Reads a model by name, and a model since removed (Distill-Any-Depth Large, Depth Anything V2
+/// Base or Large) as the default, Distill-Any-Depth Base, rather than failing the whole file.
+/// </summary>
+public sealed class DepthTierConverter : JsonConverter<DepthTier>
+{
+    public override DepthTier Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        reader.TokenType == JsonTokenType.String && Enum.TryParse(reader.GetString(), ignoreCase: true, out DepthTier tier)
+        && Enum.IsDefined(tier)
+            ? tier
+            : DepthTier.Base;
+
+    public override void Write(Utf8JsonWriter writer, DepthTier value, JsonSerializerOptions options) =>
+        writer.WriteStringValue(value.ToString());
+}
+
 /// <summary>Commands that can have a keyboard shortcut.</summary>
 public enum ShortcutCommand
 {
@@ -125,7 +141,7 @@ public sealed class AppSettings
     };
 
     /// <summary>Fine tuning of AI 3D, edited live in the tuning panel.</summary>
-    public StereoTuning Tuning { get; set; } = new();
+    public StereoTuning Tuning { get; set; } = StereoTuning.Default;
 
     /// <summary>What AI 3D converts; Off shows the virtual monitor flat in both eyes.</summary>
     public AiTarget Ai3D { get; set; } = AiTarget.Off;
@@ -139,6 +155,8 @@ public sealed class AppSettings
     /// <summary>c: the nearness at the screen plane; lower puts more of the picture behind it.</summary>
     public double Ai3DConvergence { get; set; } = 0.35;
 
+    /// <summary>The depth model; a removed one in a saved file loads as the default (<see cref="DepthTierConverter"/>).</summary>
+    [JsonConverter(typeof(DepthTierConverter))]
     public DepthTier DepthTier { get; set; } = DepthTier.Base;
 
     public DepthPreset DepthPreset { get; set; } = DepthPreset.Balanced;
@@ -148,6 +166,20 @@ public sealed class AppSettings
     /// depth (video-3d-plan.md P5); 0 = live. Only while AI 3D follows a video; not for calls.
     /// </summary>
     public double BufferSeconds { get; set; }
+
+    /// <summary>
+    /// Live or matched while there is no buffer (improvement-plan.md §6): matched delays the
+    /// video just enough for every frame to have its own depth. Auto: matched when depth runs
+    /// more than 60 ms behind.
+    /// </summary>
+    public VideoTiming Timing { get; set; } = VideoTiming.Auto;
+
+    /// <summary>
+    /// Use what the browser extension tells about the playing video (improvement-plan.md §3): its
+    /// exact place, frames, pause and seeks, and the boxes drawn over it. Off is the way out when a
+    /// page reports wrongly; the extension still delays the sound.
+    /// </summary>
+    public bool UsePageData { get; set; } = true;
 
     /// <summary>Lip-sync trim for the delayed sound, ms; positive plays the sound later.</summary>
     public int AudioOffsetMs { get; set; }
@@ -203,6 +235,7 @@ public sealed class AppSettings
                 {
                     // Commands added in later versions get their default shortcut.
                     foreach (var (command, text) in DefaultShortcuts()) s.Shortcuts.TryAdd(command, text);
+                    s.Tuning = (s.Tuning ?? StereoTuning.Default).Migrated();
                     return s;
                 }
             }

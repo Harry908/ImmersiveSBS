@@ -14,6 +14,12 @@ public enum TheaterAction
     /// <summary>The media Play/Pause key, which browsers obey.</summary>
     PlayPause,
 
+    /// <summary>The theater's bottom bar: 10 s back, 10 s on, mute, and a click on the seek bar (where it lands says where to).</summary>
+    SeekBack,
+    SeekForward,
+    Mute,
+    SeekBar,
+
     /// <summary>Opens or closes the 3D settings panel in the theater.</summary>
     Settings,
 
@@ -50,6 +56,17 @@ public sealed class TheaterButtons
     }
 
     public void Clear() => Set([]);
+
+    /// <summary>Where a button is on the desktop, or null when it is not shown.</summary>
+    public Rectangle? RectOf(TheaterAction action)
+    {
+        lock (gate)
+        {
+            foreach (var (a, rect) in buttons)
+                if (a == action) return rect;
+            return null;
+        }
+    }
 
     /// <summary>The button under a desktop point, or null.</summary>
     public TheaterAction? Hit(Point desktop)

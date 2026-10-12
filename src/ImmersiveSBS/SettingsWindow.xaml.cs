@@ -72,7 +72,10 @@ public partial class SettingsWindow : Window
         SelectClosest(ConvergenceBox, s.Ai3DConvergence);
         SelectClosest(StretchBox, s.VideoStretch);
         OfferTheaterBox.IsChecked = s.OfferTheater;
-        SelectClosest(BufferBox, s.BufferSeconds);
+        for (int i = 0; i < AppController.TimingChoices.Length; i++) TimingBox.Items.Add(new ComboBoxItem());
+        UpdateTimingChoices();
+        TimingBox.SelectedIndex = AppController.TimingIndex(s);
+        UsePageDataBox.IsChecked = s.UsePageData;
         SelectClosest(AudioOffsetBox, s.AudioOffsetMs);
         ModelsText.Text = $"Model files: {DepthModel.ModelsDirectory}. The first use of a model on this PC prepares it for the GPU (about 20 s).";
 
@@ -123,7 +126,19 @@ public partial class SettingsWindow : Window
         MainDisplayWarning.Visibility = controller.VirtualMonitor is { IsPrimary: true } ? Visibility.Visible : Visibility.Collapsed;
         BrowserText.Text = controller.BrowserStatus;
         BrowserHelp.Visibility = controller.BrowserConnected ? Visibility.Collapsed : Visibility.Visible;
+        UpdateTimingChoices();
         StatsText.Text = controller.Session?.Stats?.ToString() ?? string.Empty;
+    }
+
+    /// <summary>The buffer choices are unavailable (greyed, saying why) while no browser extension is connected.</summary>
+    private void UpdateTimingChoices()
+    {
+        for (int i = 0; i < TimingBox.Items.Count; i++)
+        {
+            var item = (ComboBoxItem)TimingBox.Items[i];
+            item.Content = controller.TimingLabel(i);
+            item.IsEnabled = controller.TimingAvailable(i);
+        }
     }
 
     private void OnOpenExtensionFolder(object sender, RoutedEventArgs e)
@@ -181,7 +196,8 @@ public partial class SettingsWindow : Window
         if (ConvergenceBox.SelectedItem is ComboBoxItem convergence) settings.Ai3DConvergence = TagValue(convergence);
         if (StretchBox.SelectedItem is ComboBoxItem stretch) settings.VideoStretch = TagValue(stretch);
         settings.OfferTheater = OfferTheaterBox.IsChecked == true;
-        if (BufferBox.SelectedItem is ComboBoxItem buffer) settings.BufferSeconds = TagValue(buffer);
+        if (TimingBox.SelectedIndex >= 0) AppController.SetTiming(settings, TimingBox.SelectedIndex);
+        settings.UsePageData = UsePageDataBox.IsChecked == true;
         if (AudioOffsetBox.SelectedItem is ComboBoxItem offset) settings.AudioOffsetMs = (int)TagValue(offset);
 
         try

@@ -17,13 +17,8 @@ public class DepthEstimatorTests(ITestOutputHelper output)
     [Theory]
     [InlineData(DepthTier.Small, DepthPreset.Balanced)]
     [InlineData(DepthTier.Base, DepthPreset.Balanced)]
-    [InlineData(DepthTier.Large, DepthPreset.Balanced)]
-    [InlineData(DepthTier.V2Base, DepthPreset.Balanced)]
-    [InlineData(DepthTier.V2Large, DepthPreset.Balanced)]
     [InlineData(DepthTier.Small, DepthPreset.Quality)]
     [InlineData(DepthTier.Base, DepthPreset.Quality)]
-    [InlineData(DepthTier.V2Base, DepthPreset.Quality)]
-    [InlineData(DepthTier.V2Large, DepthPreset.Quality)]
     [InlineData(DepthTier.DA3Small, DepthPreset.Balanced)]
     [InlineData(DepthTier.DA3Small, DepthPreset.Quality)]
     [InlineData(DepthTier.DA3Base, DepthPreset.Balanced)]
@@ -76,9 +71,9 @@ public class DepthEstimatorTests(ITestOutputHelper output)
 
             Assert.All(depth, v => Assert.True(float.IsFinite(v)));
             Assert.True(depth.Max() > depth.Min(), "depth is not constant");
-            // Catches an engine gone badly wrong (V2 Base 756×420 once seemed to run at 825 ms; it is
-            // 20 ms), with room for the GPU being shared with a running app (times rise ~1.5–2×).
-            // DA3 is fp32 (the fp16 converter breaks its graph): Base ~36 ms Balanced, ~110 Quality.
+            // Catches an engine gone badly wrong (a since removed model once seemed to run at 825 ms;
+            // it was 20 ms), with room for the GPU being shared with a running app (times rise ~1.5–2×).
+            // DA3 in fp16: Small ~8 ms Balanced, ~10 Quality; Base ~12 / ~19 (fp32 was 36 / 109).
             Assert.True(ms < (preset == DepthPreset.Quality ? 250 : 100), $"inference took {ms:0.0} ms");
 
             double bottom = depth.Skip((h - 20) * w).Take(10 * w).Average();

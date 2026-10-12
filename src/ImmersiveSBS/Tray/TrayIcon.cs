@@ -60,7 +60,7 @@ public sealed class TrayIcon : IDisposable
         aiStatusItem = new ToolStripMenuItem { Enabled = false };
         aiOffItem = new ToolStripMenuItem("Off");
         aiOffItem.Click += (_, _) => controller.SetAi3D(AiTarget.Off);
-        aiVideoItem = new ToolStripMenuItem("Video only");
+        aiVideoItem = new ToolStripMenuItem("Video only (browser extension)");
         aiVideoItem.Click += (_, _) => controller.SetAi3D(AiTarget.Video);
         aiScreenItem = new ToolStripMenuItem("Whole screen");
         aiScreenItem.Click += (_, _) => controller.SetAi3D(AiTarget.WholeScreen);
@@ -78,11 +78,12 @@ public sealed class TrayIcon : IDisposable
             stretchItem.DropDownItems.Add(item);
         }
 
-        bufferItem = new ToolStripMenuItem("Video buffer");
-        foreach ((string text, double seconds) in new[] { ("Off (live)", 0.0), ("0.5 s", 0.5), ("1 s", 1.0), ("2 s", 2.0) })
+        bufferItem = new ToolStripMenuItem("Video timing");
+        for (int i = 0; i < AppController.TimingChoices.Length; i++)
         {
-            var item = new ToolStripMenuItem(text) { Tag = seconds };
-            item.Click += (_, _) => controller.SetBuffer(seconds);
+            int index = i;
+            var item = new ToolStripMenuItem(AppController.TimingChoices[i].Label) { Tag = index };
+            item.Click += (_, _) => controller.SetTiming(index);
             bufferItem.DropDownItems.Add(item);
         }
 
@@ -167,8 +168,15 @@ public sealed class TrayIcon : IDisposable
         aiStatusItem.Text = controller.ModelStatus;
         foreach (ToolStripMenuItem item in stretchItem.DropDownItems)
             item.Checked = Math.Abs((double)item.Tag! - controller.Settings.VideoStretch) < 0.01;
+        int timing = AppController.TimingIndex(controller.Settings);
         foreach (ToolStripMenuItem item in bufferItem.DropDownItems)
-            item.Checked = Math.Abs((double)item.Tag! - controller.Settings.BufferSeconds) < 0.01;
+        {
+            int index = (int)item.Tag!;
+            item.Checked = index == timing;
+            // A buffer needs the browser extension to delay the sound with it.
+            item.Enabled = controller.TimingAvailable(index);
+            item.Text = controller.TimingLabel(index);
+        }
 
         // Shortcuts are user-configurable, so read them each time.
         pauseItem.ShortcutKeyDisplayString = controller.ShortcutText(ShortcutCommand.Pause);

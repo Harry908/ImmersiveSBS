@@ -32,10 +32,17 @@ public partial class TuningWindow : Window
         AddSlider("Depth", 0, 1, 0.05, s => s.Ai3DStrength, (s, v) => s.Ai3DStrength = v, v => $"{v:0.00}");
         AddSlider("Screen plane", 0.1, 0.9, 0.05, s => s.Ai3DConvergence, (s, v) => s.Ai3DConvergence = v,
             v => $"{v:0.00} ({(v < 0.5 ? "behind" : v > 0.5 ? "in front" : "balanced")})");
-        AddSlider("Edge dilation", 0, 8, 1, s => s.Tuning.DilateRadius, (s, v) => s.Tuning = s.Tuning with { DilateRadius = (int)v },
-            v => $"{v:0} px");
-        AddSlider("Edge softness", 0.02, 0.3, 0.01, s => s.Tuning.EdgeSoftness, (s, v) => s.Tuning = s.Tuning with { EdgeSoftness = v },
-            v => $"{v:0.00}");
+        AddSlider("Foreground", -ForegroundCurve.MaxLevel, ForegroundCurve.MaxLevel, 1, s => s.Tuning.Foreground,
+            (s, v) => s.Tuning = s.Tuning with { Foreground = (int)v },
+            v => v == 0 ? "Even" : v > 0 ? $"+{v:0} (more depth up close)" : $"{v:0} (more depth far away)");
+        AddSlider("Soft edges", -1, 4, 1, s => s.Tuning.SoftEdges, (s, v) => s.Tuning = s.Tuning with { SoftEdges = (int)v },
+            v => v < 0 ? "Auto" : v == 0 ? "Off" : $"{v:0} passes");
+        AddSlider("Depth anti-aliasing", 0, 2, 1, s => (int)s.Tuning.AntiAlias, (s, v) => s.Tuning = s.Tuning with { AntiAlias = (AutoSwitch)(int)v },
+            v => ((AutoSwitch)(int)v).ToString());
+        AddSlider("Screen dilation", 0, 8, 1, s => s.Tuning.DilateRadius, (s, v) => s.Tuning = s.Tuning with { DilateRadius = (int)v },
+            v => v == 0 ? "Off" : $"{v:0} px");
+        AddSlider("Warp", 0, 1, 1, s => (int)s.Tuning.Warp, (s, v) => s.Tuning = s.Tuning with { Warp = (WarpMode)(int)v },
+            v => (WarpMode)(int)v == WarpMode.Lookup ? "Lookup (nothing left empty)" : "Splat (gaps filled)");
         AddSlider("Responsiveness", 0.05, 1, 0.05, s => s.Tuning.Smoothing, (s, v) => s.Tuning = s.Tuning with { Smoothing = v },
             v => $"{v:0.00} ({(v < 0.3 ? "steady" : "quick")})");
         AddSlider("Scene-cut threshold", 0.04, 0.3, 0.01, s => s.Tuning.SceneCut, (s, v) => s.Tuning = s.Tuning with { SceneCut = v },
