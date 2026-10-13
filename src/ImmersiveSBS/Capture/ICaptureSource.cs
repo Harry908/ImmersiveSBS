@@ -12,7 +12,9 @@ public enum CaptureMethod
 }
 
 /// <summary>What one <see cref="ICaptureSource.Acquire"/> call changed.</summary>
-public readonly record struct CaptureUpdate(bool Frame, bool Pointer, long ContentQpc)
+/// <param name="ContentQpc">The newest change's QPC time, the frame's or the cursor's.</param>
+/// <param name="FrameQpc">When the desktop image was made, QPC; 0 without a new one.</param>
+public readonly record struct CaptureUpdate(bool Frame, bool Pointer, long ContentQpc, long FrameQpc = 0)
 {
     public bool Any => Frame || Pointer;
 }

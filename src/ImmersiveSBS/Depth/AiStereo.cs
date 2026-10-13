@@ -156,8 +156,16 @@ public sealed class AiStereo : IDisposable
     private int segment;
     private int seenSeeks = -1;
     private double wantedDelaySeconds;
+    /// <summary>When the frame being processed was captured, Stopwatch ticks (now when unknown).</summary>
+    private long frameTicks;
+    /// <summary>The ids of the frames whose depth arrived this <see cref="Process"/>, for <see cref="ShownDepthChanged"/>.</summary>
+    private readonly List<long> attachedIds = [];
+    /// <summary>The frames whose depth the shown held frame's nearness came from (<see cref="VideoDelayBuffer.LastSources"/>).</summary>
+    private (long From, long To) shownSources = (long.MinValue, long.MaxValue);
+    private int lookAheadFrames;
 
     // Measures (improvement-plan.md §0), per statistics window.
+    private int gen2Seen = GC.CollectionCount(2);
     private readonly List<float> ageSamples = [];
     private float[] ageScratch = [];
     private int handOvers, depthFramesTaken;
@@ -165,8 +173,6 @@ public sealed class AiStereo : IDisposable
     private double holeFraction = double.NaN;
     private double lastHoleQueue;
     private string timingShown = "live";
-    private VideoHint? boxesHint;
-    private Rectangle boxesRegion;
     /// <summary>A frame was handed over by <see cref="HandOverEarly"/> since the last <see cref="Process"/>: its picture changed.</summary>
     private bool earlyChanged;
     private bool liveLast;
@@ -205,6 +211,54 @@ public sealed class AiStereo : IDisposable
     public Rectangle FoundRegion { get; private set; }
 
     /// <summary>
+    /// The player's own controls and 3D panel (source px) to draw from the live capture, flat in
+    /// both eyes, over the 3D picture: those on the screen now, and those in the held frame shown
+    /// (gone from the screen meanwhile). The page draws them over its video, so they came with
+    /// the picture: through the buffer seconds late and bent by the depth, while the pointer
+    /// moved live. Empty outside the theater.
+    /// </summary>
+    public IReadOnlyList<Rectangle> LiveControls(VideoHint? hint)
+    {
+        liveControls.Clear();
+        long now = Stopwatch.GetTimestamp();
+        if (FoundRegion.IsEmpty || hint?.Page is not { } page || !page.Fresh(now)) return liveControls;
+        PageVideo.BoxSet? current = page.BoxesAt(now);
+        if (current != null) liveControls.AddRange(current.Overlays);
+        if (shownTicks > 0 && page.BoxesAt(shownTicks) is { } shown && !ReferenceEquals(shown, current))
+            liveControls.AddRange(shown.Overlays);
+        return liveControls;
+    }
+
+    private readonly List<Rectangle> liveControls = [];
+
+    /// <summary>When the held frame shown was captured, Stopwatch ticks; 0 when the picture is live.</summary>
+    private long shownTicks;
+
+    /// <summary>
+    /// When the delayed picture (the buffer, matched timing) next shows another held frame,
+    /// Stopwatch ticks; <see cref="long.MaxValue"/> when nothing is due. The session wakes for it:
+    /// the held frames are shown on time, not only when a capture, the pointer or depth happens to
+    /// cause a redraw (a page that stopped repainting froze the delayed tail while its sound played on).
+    /// </summary>
+    public long NextDueTicks { get; private set; } = long.MaxValue;
+
+    /// <summary>
+    /// The GPU memory Windows lets this process use, bytes (0: unknown); the held frames get an
+    /// eighth of it, 128–600 MB, rather than 600 MB on every GPU.
+    /// </summary>
+    public long VideoMemoryBudget
+    {
+        set
+        {
+            long bytes = value > 0
+                ? Math.Clamp(value / 8, 128L * 1024 * 1024, VideoDelayBuffer.DefaultMaxBytes)
+                : VideoDelayBuffer.DefaultMaxBytes;
+            // Only a real change: a smaller cap in use drops held frames.
+            if (Math.Abs(bytes - delayed.MaxBytes) > 64L * 1024 * 1024) delayed.MaxBytes = bytes;
+        }
+    }
+
+    /// <summary>
     /// Runs the video steps for this frame and returns the eye images to draw over the region, or
     /// null to show the frame flat.
     /// </summary>
@@ -220,6 +274,8 @@ public sealed class AiStereo : IDisposable
     {
         DelayRegion = Rectangle.Empty;
         FoundRegion = Rectangle.Empty;
+        NextDueTicks = long.MaxValue;
+        shownTicks = 0;
         liveLast = false;
         lastPage = null;
         if (settings.Target == AiTarget.Off)
@@ -300,6 +356,10 @@ public sealed class AiStereo : IDisposable
         // A jump in the video (the page's seek): nothing is blended or smoothed across it.
         PageVideo? page = hint?.Page;
         long now = Stopwatch.GetTimestamp();
+        // Held frames and the model's frame times are stamped when the frame was captured, not
+        // when this runs: that is later by the swap chain's wait, which varied with what else had
+        // been presented and made the buffer skip frames that were on time.
+        frameTicks = captureTicks > 0 && captureTicks <= now ? captureTicks : now;
         bool pageFresh = page?.Fresh(now) == true;
         int seeks = pageFresh ? page!.Seeks : -1;
         if (seeks >= 0 && seeks != seenSeeks)
@@ -315,13 +375,15 @@ public sealed class AiStereo : IDisposable
 
         // What the player draws over the picture: its controls held flat, its captions instead of
         // the subtitle detection (improvement-plan.md §7.4).
-        if (!ReferenceEquals(hint, boxesHint) || region != boxesRegion)
+        // The depth thread looks them up for each frame by its capture time, as the page reports them.
+        PageVideo? boxesPage = track && pageFresh ? page : null;
+        var modelSize = new Size(service.Model.Width, service.Model.Height);
+        if (service.PageBoxes is not { } boxSource
+            ? boxesPage != null
+            : !ReferenceEquals(boxSource.Page, boxesPage) || boxSource.Region != region || boxSource.Model != modelSize)
         {
-            boxesHint = hint;
-            boxesRegion = region;
-            service.PageBoxes = track && pageFresh && hint is { } hb
-                ? PageBoxes.ToModel(hb.Overlays, hb.Captions ?? [], region, new Size(service.Model.Width, service.Model.Height))
-                : null;
+            service.PageBoxes = boxesPage == null ? null
+                : new PageBoxSource(boxesPage, region, modelSize, Stopwatch.GetTimestamp() - clock.ElapsedTicks);
         }
 
         // Which frames go to the model. In the theater, those the player drew since the last one
@@ -332,7 +394,7 @@ public sealed class AiStereo : IDisposable
         bool haveFrame = track && pageFresh && page!.TryFrameAt(captureTicks > 0 ? captureTicks : now, Stopwatch.Frequency / 120, out shownFrame);
         bool newPicture;
         if (!track) newPicture = newFrame;
-        else if (haveFrame) newPicture = newFrame && shownFrame.Presented != lastPresented;
+        else if (haveFrame) newPicture = newFrame && NewerThanHandedOver(shownFrame.Presented);
         else newPicture = newFrame && !(pageFresh && page!.Paused && !page.Seeking);
         if (forceHandOver && newFrame) newPicture = true;
         if (newPicture && haveFrame) lastPresented = shownFrame.Presented;
@@ -401,7 +463,8 @@ public sealed class AiStereo : IDisposable
             // The picture runs as late as the page plays the sound; until the page has delayed it
             // (or without the page) as late as lip sync allows with the sound live.
             double towards = soundDelay > 0 ? soundDelay : Math.Min(delay, LiveSoundMaxSeconds);
-            service.LookAheadFrames = 0;
+            service.LookAheadFrames = lookAheadFrames = 0;
+            service.KeepAll = true;
             timingShown = "matched";
             return Matched(source, pictureChanged, handOver, settings, service, strength, from + note,
                        mediaTime, ShownDelay(towards), soundDelay > 0) ?? FlatInTheater();
@@ -415,7 +478,8 @@ public sealed class AiStereo : IDisposable
             overlay = null;
         }
         ShownDelay(0);
-        service.LookAheadFrames = 0;
+        service.LookAheadFrames = lookAheadFrames = 0;
+        service.KeepAll = false;
         timingShown = "live";
         liveLast = true;
         return Live(source, pictureChanged, handOver, regionMoving, settings, service, strength, scale, from + note)
@@ -442,6 +506,14 @@ public sealed class AiStereo : IDisposable
     private double shownDelay, shownDelayAt;
 
     /// <summary>
+    /// A frame after the last one handed over. A frame counted on ahead of the page's reports
+    /// may be followed by the report of an earlier one, which is no new picture; a count far
+    /// behind is the page counting again (a new video).
+    /// </summary>
+    private bool NewerThanHandedOver(long presented) =>
+        presented > lastPresented || presented + 4 * PageVideo.MaxFramesAhead < lastPresented;
+
+    /// <summary>
     /// Render thread, as soon as a new desktop image arrives, before waiting for the swap chain:
     /// in live timing in the theater, queues the video's model input from it when the player
     /// reports a new frame shown by then, so the depth model gets it up to a refresh sooner
@@ -454,10 +526,10 @@ public sealed class AiStereo : IDisposable
     {
         if (!liveLast || forceHandOver || region.IsEmpty || service == null || !ReferenceEquals(service, lastService)
             || service.State != DepthServiceState.Ready || lastPage is not { } page || page.Paused
-            || !page.TryFrameAt(captureTicks, Stopwatch.Frequency / 120, out PageVideo.FrameEvent shown) || shown.Presented == lastPresented)
+            || !page.TryFrameAt(captureTicks, Stopwatch.Frequency / 120, out PageVideo.FrameEvent shown) || !NewerThanHandedOver(shown.Presented))
             return;
         lastPresented = shown.Presented;
-        Submit(source, service);
+        Submit(source, service, captureTicks);
         synth.Flush();
         earlyChanged = true;
     }
@@ -480,7 +552,7 @@ public sealed class AiStereo : IDisposable
     private StereoOverlay? Live(ID3D11Texture2D source, bool pictureChanged, bool handOver, bool regionMoving,
         StereoSettings settings, DepthService service, float strength, double scale, string from)
     {
-        if (handOver) Submit(source, service);
+        if (handOver) Submit(source, service, frameTicks);
 
         // Depth computed for an earlier region does not fit this one.
         bool newDepth = service.TryTake(ref depth) && depth!.FrameId > regionStartId;
@@ -532,11 +604,16 @@ public sealed class AiStereo : IDisposable
     {
         double bufferSeconds = settings.BufferSeconds;
         // The buffer shows a frame long after its depth is ready: the depth thread looks as many
-        // frames ahead as fit in that time, less a margin (improvement-plan.md §10).
+        // frames ahead as fit in that time, less a margin (improvement-plan.md §10). It goes down
+        // only when more than a frame too long: on a whole number of frames (0.2 s at 30 fps) a
+        // period wandering by a fraction of a millisecond moved it back and forth.
         double period = matched.PeriodMs;
-        service.LookAheadFrames = double.IsFinite(period) && period > 0 ? (int)Math.Floor((shownSeconds - 0.3) * 1000 / period) : 0;
+        int lookAhead = double.IsFinite(period) && period > 0 ? Math.Max(0, (int)Math.Floor((shownSeconds - 0.3) * 1000 / period)) : 0;
+        if (lookAhead > lookAheadFrames || lookAhead < lookAheadFrames - 1) lookAheadFrames = lookAhead;
+        service.LookAheadFrames = lookAheadFrames;
+        service.KeepAll = true;
         Push(source, pictureChanged, handOver, service, bufferSeconds, mediaTime);
-        bool newDepth = TakeDepthIntoBuffer(service);
+        TakeDepthIntoBuffer(service);
 
         string waiting = shownSeconds < bufferSeconds - 0.002 ? $", reaching {bufferSeconds:0.#} s with the page's sound" : "";
         Status = $"AI 3D: video {region.Width}×{region.Height}, {shownSeconds:0.##} s behind ({delayed.Count} frames){waiting}{from}; {service.Status}";
@@ -547,7 +624,9 @@ public sealed class AiStereo : IDisposable
         VideoDelayBuffer.Frame frame = delayed[index];
         bool bandsMoved = SmoothBands();
         object key = (frame.Id, settings, frame.Region, "buffer");
-        if (frame.Id == shownDelayedId && !newDepth && !bandsMoved && overlay != null && key.Equals(overlayKey)) return overlay;
+        // Depth for frames shown later (all of it, once the delay is longer than the depth takes)
+        // does not change this one: rebuilding for it doubled the stereo work.
+        if (frame.Id == shownDelayedId && !ShownDepthChanged() && !bandsMoved && overlay != null && key.Equals(overlayKey)) return overlay;
 
         EnsureSmoothed(service.Model);
         bool have = delayed.SmoothedNearness(index, smoothed!.Nearness, out long nearestTicks);
@@ -559,6 +638,7 @@ public sealed class AiStereo : IDisposable
             have = match != VideoDelayBuffer.DepthMatch.None;
             if (have) ageSamples.Add((float)(ageTicks * 1000.0 / Stopwatch.Frequency));
         }
+        shownSources = delayed.LastSources;
         return ShowDelayed(frame, have, key, settings, strength);
     }
 
@@ -572,7 +652,7 @@ public sealed class AiStereo : IDisposable
     {
         // Frames for the delay being reached as well as the one shown now.
         Push(source, pictureChanged, handOver, service, Math.Max(delaySeconds, wantedDelaySeconds), mediaTime);
-        bool newDepth = TakeDepthIntoBuffer(service);
+        TakeDepthIntoBuffer(service);
 
         string sound = soundDelayed ? ", sound delayed in the page" : ", sound live";
         Status = $"AI 3D: video {region.Width}×{region.Height}, matched {delaySeconds * 1000:0} ms (depth needs {matched.NeedMs:0} ms){sound}{from}; {service.Status}";
@@ -582,12 +662,14 @@ public sealed class AiStereo : IDisposable
         VideoDelayBuffer.Frame frame = delayed[index];
         bool bandsMoved = SmoothBands();
         object key = (frame.Id, settings, frame.Region, "matched");
-        // New depth can turn a held frame into an interpolated one: rebuild then too.
-        if (frame.Id == shownDelayedId && !newDepth && !bandsMoved && overlay != null && key.Equals(overlayKey)) return overlay;
+        // New depth between the frames this one's came from can turn a held frame into an
+        // interpolated one: rebuild then, not for depth of frames further on.
+        if (frame.Id == shownDelayedId && !ShownDepthChanged() && !bandsMoved && overlay != null && key.Equals(overlayKey)) return overlay;
 
         EnsureSmoothed(service.Model);
         VideoDelayBuffer.DepthMatch match = delayed.InterpolatedNearness(index, smoothed!.Nearness, out long ageTicks);
         if (match != VideoDelayBuffer.DepthMatch.None) ageSamples.Add((float)(ageTicks * 1000.0 / Stopwatch.Frequency));
+        shownSources = delayed.LastSources;
         return ShowDelayed(frame, match != VideoDelayBuffer.DepthMatch.None, key, settings, strength);
     }
 
@@ -601,31 +683,50 @@ public sealed class AiStereo : IDisposable
     {
         bool first = delayed.Count == 0 || delayed[delayed.Count - 1].Region != region;
         if (!pictureChanged && !first) return;
-        if (delayed.Push(source, region, Stopwatch.GetTimestamp(), frameId + 1, TimeSpan.FromSeconds(delaySeconds), Stopwatch.Frequency,
-                mediaTime, segment))
+        if (delayed.Push(source, region, frameTicks, frameId + 1, TimeSpan.FromSeconds(delaySeconds), Stopwatch.Frequency,
+                mediaTime, segment, matched.FrameRate))
         {
             Timer?.Mark("buffer");
-            if (handOver || first) Submit(source, service);
+            if (handOver || first) Submit(source, service, frameTicks);
             else frameId++;   // its own id, without depth: shown with its neighbours'
         }
     }
 
-    /// <summary>Files every depth frame that has arrived with its held frame; true when any did.</summary>
-    private bool TakeDepthIntoBuffer(DepthService service)
+    /// <summary>Files every depth frame that has arrived with its held frame; their ids go to <see cref="attachedIds"/>.</summary>
+    private void TakeDepthIntoBuffer(DepthService service)
     {
-        bool any = false;
+        attachedIds.Clear();
         while (service.TryTake(ref depth))
         {
             OnDepth(depth!);
-            delayed.Attach(depth!);
-            any = true;
+            if (delayed.Attach(depth!)) attachedIds.Add(depth!.FrameId);
         }
-        return any;
     }
 
-    /// <summary>The held frame to show now, chosen <see cref="PresentLatencyTicks"/> ahead of being seen.</summary>
-    private int SelectDelayed(double delaySeconds) =>
-        delayed.Select(Stopwatch.GetTimestamp() + PresentLatencyTicks - (long)(delaySeconds * Stopwatch.Frequency));
+    /// <summary>Depth arrived this time for a frame the shown one's nearness came from (or would).</summary>
+    private bool ShownDepthChanged()
+    {
+        foreach (long id in attachedIds)
+            if (id >= shownSources.From && id <= shownSources.To) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// The held frame to show now, chosen <see cref="PresentLatencyTicks"/> ahead of being seen;
+    /// sets <see cref="NextDueTicks"/> to when the one after it is.
+    /// </summary>
+    private int SelectDelayed(double delaySeconds)
+    {
+        long delayTicks = (long)(delaySeconds * Stopwatch.Frequency);
+        int index = delayed.Select(Stopwatch.GetTimestamp() + PresentLatencyTicks - delayTicks);
+        shownTicks = index >= 0 ? delayed[index].Time : 0;
+        long next = delayed.NextTime(index);
+        NextDueTicks = next == long.MaxValue ? long.MaxValue : next + delayTicks - PresentLatencyTicks;
+        return index;
+    }
+
+    /// <summary>Stopwatch ticks as seconds of <see cref="clock"/>, the frames' clock for the depth thread.</summary>
+    private double ClockSeconds(long ticks) => (ticks - (Stopwatch.GetTimestamp() - clock.ElapsedTicks)) / (double)Stopwatch.Frequency;
 
     private void EnsureSmoothed(DepthModel model)
     {
@@ -659,11 +760,13 @@ public sealed class AiStereo : IDisposable
     }
 
     /// <summary>Queues this frame's model input; <see cref="CollectReadbacks"/> hands it to the service.</summary>
-    private void Submit(ID3D11Texture2D source, DepthService service)
+    /// <param name="captureTicks">When the frame was captured: the depth thread looks up the
+    /// player's boxes and times its smoothing by it (the hand-over came up to a refresh later).</param>
+    private void Submit(ID3D11Texture2D source, DepthService service, long captureTicks)
     {
         DepthModel model = service.Model;
         synth.QueueModelInput(source, region, new Size(model.Width, model.Height));
-        queuedInput = new QueuedInput(service, ++frameId, clock.Elapsed.TotalSeconds);
+        queuedInput = new QueuedInput(service, ++frameId, ClockSeconds(captureTicks));
         submitTicks[frameId % submitTicks.Length] = Stopwatch.GetTimestamp();
         forceHandOver = false;
     }
@@ -674,7 +777,9 @@ public sealed class AiStereo : IDisposable
         depthFramesTaken++;
         long now = Stopwatch.GetTimestamp();
         if (frameId - frame.FrameId >= submitTicks.Length) return;
-        double ageMs = (now - submitTicks[frame.FrameId % submitTicks.Length]) * 1000.0 / Stopwatch.Frequency;
+        // Without the time the buffer's look-ahead held it: matched timing needs the depth's own
+        // latency. With it, a buffer left matched timing at 300 ms and Auto on matched for seconds.
+        double ageMs = (now - submitTicks[frame.FrameId % submitTicks.Length]) * 1000.0 / Stopwatch.Frequency - frame.HeldMs;
         double periodMs = lastDepthFrameId >= 0 && frame.FrameId > lastDepthFrameId && frameId - lastDepthFrameId < submitTicks.Length
             ? (submitTicks[frame.FrameId % submitTicks.Length] - submitTicks[lastDepthFrameId % submitTicks.Length]) * 1000.0 / Stopwatch.Frequency
             : 0;
@@ -735,9 +840,15 @@ public sealed class AiStereo : IDisposable
         double s = Math.Max(seconds, 1e-3);
         double busy = service is { AverageInferenceMs: > 0 } ? Math.Min(1, depthFramesTaken / s * service.AverageInferenceMs / 1000) : 0;
         string flicker = service != null && double.IsFinite(service.AverageFlicker) ? $"{service.AverageFlicker:0.0000}" : "-";
+        // Frames the held picture's memory cap left out, and full collections (large depth maps
+        // made and dropped per frame showed up as these).
+        int skipped = delayed.TakeSkipped();
+        int gen2 = GC.CollectionCount(2);
+        string held = timingShown == "live" ? "" : $"; held frames skipped {skipped}";
         string text = $"Measures: depth age {age} (mean/p95, {timingShown}); holes {(double.IsNaN(holeFraction) ? "-" : $"{holeFraction * 100:0.00} %")}; " +
                       $"flicker {flicker}; hand-overs {handOvers / s:0}/s ({changeSource}); " +
-                      $"model busy {busy * 100:0} %; page data: {pageData}";
+                      $"model busy {busy * 100:0} %{held}; full GCs {gen2 - gen2Seen}; page data: {pageData}";
+        gen2Seen = gen2;
         ageSamples.Clear();
         handOvers = depthFramesTaken = 0;
         holeFraction = double.NaN;

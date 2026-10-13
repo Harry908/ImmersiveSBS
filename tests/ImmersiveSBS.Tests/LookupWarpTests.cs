@@ -19,13 +19,7 @@ public sealed class LookupWarpTests : IDisposable
 
     public LookupWarpTests()
     {
-        if (D3D11.D3D11CreateDevice(IntPtr.Zero, DriverType.Hardware, DeviceCreationFlags.BgraSupport,
-                [FeatureLevel.Level_11_0], out ID3D11Device? d).Failure)
-        {
-            D3D11.D3D11CreateDevice(IntPtr.Zero, DriverType.Warp, DeviceCreationFlags.BgraSupport,
-                [FeatureLevel.Level_11_0], out d).CheckError();
-        }
-        device = d!;
+        device = TestDevice.Create();
         synth = new StereoSynth(device) { DilateRadius = 0, EdgeSnap = false, Lookup = true };
     }
 

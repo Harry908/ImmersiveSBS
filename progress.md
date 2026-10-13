@@ -1016,6 +1016,58 @@ which for a 2.39:1 video is the black bar under the picture, and the app delays 
 picture's rectangle (buffer 2 s), showing the rest live. 1.4.3: the caption is placed from the
 picture's rectangle (inside its lower part, above the controls while they show), read on each
 drawn frame instead of every 250 ms, and its box reported as soon as its text changes.
+The buffer felt laggy: with the controls hidden only 18–19 of the video's 30 frames a second
+went to the model and into the buffer (presents 38–41/s), so the delayed picture held frames.
+The capture of a frame often reached the render thread before the page's report of it
+(page → worker → socket), and was taken for the frame before, already handed over. Now
+`PageVideo.TryFrameAt` counts frames on past the newest report at the video's cadence (at most
+3, never while paused), and a frame is handed over only when newer than the last. The caption
+also tore at a line change: its box came through the controller's 250 ms timer, after its
+first frames had their depth, and the caption mask rose over 0.1 s. Now the link writes the
+player's boxes straight into `PageVideo` with when they appeared (the page's `at`, app clock),
+the depth thread takes for each frame the set on the screen at its capture (`PageBoxSource`),
+and a box the page reports is flat from its first frame. The caption sits higher (10 % of the
+picture above its bottom). Extension 1.4.4.
+
+### Buffer and matched timing fixes (2026-10-12, user request: review of buffer and timing)
+
+A read-through of the delayed picture found nine faults; all fixed, not yet run in the glasses.
+- The held frames were shown only when a capture, the cursor or depth caused a redraw: up to a
+  frame late, a cadence set by unrelated events, and a delayed tail that stopped when the page
+  stopped repainting. `AiStereo.NextDueTicks` says when the next held frame is due; the session
+  shortens its capture wait to it and redraws then.
+- `DepthService` kept one untaken result, so look-ahead frames let go together (pause, seek,
+  shorter look-ahead) were mostly lost and the second before each pause or seek got depth from
+  up to a second away. With `KeepAll` (buffer, matched) results queue, oldest first; the
+  look-ahead also goes down only when more than a frame too long (it wandered on 0.2 s at 30 fps).
+- The buffer's memory cap counted 60 fps for every video and stamped frames after the swap
+  chain wait: a 2 s 1080p buffer skipped frames of 30 fps video. It counts the page's frame
+  rate, and frames carry their capture time (`CaptureUpdate.FrameQpc`), as do the model's frame
+  times (the boxes' lookup and smoothing used the hand-over time).
+- Matched timing learnt the look-ahead's hold as depth latency (300 ms and Auto on matched
+  after a buffer); `DepthFrame.HeldMs` is taken off.
+- Up to 600 MB of spare textures stayed on the GPU after the buffer; `Clear` frees them, the
+  cap is an eighth of the GPU memory budget (128–600 MB). Nearness maps (1.27 MB at 756×420,
+  a large object each) are reused instead of made per frame.
+- Every depth result rebuilt the shown held frame though it was for one shown later;
+  `VideoDelayBuffer.LastSources` says which frames' depth the shown one came from.
+- The page's Web Audio output latency (50 ms in the run) is taken off the sound's delay.
+- `Measures:` adds "held frames skipped" and "full GCs".
+`EdgePipelineTests.TheEyesTakeUnderThreeMillisecondsOnTheGpu` failed (splat 6.2 ms), on the last
+commit too: with the built-in screen as the main display, the tests' default adapter was the
+Intel Iris Xe. The GPU tests now create their device on the high-performance GPU
+(`TestDevice`), as the app's is; the test names it and measures 0.90 ms (splat) and 0.83 ms
+(lookup) on the RTX 3060.
+
+### The theater's controls live in the glasses (2026-10-13, user report: "the settings panel is glitchy")
+The player's controls and 3D panel are drawn by the page over its video, so the glasses got
+them with the picture: 2 s late with the buffer (a click, a hover, a new value all showed 2 s
+on, under a live pointer) and bent by the depth. Now the renderer draws the boxes the page
+reports as controls (`AiStereo.LiveControls`) from the live capture over the 3D picture, flat
+in both eyes: those on the screen now and those in the held frame shown, so a closed panel
+leaves no copy behind (for the delay, that place shows the live video instead). Extension
+1.4.5 reports the boxes as soon as the controls show, fade or the panel opens or changes,
+not on its 250 ms timer.
 
 ### Next
 

@@ -121,6 +121,35 @@ public class DepthServiceTests
     }
 
     [Fact]
+    public void KeepingAllLetsEveryHeldFrameThroughInOrderWhenTheVideoStops()
+    {
+        // The buffer files each depth frame with its own held frame: when a pause lets the
+        // look-ahead go at once, none may be lost to a newer one (the frames before every pause
+        // or seek were shown with depth from up to a second away).
+        using DepthService service = Start(modelMs: 2, out _);
+        service.LookAheadFrames = 5;
+        service.KeepAll = true;
+        var input = new float[3 * Model.Width * Model.Height];
+        DepthFrame? frame = null;
+        var seen = new List<long>();
+        for (long id = 1; id <= 20; id++)
+        {
+            // Slower than the post-processing even in Debug, so the model drops none.
+            service.Submit(input, id, id * 0.04);
+            Wait(40);
+            while (service.TryTake(ref frame)) seen.Add(frame!.FrameId);
+        }
+        Wait(400);
+        while (service.TryTake(ref frame))
+        {
+            seen.Add(frame!.FrameId);
+            // Held for the look-ahead: that time is not the depth's latency.
+            if (frame.FrameId == 20) Assert.InRange(frame.HeldMs, 150, 1000);
+        }
+        Assert.Equal(Enumerable.Range(1, 20).Select(i => (long)i), seen);
+    }
+
+    [Fact]
     public void DisposeStopsBothThreadsPromptly()
     {
         DepthService service = Start(modelMs: 30, out _);

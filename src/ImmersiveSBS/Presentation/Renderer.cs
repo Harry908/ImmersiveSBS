@@ -157,7 +157,10 @@ public sealed class Renderer : IDisposable
 
     /// <param name="stereo">AI 3D eye images of a region; drawn over the desktop in side-by-side only.</param>
     /// <param name="ui">The model badge, in side-by-side only.</param>
-    public void Render(ID3D11Texture2D? source, PointerState? pointer, StereoOverlay? stereo = null, UiLayer? ui = null)
+    /// <param name="live">Parts of the source (source px) drawn over <paramref name="stereo"/> as
+    /// they are now, the same in both eyes: the theater player's controls and 3D panel.</param>
+    public void Render(ID3D11Texture2D? source, PointerState? pointer, StereoOverlay? stereo = null, UiLayer? ui = null,
+        IReadOnlyList<Rectangle>? live = null)
     {
         context.ClearRenderTargetView(target!, new Color4(0, 0, 0, 1));
         if (source == null) return;
@@ -210,6 +213,22 @@ public sealed class Renderer : IDisposable
                     context.VSSetConstantBuffer(0, stereoQuad);
                     context.PSSetShaderResource(0, s.Eyes);
                     context.Draw(4, 0);
+
+                    // The page's own controls over the 3D picture: live and flat, as the page draws them.
+                    if (live is { Count: > 0 })
+                    {
+                        context.PSSetShaderResource(0, sourceView!);
+                        var bounds = new Rectangle(0, 0, srcW, srcH);
+                        foreach (Rectangle box in live)
+                        {
+                            Rectangle r = Rectangle.Intersect(box, bounds);
+                            if (r.Width <= 0 || r.Height <= 0) continue;
+                            WriteQuad(stereoQuad, SourceNdc(r, srcW, srcH),
+                                new Vector4((float)r.Left / srcW, (float)r.Top / srcH, (float)r.Right / srcW, (float)r.Bottom / srcH));
+                            context.VSSetConstantBuffer(0, stereoQuad);
+                            context.Draw(4, 0);
+                        }
+                    }
                 }
 
                 if (haveCursor)

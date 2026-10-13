@@ -158,13 +158,7 @@ public sealed class InterpolatedNearnessTests : IDisposable
 
     public InterpolatedNearnessTests()
     {
-        if (D3D11.D3D11CreateDevice(IntPtr.Zero, DriverType.Hardware, DeviceCreationFlags.BgraSupport,
-                [FeatureLevel.Level_11_0], out ID3D11Device? d).Failure)
-        {
-            D3D11.D3D11CreateDevice(IntPtr.Zero, DriverType.Warp, DeviceCreationFlags.BgraSupport,
-                [FeatureLevel.Level_11_0], out d).CheckError();
-        }
-        device = d!;
+        device = TestDevice.Create();
         source = device.CreateTexture2D(new Texture2DDescription
         {
             Width = 64, Height = 32, MipLevels = 1, ArraySize = 1,

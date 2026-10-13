@@ -37,6 +37,35 @@ public sealed record PageBoxes(IReadOnlyList<Rectangle> Overlays, IReadOnlyList<
 }
 
 /// <summary>
+/// The player's boxes for the depth thread: those on the screen when a frame was captured, in
+/// model px. Read straight from <see cref="PageVideo"/> as the link writes them, so a caption
+/// is held flat from its first frame (through the controller's timer, its box came up to a
+/// quarter second late, after its first frames had their depth).
+/// </summary>
+/// <param name="clockOrigin">The Stopwatch ticks of second 0 of the frames' times.</param>
+public sealed class PageBoxSource(PageVideo page, Rectangle region, Size model, long clockOrigin)
+{
+    private PageVideo.BoxSet? lastSet;
+    private PageBoxes? lastBoxes;
+
+    public PageVideo Page { get; } = page;
+    public Rectangle Region { get; } = region;
+    public Size Model { get; } = model;
+
+    /// <summary>The boxes of a frame captured at <paramref name="seconds"/> (the frames' clock); depth thread only.</summary>
+    public PageBoxes? At(double seconds)
+    {
+        if (Page.BoxesAt(clockOrigin + (long)(seconds * Stopwatch.Frequency)) is not { } set) return null;
+        if (!ReferenceEquals(set, lastSet))
+        {
+            lastSet = set;
+            lastBoxes = PageBoxes.ToModel(set.Overlays, set.Captions, Region, Model);
+        }
+        return lastBoxes;
+    }
+}
+
+/// <summary>
 /// The theater's video as its player reports it (improvement-plan.md §5): each frame it draws
 /// (its counter, its time in the video, when it is shown, already on the app's clock), and
 /// whether it is paused or seeking. The browser link
@@ -137,10 +166,48 @@ public sealed class PageVideo
         }
     }
 
+    /// <summary>The player's boxes from <see cref="FromTicks"/> on, screen px of the captured monitor.</summary>
+    public sealed record BoxSet(long FromTicks, IReadOnlyList<Rectangle> Overlays, IReadOnlyList<Rectangle> Captions);
+
+    private readonly BoxSet?[] boxSets = new BoxSet?[16];
+    private int boxHead, boxCount;
+
+    /// <summary>Records the player's boxes as they are from <paramref name="fromTicks"/> on (never before the previous set).</summary>
+    public void AddBoxes(long fromTicks, IReadOnlyList<Rectangle> overlays, IReadOnlyList<Rectangle> captions)
+    {
+        lock (gate)
+        {
+            if (boxCount > 0) fromTicks = Math.Max(fromTicks, boxSets[(boxHead + boxSets.Length - 1) % boxSets.Length]!.FromTicks);
+            boxSets[boxHead] = new BoxSet(fromTicks, overlays, captions);
+            boxHead = (boxHead + 1) % boxSets.Length;
+            boxCount = Math.Min(boxCount + 1, boxSets.Length);
+        }
+    }
+
+    /// <summary>The boxes on the screen at <paramref name="ticks"/>: the newest set from then or before; null before any.</summary>
+    public BoxSet? BoxesAt(long ticks)
+    {
+        lock (gate)
+        {
+            for (int k = 1; k <= boxCount; k++)
+            {
+                BoxSet set = boxSets[(boxHead + boxSets.Length - k) % boxSets.Length]!;
+                if (set.FromTicks <= ticks) return set;
+            }
+            return null;
+        }
+    }
+
+    /// <summary>Frames a capture may be ahead of the newest report: further, the page has stalled.</summary>
+    public const int MaxFramesAhead = 3;
+
     /// <summary>
     /// The frame a capture made at <paramref name="captureTicks"/> shows: the newest whose display
     /// time is no later than that plus <paramref name="slackTicks"/> (the capture and the page's
-    /// estimate both fall on the same refresh, give or take one).
+    /// estimate both fall on the same refresh, give or take one). A capture often arrives before
+    /// the report of the frame it shows (the report goes through the browser's worker and the
+    /// socket): past the newest report while playing, the frames that followed are counted on at
+    /// the video's cadence, up to <see cref="MaxFramesAhead"/>.
     /// </summary>
     public bool TryFrameAt(long captureTicks, long slackTicks, out FrameEvent frame)
     {
@@ -151,13 +218,28 @@ public sealed class PageVideo
                 FrameEvent e = frames[(head + Ring - k) % Ring];
                 if (e.DisplayTicks <= captureTicks + slackTicks)
                 {
-                    frame = e;
+                    frame = k == 1 && !paused ? Extrapolate(e, captureTicks + slackTicks) : e;
                     return true;
                 }
             }
             frame = default;
             return false;
         }
+    }
+
+    /// <summary>The frame after <paramref name="newest"/> shown by <paramref name="ticks"/>, at the recent cadence. Under the lock.</summary>
+    private FrameEvent Extrapolate(FrameEvent newest, long ticks)
+    {
+        if (count < 4) return newest;
+        FrameEvent oldest = frames[(head + Ring - count) % Ring];
+        long n = newest.Presented - oldest.Presented;
+        if (n <= 0 || newest.DisplayTicks <= oldest.DisplayTicks) return newest;
+        double period = (double)(newest.DisplayTicks - oldest.DisplayTicks) / n;
+        long ahead = Math.Min((long)((ticks - newest.DisplayTicks) / period), MaxFramesAhead);
+        if (ahead <= 0) return newest;
+        double mediaStep = (newest.MediaTime - oldest.MediaTime) / n;
+        return new FrameEvent(newest.Presented + ahead, newest.MediaTime + ahead * mediaStep,
+            newest.DisplayTicks + (long)(ahead * period));
     }
 
     /// <summary>

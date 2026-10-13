@@ -476,8 +476,22 @@ public sealed class BrowserLink : IDisposable
                     }
                     break;
                 case "overlays":
-                    if (FollowedBy(connection, root) != null && root.TryGetProperty("boxes", out JsonElement boxes))
-                        connection.Overlays = ParseBoxes(boxes);
+                    if (FollowedBy(connection, root) is { } boxed && root.TryGetProperty("boxes", out JsonElement boxes))
+                    {
+                        IReadOnlyList<PageBox> parsed = ParseBoxes(boxes);
+                        connection.Overlays = parsed;
+                        // For the depth thread straight away, with when they appeared on the screen
+                        // (the page's next frame on the app's clock; before its clock is synced, when
+                        // they arrived), so each frame gets the boxes it shows.
+                        if (connection.Theater is { } shown)
+                        {
+                            double at = Number(root, "at", double.NaN);
+                            long from = double.IsFinite(at) ? (long)(at * Stopwatch.Frequency / 1000) : received;
+                            boxed.AddBoxes(Math.Min(from, Stopwatch.GetTimestamp()),
+                                parsed.Where(b => !b.IsCaption).Select(b => shown.ToScreen(b.Box)).ToArray(),
+                                parsed.Where(b => b.IsCaption).Select(b => shown.ToScreen(b.Box)).ToArray());
+                        }
+                    }
                     break;
             }
         }

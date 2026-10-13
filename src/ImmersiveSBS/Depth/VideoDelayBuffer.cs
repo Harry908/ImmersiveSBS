@@ -45,8 +45,13 @@ public sealed class VideoDelayBuffer : IDisposable
     private readonly ID3D11Device device;
     private readonly List<Frame> frames = []; // oldest first
     private readonly Stack<ID3D11Texture2D> free = new(); // textures of the current size
+    /// <summary>Nearness maps of recycled frames, for the next frames' depth: at model size they are large objects.</summary>
+    private readonly Stack<float[]> freeNearness = new();
     private Size size;
     private long lastPush = long.MinValue;
+
+    /// <summary>Spare textures kept beyond this are released: a shorter delay needs fewer.</summary>
+    private const int MaxFree = 8;
 
     public VideoDelayBuffer(ID3D11Device device)
     {
@@ -54,14 +59,32 @@ public sealed class VideoDelayBuffer : IDisposable
     }
 
     /// <summary>GPU memory the held frames may use.</summary>
-    public long MaxBytes { get; set; } = 600L * 1024 * 1024;
+    public long MaxBytes { get; set; } = DefaultMaxBytes;
+
+    public const long DefaultMaxBytes = 600L * 1024 * 1024;
+
+    /// <summary>Frames skipped to stay within <see cref="MaxBytes"/> since the last <see cref="TakeSkipped"/>.</summary>
+    public int Skipped { get; private set; }
+
+    /// <summary>Returns <see cref="Skipped"/> and starts counting again (the statistics' window).</summary>
+    public int TakeSkipped()
+    {
+        int n = Skipped;
+        Skipped = 0;
+        return n;
+    }
 
     public int Count => frames.Count;
 
-    /// <summary>Forgets the held frames (the delay stopped); their textures are reused if the size matches.</summary>
+    /// <summary>
+    /// Forgets the held frames (the delay stopped) and lets their GPU memory go: up to
+    /// <see cref="MaxBytes"/> of spare textures stayed allocated through live timing before.
+    /// </summary>
     public void Clear()
     {
         while (frames.Count > 0) Recycle(0);
+        while (free.Count > 0) free.Pop().Dispose();
+        freeNearness.Clear();
         lastPush = long.MinValue;
     }
 
@@ -69,8 +92,9 @@ public sealed class VideoDelayBuffer : IDisposable
     /// Copies <paramref name="region"/> of <paramref name="source"/> in, stamped with its capture
     /// time (Stopwatch ticks). Returns false when the frame was skipped to stay within memory.
     /// </summary>
+    /// <param name="frameRate">The video's frame rate, fps, for how many frames the delay needs; 0 = unknown (60).</param>
     public bool Push(ID3D11Texture2D source, Rectangle region, long time, long id, TimeSpan delay, long ticksPerSecond,
-        double mediaTime = double.NaN, int segment = 0)
+        double mediaTime = double.NaN, int segment = 0, double frameRate = 0)
     {
         if (region.Size != size)
         {
@@ -79,16 +103,24 @@ public sealed class VideoDelayBuffer : IDisposable
             size = region.Size;
         }
 
-        // Enough frames for the delay at 60 fps, plus a margin, within the memory cap.
+        // Enough frames for the delay at the video's frame rate, plus a margin, within the memory
+        // cap. Counting 60 fps for every video made a 2 s buffer of a 1080p 30 fps video skip
+        // frames that fitted.
+        double fps = frameRate is >= 10 and <= 240 ? frameRate : 60;
         long frameBytes = (long)size.Width * size.Height * 4;
-        int capacity = (int)Math.Max(4, Math.Min(Math.Ceiling(delay.TotalSeconds * 60) + 8, MaxBytes / frameBytes));
+        int capacity = (int)Math.Max(4, Math.Min(Math.Ceiling(delay.TotalSeconds * fps) + 8, MaxBytes / frameBytes));
         double minInterval = delay.TotalSeconds / Math.Max(1, capacity - 4) * ticksPerSecond;
-        if (capacity < delay.TotalSeconds * 60 && lastPush != long.MinValue && time - lastPush < minInterval) return false;
+        if (capacity < delay.TotalSeconds * fps && lastPush != long.MinValue && time - lastPush < minInterval)
+        {
+            Skipped++;
+            return false;
+        }
 
         // Frames older than the delay plus a margin are no longer needed.
         long keep = time - (long)((delay.TotalSeconds + 0.5) * ticksPerSecond);
         while (frames.Count > 1 && frames[1].Time < keep) Recycle(0);
         while (frames.Count >= capacity) Recycle(0);
+        while (free.Count > MaxFree) free.Pop().Dispose();
 
         ID3D11Texture2D texture = free.Count > 0 ? free.Pop() : device.CreateTexture2D(new Texture2DDescription
         {
@@ -109,17 +141,45 @@ public sealed class VideoDelayBuffer : IDisposable
         return true;
     }
 
-    /// <summary>Files arriving depth with its frame (dropped when the frame is gone).</summary>
-    public void Attach(DepthFrame depth)
+    /// <summary>Files arriving depth with its frame (dropped when the frame is gone); false when it was.</summary>
+    public bool Attach(DepthFrame depth)
     {
         foreach (Frame f in frames)
         {
             if (f.Id != depth.FrameId) continue;
-            if (f.Nearness == null || f.Nearness.Length != depth.Nearness.Length) f.Nearness = new float[depth.Nearness.Length];
+            if (f.Nearness == null || f.Nearness.Length != depth.Nearness.Length)
+            {
+                ReleaseNearness(f);
+                f.Nearness = RentNearness(depth.Nearness.Length);
+            }
             depth.Nearness.CopyTo(f.Nearness, 0);
-            return;
+            return true;
         }
+        return false;
     }
+
+    private float[] RentNearness(int length)
+    {
+        while (freeNearness.Count > 0)
+        {
+            float[] n = freeNearness.Pop();
+            if (n.Length == length) return n;
+        }
+        return new float[length];
+    }
+
+    private void ReleaseNearness(Frame f)
+    {
+        if (f.Nearness is { } n && freeNearness.Count < MaxFree) freeNearness.Push(n);
+        f.Nearness = null;
+    }
+
+    /// <summary>
+    /// The ids of the frames (inclusive, in id order) whose depth the last
+    /// <see cref="SmoothedNearness(int, float[], out long)"/> or <see cref="InterpolatedNearness"/>
+    /// used or would use once it arrives: new depth for a frame outside them does not change the result.
+    /// </summary>
+    public (long From, long To) LastSources { get; private set; } = (long.MinValue, long.MaxValue);
 
     /// <summary>
     /// The frame to show at <paramref name="time"/>: the newest captured at or before it. Until
@@ -132,6 +192,9 @@ public sealed class VideoDelayBuffer : IDisposable
             if (frames[i].Time <= time) return i;
         return 0;
     }
+
+    /// <summary>The capture time of the frame after <paramref name="index"/>, when it will be selected; <see cref="long.MaxValue"/> for none yet.</summary>
+    public long NextTime(int index) => index >= 0 && index + 1 < frames.Count ? frames[index + 1].Time : long.MaxValue;
 
     public Frame this[int index] => frames[index];
 
@@ -149,6 +212,7 @@ public sealed class VideoDelayBuffer : IDisposable
         nearestTicks = long.MaxValue;
         int count = 0;
         Frame frame = frames[index];
+        LastSources = (frames[Math.Max(0, index - 2)].Id, frames[Math.Min(frames.Count - 1, index + 2)].Id);
         for (int d = -2; d <= 2; d++)
         {
             int i = index + d;
@@ -195,6 +259,7 @@ public sealed class VideoDelayBuffer : IDisposable
         Frame f = frames[index];
         if (HasDepth(index, f, output.Length))
         {
+            LastSources = (f.Id, f.Id);
             f.Nearness!.CopyTo(output, 0);
             return DepthMatch.Exact;
         }
@@ -202,6 +267,8 @@ public sealed class VideoDelayBuffer : IDisposable
         while (a >= 0 && !HasDepth(a, f, output.Length)) a--;
         while (b < frames.Count && !HasDepth(b, f, output.Length)) b++;
         bool before = a >= 0, after = b < frames.Count;
+        // Depth arriving for any frame between the two (or past the one side found) changes the result.
+        LastSources = (before ? frames[a].Id : long.MinValue, after ? frames[b].Id : long.MaxValue);
         if (before && after)
         {
             Frame fa = frames[a], fb = frames[b];
@@ -229,12 +296,13 @@ public sealed class VideoDelayBuffer : IDisposable
     /// <summary>Forgets every held frame's depth, e.g. after a seek: nothing is blended across the jump.</summary>
     public void ForgetDepth()
     {
-        foreach (Frame f in frames) f.Nearness = null;
+        foreach (Frame f in frames) ReleaseNearness(f);
     }
 
     private void Recycle(int index)
     {
         Frame f = frames[index];
+        ReleaseNearness(f);
         if (f.Texture is { } t)
         {
             if (f.Region.Size == size) free.Push(t);

@@ -142,8 +142,14 @@ public sealed class AppController : IDisposable
 
     /// <summary>"Sound 1 s behind" while the page delays the sound; null otherwise.</summary>
     public string? AudioStatus => browserDelaying != null
-        ? $"sound {Seconds(browserDelaying.RequestedDelay - Settings.AudioOffsetMs / 1000.0)} behind (in the browser)"
+        ? $"sound {Seconds(browserDelaying.RequestedDelay - browserTrim)} behind (in the browser)"
         : null;
+
+    /// <summary>What the page's delay differs by from the picture's: the user's trim less the Web Audio output latency, seconds.</summary>
+    private double browserTrim;
+
+    /// <summary>The page's delay asked for now and the one before, each with its trim.</summary>
+    private ((double Seconds, double Trim) Now, (double Seconds, double Trim) Before) delayRequests = ((double.NaN, 0), (double.NaN, 0));
 
     private static string Seconds(double s) => s < 0.95 ? $"{s * 1000:0} ms" : $"{s:0.#} s";
 
@@ -221,12 +227,24 @@ public sealed class AppController : IDisposable
             return;
         }
 
-        double trim = Settings.AudioOffsetMs / 1000.0;
-        StartBrowserDelay(video!.Connection, video.Theater.Tab, Math.Round(wanted + trim, 3));
-        // The picture follows the page's sound: how late it is now, without the trim (0 until the
-        // video is taken into the delay, which happens once it plays).
+        // Through Web Audio the sound is heard its context's output latency later than the page's
+        // own playback, which the picture keeps time with (50 ms in the 2026-10-12 run): the delay
+        // asked for is that much shorter, so sound and picture are as late as each other before
+        // the user's trim. In 5 ms steps, so a latency wandering by a millisecond moves nothing.
+        double latency = Math.Round((video!.Media?.Latency ?? 0) / 5.0) * 5 / 1000.0;
+        double trim = Settings.AudioOffsetMs / 1000.0 - latency;
+        double requested = Math.Max(0.001, Math.Round(wanted + trim, 3));
+        if (!(Math.Abs(requested - delayRequests.Now.Seconds) <= 0.0005)) delayRequests = ((requested, trim), delayRequests.Now);
+        browserTrim = trim;
+        StartBrowserDelay(video.Connection, video.Theater.Tab, requested);
+        // The picture follows the page's sound: how late it is heard now, without the trim (0
+        // until the video is taken into the delay, which happens once it plays). Until the page
+        // reports the new delay, the one it reports went with the trim asked for before.
         double delay = video.Media?.Delay ?? 0;
-        s!.SoundDelay = delay > 0 ? Math.Max(0.001, Math.Round(delay - trim, 3)) : 0;
+        double applied = Math.Abs(delay - delayRequests.Before.Seconds) < 0.0005 && Math.Abs(delay - requested) >= 0.0005
+            ? delayRequests.Before.Trim
+            : trim;
+        s!.SoundDelay = delay > 0 ? Math.Max(0.001, Math.Round(delay - applied, 3)) : 0;
         LogBrowserDelay(video);
     }
 

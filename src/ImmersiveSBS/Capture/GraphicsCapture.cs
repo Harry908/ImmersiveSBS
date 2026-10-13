@@ -93,7 +93,7 @@ public sealed class GraphicsCapture : ICaptureSource
 
             // SystemRelativeTime is QPC time in 100 ns units.
             long qpc = (long)(latest.SystemRelativeTime.Ticks * (double)Stopwatch.Frequency / TimeSpan.TicksPerSecond);
-            return new CaptureUpdate(true, false, qpc);
+            return new CaptureUpdate(true, false, qpc, qpc);
         }
     }
 

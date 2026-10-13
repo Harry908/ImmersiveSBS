@@ -56,7 +56,7 @@ public sealed class DuplicationCapture : ICaptureSource
         }
 
         bool frame = false, pointer = false;
-        long qpc = 0;
+        long qpc = 0, frameQpc = 0;
         try
         {
             if (info.LastPresentTime != 0)
@@ -65,7 +65,7 @@ public sealed class DuplicationCapture : ICaptureSource
                 EnsureTexture(desktop.Description);
                 device.ImmediateContext.CopyResource(texture!, desktop);
                 frame = true;
-                qpc = info.LastPresentTime;
+                qpc = frameQpc = info.LastPresentTime;
             }
 
             if (info.LastMouseUpdateTime != 0)
@@ -89,7 +89,7 @@ public sealed class DuplicationCapture : ICaptureSource
             duplication.ReleaseFrame();
         }
 
-        return new CaptureUpdate(frame, pointer, qpc);
+        return new CaptureUpdate(frame, pointer, qpc, frameQpc);
     }
 
     private unsafe void ReadShape(uint size)

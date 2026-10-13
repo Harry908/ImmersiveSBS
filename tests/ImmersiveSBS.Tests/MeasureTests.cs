@@ -15,13 +15,7 @@ public sealed class GpuTimerTests : IDisposable
 
     public GpuTimerTests()
     {
-        if (D3D11.D3D11CreateDevice(IntPtr.Zero, DriverType.Hardware, DeviceCreationFlags.BgraSupport,
-                [FeatureLevel.Level_11_0], out ID3D11Device? d).Failure)
-        {
-            D3D11.D3D11CreateDevice(IntPtr.Zero, DriverType.Warp, DeviceCreationFlags.BgraSupport,
-                [FeatureLevel.Level_11_0], out d).CheckError();
-        }
-        device = d!;
+        device = TestDevice.Create();
     }
 
     [Fact]
@@ -81,6 +75,50 @@ public class PageVideoTests
         Assert.Equal(104, e.Presented);
         Assert.False(page.TryFrameAt(999 * f, f / 120, out _));
         Assert.Equal(25, page.FrameRate, 3);
+    }
+
+    [Fact]
+    public void ACaptureAheadOfTheReportsCountsTheFramesOnWhilePlaying()
+    {
+        // The capture of a frame often arrives before the page's report of it: in a run, 18 of
+        // 30 frames a second went to the model, the others taken for the frame before.
+        var page = new PageVideo("x");
+        long f = Stopwatch.Frequency, period = f / 25;
+        for (int i = 0; i < 10; i++) page.AddFrame(new PageVideo.FrameEvent(100 + i, 5 + i / 25.0, 1000 * f + i * period));
+        long newest = 1000 * f + 9 * period;
+
+        Assert.True(page.TryFrameAt(newest + period + period / 2, f / 120, out PageVideo.FrameEvent e));
+        Assert.Equal(110, e.Presented);
+        Assert.Equal(5 + 10 / 25.0, e.MediaTime, 6);
+        Assert.True(page.TryFrameAt(newest + period / 2, f / 120, out e));
+        Assert.Equal(109, e.Presented);
+        // Far past the reports, the page has stalled: no more than a few frames on.
+        Assert.True(page.TryFrameAt(newest + 20 * period, f / 120, out e));
+        Assert.Equal(109 + PageVideo.MaxFramesAhead, e.Presented);
+        // Paused, nothing is counted on.
+        page.SetState(paused: true, seeking: false, seeks: 0);
+        Assert.True(page.TryFrameAt(newest + 2 * period, f / 120, out e));
+        Assert.Equal(109, e.Presented);
+    }
+
+    [Fact]
+    public void EachFrameGetsTheBoxesOnTheScreenWhenItWasCaptured()
+    {
+        var page = new PageVideo("x");
+        Assert.Null(page.BoxesAt(100));
+        var controls = new[] { new Rectangle(0, 900, 1920, 180) };
+        var caption = new[] { new Rectangle(600, 800, 700, 50) };
+        page.AddBoxes(100, controls, []);
+        page.AddBoxes(200, [], caption);
+
+        Assert.Same(controls, page.BoxesAt(150)!.Overlays);
+        Assert.Same(caption, page.BoxesAt(200)!.Captions);
+        Assert.Same(caption, page.BoxesAt(900)!.Captions);
+        Assert.Null(page.BoxesAt(50));   // before the first report
+        // A report timed before the previous one (the page's clock re-synced) does not go back.
+        page.AddBoxes(150, [], []);
+        Assert.Same(controls, page.BoxesAt(199)!.Overlays);
+        Assert.Empty(page.BoxesAt(200)!.Captions);
     }
 
     [Fact]

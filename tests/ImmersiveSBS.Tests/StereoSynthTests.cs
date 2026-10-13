@@ -20,13 +20,7 @@ public sealed class StereoSynthTests : IDisposable
 
     public StereoSynthTests()
     {
-        if (D3D11.D3D11CreateDevice(IntPtr.Zero, DriverType.Hardware, DeviceCreationFlags.BgraSupport,
-                [FeatureLevel.Level_11_0], out ID3D11Device? d).Failure)
-        {
-            D3D11.D3D11CreateDevice(IntPtr.Zero, DriverType.Warp, DeviceCreationFlags.BgraSupport,
-                [FeatureLevel.Level_11_0], out d).CheckError();
-        }
-        device = d!;
+        device = TestDevice.Create();
         source = CreateSource((_, _) => 0);
         // The splat's own invariants: no slope limit (tested on its own below).
         synth = new StereoSynth(device) { DilateRadius = 0, LimitSlope = false };

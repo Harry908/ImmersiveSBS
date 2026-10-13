@@ -349,16 +349,22 @@ public sealed class Session
                 redraw = true;
             }
 
-            CaptureUpdate update = capture.Acquire(redraw ? 0 : 16);
+            // The delayed picture (the buffer, matched timing) shows its next held frame on time,
+            // whether or not the desktop changes meanwhile.
+            long due = renderer.SideBySide ? ai.NextDueTicks : long.MaxValue;
+            int waitMs = redraw ? 0 : 16;
+            if (due != long.MaxValue)
+                waitMs = (int)Math.Clamp(Math.Ceiling((due - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency), 0, waitMs);
+            CaptureUpdate update = capture.Acquire(waitMs);
             meter.OnCapture(update);
             // The depth model gets the new frame now, not after waiting for the swap chain.
-            if (update.Frame && renderer.SideBySide && capture.Texture is { } arrived) ai.HandOverEarly(arrived, Depth, update.ContentQpc);
+            if (update.Frame && renderer.SideBySide && capture.Texture is { } arrived) ai.HandOverEarly(arrived, Depth, update.FrameQpc);
 
             // New depth or new AI settings change the picture even when the desktop did not.
             // The model's state shows as a badge in the glasses, and its loading ends a flat picture.
             DepthServiceState? modelState = Depth?.State;
             bool aiChanged = Depth?.HasResult == true || stereoVersion != seenStereoVersion || theaterUi.NeedsRedraw
-                             || modelState != seenModelState;
+                             || modelState != seenModelState || Stopwatch.GetTimestamp() >= due;
             seenStereoVersion = stereoVersion;
             seenModelState = modelState;
             if (!update.Any && !redraw && !aiChanged)
@@ -373,10 +379,13 @@ public sealed class Session
             meter.OnCapture(late);
             ai.SubmitReadyInput(Depth);
             long content = Math.Max(update.ContentQpc, late.ContentQpc);
+            // When the desktop image now in the texture was made (not the cursor's time).
+            long frameQpc = late.Frame ? late.FrameQpc : update.FrameQpc;
 
             // AI 3D only exists in side-by-side; in 2D and in the window the frame stays flat.
             StereoOverlay? overlay = null;
             UiLayer? ui = null;
+            IReadOnlyList<Rectangle>? live = null;
             StereoSettings stereo = Stereo;
             gpuTimer.BeginFrame();
             if (renderer.SideBySide && capture.Texture is { } frame)
@@ -384,7 +393,10 @@ public sealed class Session
                 var fd = frame.Description;
                 var eye = new Size(renderer.Width / 2, renderer.Height);
                 double scale = Math.Min((double)eye.Width / fd.Width, (double)eye.Height / fd.Height);
-                overlay = ai.Process(frame, update.Frame || late.Frame, stereo, Depth, eye, scale, SoundDelay, PageCanDelay, BrowserVideo, content);
+                if (stats is { VideoMemoryBudgetMb: > 0 } st) ai.VideoMemoryBudget = (long)(st.VideoMemoryBudgetMb * 1024 * 1024);
+                VideoHint? hint = BrowserVideo;
+                overlay = ai.Process(frame, update.Frame || late.Frame, stereo, Depth, eye, scale, SoundDelay, PageCanDelay, hint, frameQpc);
+                if (overlay != null) live = ai.LiveControls(hint);
                 aiStatus = ai.Status;
                 ui = theaterUi.Build(overlay, ai.FoundRegion, eye, new Size((int)fd.Width, (int)fd.Height), stereo.Target, Depth?.State);
                 SetDelay(ai.DelayRegion, ai.DelaySeconds);
@@ -396,7 +408,7 @@ public sealed class Session
                 theaterUi.Hide();
             }
 
-            renderer.Render(capture.Texture, options.Method == CaptureMethod.DesktopDuplication ? capture.Pointer : null, overlay, ui);
+            renderer.Render(capture.Texture, options.Method == CaptureMethod.DesktopDuplication ? capture.Pointer : null, overlay, ui, live);
             gpuTimer.Mark("draw");
             gpuTimer.EndFrame();
             long presentQpc = Stopwatch.GetTimestamp();

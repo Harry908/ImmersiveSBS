@@ -129,7 +129,9 @@ public sealed class CaptionLock
         if (double.IsNaN(target)) return;
 
         // The mask rises fast and fades slowly, so a caption missed for a frame does not blink.
-        float rise = (float)(1 - Math.Exp(-dt / 0.1)), fall = (float)(1 - Math.Exp(-dt / 0.4));
+        // The page's captions are exact: flat from their first frame, or a new line's letters
+        // bend with the scene behind them while the mask rises (it looked torn).
+        float rise = given is { Count: > 0 } ? 1 : (float)(1 - Math.Exp(-dt / 0.1)), fall = (float)(1 - Math.Exp(-dt / 0.4));
         float level = (float)target;
         RowBands.For(height, (_, from, to) =>
         {

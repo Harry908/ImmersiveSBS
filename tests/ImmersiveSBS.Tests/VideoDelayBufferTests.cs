@@ -17,13 +17,7 @@ public sealed class VideoDelayBufferTests : IDisposable
 
     public VideoDelayBufferTests()
     {
-        if (D3D11.D3D11CreateDevice(IntPtr.Zero, DriverType.Hardware, DeviceCreationFlags.BgraSupport,
-                [FeatureLevel.Level_11_0], out ID3D11Device? d).Failure)
-        {
-            D3D11.D3D11CreateDevice(IntPtr.Zero, DriverType.Warp, DeviceCreationFlags.BgraSupport,
-                [FeatureLevel.Level_11_0], out d).CheckError();
-        }
-        device = d!;
+        device = TestDevice.Create();
         source = device.CreateTexture2D(new Texture2DDescription
         {
             Width = 64, Height = 32, MipLevels = 1, ArraySize = 1,
@@ -84,6 +78,69 @@ public sealed class VideoDelayBufferTests : IDisposable
         // Kept: the delay plus half a second, plus the one frame just older.
         Assert.InRange(buffer.Count, 15, 17);
         Assert.Equal(29, buffer[buffer.Select(3900 - 1000)].Id);
+    }
+
+    [Fact]
+    public void TheMemoryCapCountsTheVideosFrameRate()
+    {
+        // Room for 70 frames: a 2 s delay of a 30 fps video fits, so none may be skipped, even
+        // with captures arriving a refresh early or late. Counted at 60 fps, every early one was.
+        var region = new Rectangle(0, 0, 32, 16);
+        buffer.MaxBytes = 70L * 32 * 16 * 4;
+        var twoSeconds = TimeSpan.FromSeconds(2);
+        long t = 0;
+        int[] steps = [33, 33, 17, 50];
+        for (int i = 0; i < 120; i++)
+        {
+            t += steps[i % steps.Length];
+            Assert.True(buffer.Push(source, region, t, i, twoSeconds, Tps, frameRate: 30), $"frame {i} skipped");
+        }
+        Assert.Equal(0, buffer.TakeSkipped());
+
+        // A 60 fps video does not fit: every other frame goes, the delay stays.
+        buffer.Clear();
+        int kept = 0;
+        for (int i = 0; i < 240; i++) kept += buffer.Push(source, region, i * 1000L / 60, i, twoSeconds, Tps, frameRate: 60) ? 1 : 0;
+        Assert.InRange(kept, 110, 130);
+        Assert.Equal(240 - kept, buffer.TakeSkipped());
+        Assert.InRange(buffer[buffer.Count - 1].Time - buffer[0].Time, 2000, 2600);
+    }
+
+    [Fact]
+    public void RecycledFramesLendTheirDepthMapsToNewOnes()
+    {
+        // At model size a nearness map is a large object: one made per frame meant full collections.
+        var region = new Rectangle(0, 0, 32, 16);
+        var maps = new HashSet<float[]>(ReferenceEqualityComparer.Instance);
+        for (int i = 0; i < 60; i++)
+        {
+            buffer.Push(source, region, i * 100, i, Delay, Tps);
+            Assert.True(buffer.Attach(Depth(i, 0.5f)));
+            maps.Add(buffer[buffer.Count - 1].Nearness!);
+        }
+        // About the frames held at once (the delay plus half a second), not one per frame.
+        Assert.InRange(maps.Count, 15, 25);
+        Assert.False(buffer.Attach(Depth(3, 0.5f)));   // long gone
+    }
+
+    [Fact]
+    public void ItSaysWhichFramesDepthTheShownOneUsesAndWhenTheNextIsDue()
+    {
+        var region = new Rectangle(0, 0, 32, 16);
+        for (int i = 0; i < 8; i++) buffer.Push(source, region, i * 100, i, Delay, Tps);
+        buffer.Attach(Depth(1, 0.2f));
+        buffer.Attach(Depth(6, 0.8f));
+        var n = new float[16];
+
+        Assert.Equal(VideoDelayBuffer.DepthMatch.Interpolated, buffer.InterpolatedNearness(3, n, out _));
+        Assert.Equal((1L, 6L), buffer.LastSources);   // depth for 2–5 would change it, for 7 not
+        Assert.Equal(VideoDelayBuffer.DepthMatch.Held, buffer.InterpolatedNearness(7, n, out _));
+        Assert.Equal((6L, long.MaxValue), buffer.LastSources);
+        Assert.True(buffer.SmoothedNearness(4, n));
+        Assert.Equal((2L, 6L), buffer.LastSources);
+
+        Assert.Equal(400, buffer.NextTime(3));
+        Assert.Equal(long.MaxValue, buffer.NextTime(7));
     }
 
     public void Dispose()

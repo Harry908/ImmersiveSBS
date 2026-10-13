@@ -37,6 +37,9 @@ public sealed class DepthFrame(int width, int height)
 
     public double InferenceMs { get; set; }
 
+    /// <summary>How long the look-ahead held it before its post-processing, ms: part of its age, not of the depth's latency.</summary>
+    public double HeldMs { get; set; }
+
     public bool SceneCut { get; set; }
 }
 
@@ -68,8 +71,11 @@ public sealed class DepthService : IDisposable
     private long pendingId;
     private double pendingTime;
     private float[]? spare;            // a free input buffer
-    private DepthFrame? ready;         // newest result, not yet taken
-    private DepthFrame? spareFrame;
+    private readonly Queue<DepthFrame> ready = new();          // results not yet taken, oldest first
+    private readonly Stack<DepthFrame> spareFrames = new();    // results the caller gave back
+
+    /// <summary>Results kept untaken at most (<see cref="KeepAll"/>): a whole look-ahead let go at once.</summary>
+    private const int MaxReady = MaxLookAhead + 2;
 
     private readonly Func<DepthModel, Action<string>, IDepthRunner> load;
     private IDepthRunner? estimator;
@@ -84,6 +90,8 @@ public sealed class DepthService : IDisposable
         public readonly float[] Output = new float[length];
         public readonly float[] Luma = new float[length];
         public long Id;
+        /// <summary>When it was held for the look-ahead, Stopwatch ticks.</summary>
+        public long HeldAt;
         public double Time, InferenceMs, IdleMs;
         /// <summary>Its own depth range, and whether the picture cut to a new scene just before it.</summary>
         public double P2, P98;
@@ -105,6 +113,21 @@ public sealed class DepthService : IDisposable
     private volatile int lookAhead;
 
     public const int MaxLookAhead = 30;
+
+    /// <summary>
+    /// The caller files every depth frame with its own video frame (the buffer, matched timing):
+    /// results queue up, oldest taken first, instead of the newest replacing one not yet taken.
+    /// Look-ahead lets held frames go together (a pause, a seek, a shorter look-ahead), and with
+    /// only the newest kept most of them were lost, so the frames before every pause or seek
+    /// were shown with depth from up to a second away. Off: only the newest counts (live). Any thread.
+    /// </summary>
+    public bool KeepAll
+    {
+        get => keepAll;
+        set => keepAll = value;
+    }
+
+    private volatile bool keepAll;
 
     /// <summary>Held frames are let go when nothing new came for this long (a paused video).</summary>
     private static readonly TimeSpan LookAheadIdle = TimeSpan.FromMilliseconds(200);
@@ -145,14 +168,17 @@ public sealed class DepthService : IDisposable
 
     private volatile int softEdgePasses;
 
-    /// <summary>What the page draws over the video, model px (improvement-plan.md §7.4); any thread, used from the next frame.</summary>
-    public PageBoxes? PageBoxes
+    /// <summary>
+    /// What the page draws over the video (improvement-plan.md §7.4), looked up for each frame by
+    /// its capture time; any thread, used from the next frame.
+    /// </summary>
+    public PageBoxSource? PageBoxes
     {
         get => pageBoxes;
         set => pageBoxes = value;
     }
 
-    private volatile PageBoxes? pageBoxes;
+    private volatile PageBoxSource? pageBoxes;
 
     /// <summary>Mean flicker over the last second (improvement-plan.md M4), NaN before any.</summary>
     public double AverageFlicker { get; private set; } = double.NaN;
@@ -160,7 +186,7 @@ public sealed class DepthService : IDisposable
     /// <summary>A result is waiting to be taken.</summary>
     public bool HasResult
     {
-        get { lock (gate) return ready != null; }
+        get { lock (gate) return ready.Count > 0; }
     }
 
     public DepthServiceState State { get; private set; } = DepthServiceState.Loading;
@@ -204,20 +230,28 @@ public sealed class DepthService : IDisposable
     }
 
     /// <summary>
-    /// Takes the newest result, if there is one, by swapping it with <paramref name="frame"/>
-    /// (the caller's previous frame becomes the service's spare).
+    /// Takes a result, if there is one, by swapping it with <paramref name="frame"/> (the
+    /// caller's previous frame becomes a spare of the service's): the oldest untaken with
+    /// <see cref="KeepAll"/>, else the newest.
     /// </summary>
     public bool TryTake(ref DepthFrame? frame)
     {
         lock (gate)
         {
-            if (ready == null) return false;
+            if (ready.Count == 0) return false;
             // A frame from an earlier model (another size) is not reused.
-            if (frame != null && frame.Width == Model.Width && frame.Height == Model.Height) spareFrame = frame;
-            frame = ready;
-            ready = null;
+            if (frame != null && frame.Width == Model.Width && frame.Height == Model.Height) Spare(frame);
+            if (!keepAll)
+                while (ready.Count > 1) Spare(ready.Dequeue());
+            frame = ready.Dequeue();
             return true;
         }
+    }
+
+    /// <summary>Keeps a result frame for reuse. Under <see cref="gate"/>.</summary>
+    private void Spare(DepthFrame frame)
+    {
+        if (spareFrames.Count < MaxReady) spareFrames.Push(frame);
     }
 
     private void Run()
@@ -334,6 +368,7 @@ public sealed class DepthService : IDisposable
                     {
                         lastHeldLuma = [];
                     }
+                    job.HeldAt = Stopwatch.GetTimestamp();
                     held.Add(job);
                 }
                 int keep = job == null ? 0 : LookAheadFrames;
@@ -385,11 +420,13 @@ public sealed class DepthService : IDisposable
         try
         {
             long p0 = Stopwatch.GetTimestamp();
+            double heldMs = job.HeldAt != 0 ? (p0 - job.HeldAt) * 1000.0 / Stopwatch.Frequency : 0;
             double dt = double.IsNaN(lastTime) ? 1.0 / 30 : job.Time - lastTime;
             lastTime = job.Time;
 
-            DepthFrame frame;
-            lock (gate) { frame = spareFrame ?? new DepthFrame(Model.Width, Model.Height); spareFrame = null; }
+            DepthFrame? frame;
+            lock (gate) spareFrames.TryPop(out frame);
+            frame ??= new DepthFrame(Model.Width, Model.Height);
             StereoTuning tuning = Tuning;
             post!.AlphaMin = tuning.Smoothing;
             post.SceneCutThreshold = tuning.SceneCut;
@@ -404,7 +441,7 @@ public sealed class DepthService : IDisposable
             };
             post.Foreground = tuning.Foreground;
             int passes = SoftEdgePasses;
-            post.PageBoxes = PageBoxes;
+            post.PageBoxes = PageBoxes?.At(job.Time);
             post.SoftEdgePassesX = passes;
             post.SoftEdgePassesY = Math.Min(passes, 1);
             frame.SceneCut = post.Process(job.Output, job.Luma, dt, frame.Nearness, range);
@@ -415,11 +452,14 @@ public sealed class DepthService : IDisposable
             }
             frame.FrameId = job.Id;
             frame.InferenceMs = job.InferenceMs;
+            frame.HeldMs = heldMs;
 
             lock (gate)
             {
-                spareFrame ??= ready;   // an untaken result is dropped for the newer one
-                ready = frame;
+                // Untaken results are dropped for the newer one, unless the caller files them all.
+                int keep = keepAll ? MaxReady - 1 : 0;
+                while (ready.Count > keep) Spare(ready.Dequeue());
+                ready.Enqueue(frame);
             }
 
             inferenceSum += job.InferenceMs;
@@ -445,6 +485,7 @@ public sealed class DepthService : IDisposable
         }
         finally
         {
+            job.HeldAt = 0;
             freeJobs.Add(job);
         }
     }

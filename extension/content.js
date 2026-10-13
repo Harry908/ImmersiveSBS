@@ -704,6 +704,7 @@
       case 'settings':
         t.panel.classList.toggle('hidden');
         renderPanel();
+        reportBoxes(t);
         break;
       case 'exit':
         closeTheater();
@@ -749,6 +750,8 @@
     t.controlsShown = true;
     placeCaption(t);
     showProgress();
+    // The app shows the controls from the live screen where they are: tell it at once.
+    reportBoxes(t);
   }
 
   /** Controls stay while the video is paused, the panel is open or the mouse is on them. */
@@ -762,6 +765,7 @@
     t.stage.classList.add('idle');
     t.controlsShown = false;
     placeCaption(t);
+    reportBoxes(t);
   }
 
   function seekFraction(e) {
@@ -887,7 +891,9 @@
     const text = JSON.stringify(boxes);
     if (text === t.boxes) return;
     t.boxes = text;
-    post({ type: 'overlays', id: t.id, boxes });
+    // When they changed, on the app's clock: the app gives each frame the boxes it shows (a frame
+    // early rather than late: a caption shown before its box would bend with the scene).
+    post({ type: 'overlays', id: t.id, boxes, at: Number.isFinite(theta) ? performance.now() + theta : null });
   }
 
   /** The 3D settings panel, from the values the app last sent. */
@@ -917,6 +923,8 @@
       toggle(`Video:  ${layout}`, 'layoutNext') +
       toggle(`Snap depth edges to the picture:  ${s.edgeSnap ? 'on' : 'off'}`, 'edgeSnap') +
       toggle(`Keep subtitles flat:  ${s.captions ? 'on' : 'off'}`, 'captions');
+    // New values can change its size; the app shows it from the live screen where it is.
+    reportBoxes(t);
   }
 
   /** The player around a video: its largest ancestor not much bigger than its picture. */
@@ -999,7 +1007,7 @@
     if (!pic) return;
     const stage = t.stage.getBoundingClientRect();
     const below = stage.bottom - (pic.y + pic.height);
-    let bottom = below + 0.05 * pic.height;
+    let bottom = below + 0.1 * pic.height;
     if (t.controlsShown) bottom = Math.max(bottom, stage.bottom - t.bar.getBoundingClientRect().top + 8);
     bottom = Math.min(bottom, below + 0.5 * pic.height);
     const side = 0.06 * pic.width;

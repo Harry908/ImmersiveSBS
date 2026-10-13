@@ -139,6 +139,11 @@ per file. Source files mix CRLF and LF line endings; keep each file's own.
 - The app delays only the theater picture's rectangle (buffer, matched timing) and shows the
   rest live: a caption drawn in the black bars showed seconds early, and one across the
   picture's edge twice. The player keeps its caption inside the picture (`placeCaption`).
+- Page reports (frames, boxes) go page → worker → socket and often arrive after the capture of
+  the frame they describe. Matching a capture only with reports already in dropped 40 % of a
+  30 fps video's frames from the buffer; `PageVideo.TryFrameAt` counts frames on past the
+  newest report, and boxes go straight to `PageVideo` with their time (never through the
+  controller's 250 ms timer) so the depth thread takes each frame's own.
 - `createMediaElementSource` reroutes an element for good, and through a suspended
   `AudioContext` it goes silent: the extension attaches only playing elements, only once its
   context runs, and never cross-origin or protected media (Web Audio gets silence from them).
