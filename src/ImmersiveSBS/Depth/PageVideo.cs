@@ -167,18 +167,22 @@ public sealed class PageVideo
     }
 
     /// <summary>The player's boxes from <see cref="FromTicks"/> on, screen px of the captured monitor.</summary>
-    public sealed record BoxSet(long FromTicks, IReadOnlyList<Rectangle> Overlays, IReadOnlyList<Rectangle> Captions);
+    /// <param name="Overlays">Everything but the captions (the bar, the panel), held flat.</param>
+    /// <param name="Panels">Of those, the 3D settings panel.</param>
+    public sealed record BoxSet(long FromTicks, IReadOnlyList<Rectangle> Overlays, IReadOnlyList<Rectangle> Captions,
+        IReadOnlyList<Rectangle> Panels);
 
     private readonly BoxSet?[] boxSets = new BoxSet?[16];
     private int boxHead, boxCount;
 
     /// <summary>Records the player's boxes as they are from <paramref name="fromTicks"/> on (never before the previous set).</summary>
-    public void AddBoxes(long fromTicks, IReadOnlyList<Rectangle> overlays, IReadOnlyList<Rectangle> captions)
+    public void AddBoxes(long fromTicks, IReadOnlyList<Rectangle> overlays, IReadOnlyList<Rectangle> captions,
+        IReadOnlyList<Rectangle>? panels = null)
     {
         lock (gate)
         {
             if (boxCount > 0) fromTicks = Math.Max(fromTicks, boxSets[(boxHead + boxSets.Length - 1) % boxSets.Length]!.FromTicks);
-            boxSets[boxHead] = new BoxSet(fromTicks, overlays, captions);
+            boxSets[boxHead] = new BoxSet(fromTicks, overlays, captions, panels ?? []);
             boxHead = (boxHead + 1) % boxSets.Length;
             boxCount = Math.Min(boxCount + 1, boxSets.Length);
         }

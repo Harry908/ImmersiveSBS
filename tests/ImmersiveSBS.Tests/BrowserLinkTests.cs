@@ -214,7 +214,8 @@ public sealed class BrowserLinkTests : IDisposable
         await SendAsync(socket, """{"type":"state","id":"7:0:abc#1","paused":true,"seeking":false,"seeks":3,"rate":1,"clockError":0.4}""");
         await SendAsync(socket, """
             {"type":"overlays","id":"7:0:abc#1","boxes":[{"x":10,"y":980,"width":620,"height":40,"kind":"control"},
-              {"x":100,"y":850,"width":400,"height":30,"kind":"caption"},{"x":"bad"},{"x":1,"y":1,"width":-5,"height":3}],
+              {"x":100,"y":850,"width":400,"height":30,"kind":"caption"},{"x":1400,"y":300,"width":460,"height":500,"kind":"panel"},
+              {"x":"bad"},{"x":1,"y":1,"width":-5,"height":3}],
              "at":{{now - 5}}}
             """.Replace("{{now - 5}}", (now - 5).ToString(System.Globalization.CultureInfo.InvariantCulture)));
         while (c.Overlays.Count == 0)
@@ -227,14 +228,17 @@ public sealed class BrowserLinkTests : IDisposable
         Assert.True(page.Paused);
         Assert.Equal(3, page.Seeks);
         Assert.Equal(0.4, page.ClockErrorMs);
-        Assert.Equal(2, c.Overlays.Count);
+        Assert.Equal(3, c.Overlays.Count);
         Assert.True(c.Overlays[1].IsCaption);
+        Assert.True(c.Overlays[2].IsPanel);
         // For the depth thread: in screen px, from when the page says they appeared.
         long at = (long)((now - 5) * System.Diagnostics.Stopwatch.Frequency / 1000);
         Assert.Null(page.BoxesAt(at - System.Diagnostics.Stopwatch.Frequency / 100));
         Depth.PageVideo.BoxSet set = page.BoxesAt(at)!;
-        Assert.Equal([new Rectangle(10, 980, 620, 40)], set.Overlays);
+        // The panel is held flat with the rest, and kept apart for drawing it live as it closes.
+        Assert.Equal([new Rectangle(10, 980, 620, 40), new Rectangle(1400, 300, 460, 500)], set.Overlays);
         Assert.Equal([new Rectangle(100, 850, 400, 30)], set.Captions);
+        Assert.Equal([new Rectangle(1400, 300, 460, 500)], set.Panels);
 
         // Moved (full screen now at another px ratio): the same theater, still followed.
         long since = t.Since;

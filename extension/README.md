@@ -4,12 +4,16 @@ Part of the ImmersiveSBS app, for Chrome and Edge. It is how browser video reach
 3D:
 
 - **The 3D theater.** While the glasses are in 3D mode, a "3D theater" button shows over a video
-  under the mouse. It opens the video in a full-screen player in the page, drawn at the video's
-  own resolution; the app shows it in 3D in the glasses. The player has a seek bar, the time,
-  10 s back and forward, play/pause, mute, full screen, and a 3D settings panel (model,
+  under the mouse. It opens that video alone, full screen, in a player in the page, drawn at the
+  video's own resolution; the app shows it in 3D in the glasses. The theater is full screen for
+  as long as it is open: leaving full screen (Esc, F11) leaves it, and the page goes back to its
+  window. One frosted bar at the bottom holds a
+  seek bar, the time, 10 s back and forward, play/pause, mute, the 3D settings panel (model,
   resolution, depth, screen plane, timing, stretch, whether the video is 2D or already 3D, edge
-  snapping, flat subtitles). Keys: Space or K play/pause, ← → or J L skip 10 s, M mute, F full
-  screen, Esc leaves; a double click switches full screen.
+  snapping, flat subtitles) and Exit; it hides while the video plays and the mouse rests. A click
+  on the picture plays or pauses. Keys: Space or K play/pause, ← → or J L skip 10 s, M mute, Esc
+  leaves. The page's subtitles are shown in the picture, whether or not the site's own player
+  was full screen.
 - **The delayed sound.** When the app shows the video late (matched timing or the buffer), the
   page plays that tab's sound as late, through Web Audio, so it keeps its full quality and its
   usual output; other tabs stay live. The app has no other way to delay sound.
@@ -46,8 +50,11 @@ lines, and Settings shows the connection.
   sound late when asked (element → `DelayNode` → output), shows the theater button and runs the
   player: a closed shadow root over the page that draws the video on a canvas. While the player
   is open it reports where its picture is on the screen, each frame it draws (on the app's
-  clock), play/pause and seeking, and the boxes of its own controls and captions, which the app
-  keeps flat. The page's captions are copied into the player.
+  clock), play/pause and seeking, and the boxes of its bar, its 3D panel and its caption, which
+  the app keeps flat. The app draws the bar and the panel from the live screen over the delayed
+  3D picture; they are frosted, so the live video under them shows only as a blur. The page's
+  captions (its caption boxes in the player around the video, and the video's own text tracks)
+  are copied into the player.
 - `background.js` connects to the app at `ws://127.0.0.1:47391/immersivesbs` and relays. When
   the app closes or the connection drops, every page goes back to live sound. When the app's tray
   opens the theater (no click in the page, which full screen needs), it picks the largest

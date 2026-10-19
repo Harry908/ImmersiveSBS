@@ -1069,14 +1069,130 @@ leaves no copy behind (for the delay, that place shows the live video instead). 
 1.4.5 reports the boxes as soon as the controls show, fade or the panel opens or changes,
 not on its 250 ms timer.
 
+### Glasses run of the buffer and timing fixes (2026-10-13, 01:24–02:28, Release)
+
+Extension 1.4.5 (protocol 3), Edge, one 1920×816 video at 25 fps in the theater, seven
+openings over about an hour, 33 minutes in one stretch at the end. DA3 Small, then DA3 Base,
+at 518×294; Matched, then Buffer 0.5 s from 01:30. Only the log is on record; what the user saw
+was not noted.
+
+- **Every frame reached the model and the buffer:** hand-overs 24–26/s for the 25 fps video
+  (the run before: 18–19 of 30), held frames skipped 0, full GCs 0, holes 0.00 %, page clock
+  within 0.7–1.0 ms. Each opening converted (full screen recognised 6–36 ms after the
+  player opened).
+- **Sound in step:** the page delayed the sound 0.45–0.46 s for the 0.5 s buffer (the Web Audio
+  output latency, 42–50 ms, taken off as intended) for the whole stretch; "0.00 s late" only in
+  the first second after an opening, before the element was taken in. "Plays the sound live
+  again" only when the theater closed or left full screen.
+- **Matched timing did not hop:** 300 ms at the first opening (depth needed 205 ms while the
+  model warmed up), then 160 ms with 62–73 ms needed, held there.
+- **Cost:** DA3 Small 6–10 ms + post 3.1–5.0 ms alongside; DA3 Base 10–12 ms + post 3.4–4.2 ms,
+  model busy 25–29 %. GPU 0.8–2.1 ms a frame for the eyes. Presents 53–60/s, capture→vblank
+  17 ms on average (max 40 ms). VRAM 620–655 MB, private memory steady at 1.6 GB over the last
+  half hour (no growth).
+- **Flicker on still pixels (M4) was higher than before:** 0.025 on average in the theater, up
+  to 0.063, against 0.002–0.03 in the 10-11 run (other video, live and matched timing). Not
+  explained yet; it may be the content.
+- The glasses left the desktop twice (01:47, 01:50) and came back in 2D, then 3D; the session
+  stopped and restarted each time and the open theater was picked up again. The window guard
+  moved Edge and an ApplicationFrameHost window off the glasses meanwhile.
+- One flat spell, at the first opening (depth 15 frames behind while the model warmed up).
+
+Not tried in this run: 756×420 (the `post … ms` check), the buffer at 1 or 2 s, the live
+controls with the buffer (to confirm by eye), Soft edges and Lookup A/B.
+
+### The theater redone: the video alone, one opaque bar, captions found anywhere (2026-10-19, user report)
+
+The user's report: the progress bar sometimes went transparent and showed the video playing
+behind it; subtitles showed only when the site's own player was full screen; the theater should
+show only the video, not the whole screen. Causes:
+
+- **The bar:** it was a gradient over the picture with a see-through track, and the app drew
+  from the live screen only the buttons', seek bar's and time's boxes. With the buffer, the live
+  video showed through the seek bar while the picture around it was 0.5 s late; and where the
+  controls had been in the held frame shown but no longer were, the app drew the live screen, a
+  strip of video at another time for the delay's length.
+- **Subtitles:** the player looked for caption boxes only inside `playerOf(el)`, the largest
+  ancestor of the video at most 1.6× its picture. In the site's own full screen that is the
+  whole player; in the page's layout the caption layer often sits outside that ancestor.
+- **The whole screen:** the player had its own full-screen toggle (button, F, double click). Out
+  of full screen the theater stayed open in the window, and the glasses showed the browser and
+  the desktop flat ("waiting for the theater's video"), which the 10-13 log shows at 01:33 and
+  01:48.
+
+Extension 1.5.0 (protocol 3 unchanged), the theater section of `content.js` rewritten:
+- The theater is full screen for as long as it is open: leaving the player's full screen (Esc)
+  or, when the worker put the window in full screen, the window's (F11) closes it. No full
+  screen button, no F key, no double click; a click on the picture plays or pauses at once.
+- One bar at the bottom, opaque (seek bar, time, ±10 s, play/pause, mute, 3D, Exit), shown and
+  hidden at once (no fade), reported as one box; the 3D panel above it, opaque, one box.
+- `AiStereo.LiveControls` draws only the boxes on the screen now. Where the bar was in the held
+  frame shown, that frame shows it as captured: it lingers for the delay after hiding, flat,
+  instead of a hole onto the live video. A closed panel lingers the same way.
+- Captions: caption-like boxes anywhere in the document (and in the video's shadow root) that
+  do not hold the video, are not controls or menus, are visible and lie mostly over the video;
+  found again once a second, read on every frame drawn.
+- A viewport the screen's size now counts as the screen (window full screen), as well as the
+  window's outer size.
+
+Tests: 168, Debug (the Release copy was running).
+
+**First try (09:23–09:31, user):** the solid black bar looked bad; the 3D panel was slow to
+close (it lingered in the delayed picture for the buffer, as the change above made it); after
+Exit the site stayed full screen; subtitles still came only when the theater was opened from
+the site's own full screen. The log agrees: openings from the site's full screen found a caption
+(09:25:27), openings from the page found none. Extension 1.5.1:
+- **Subtitles:** checked on WeTV (Playwright, the live site): in the page's layout its caption
+  (`div.text-track`, two levels above the video, inside `.player__wrapper` six up) is visible
+  over the video, but once another element is full screen WeTV lays the `<video>` out at no
+  height (937×0, then 1560×0) while the caption stays shown, so the over-the-video test failed.
+  A video box with no size is no longer a test; the caption boxes are looked for within six
+  ancestors of the video (below the body) instead of the whole document, so the page's own
+  "subtitle" texts elsewhere cannot come in. Checked the same way: with an element full screen
+  and the video collapsed, each subtitle line was read as it changed.
+- **The bar** floats (16 px in, rounded) and is frosted: tinted 50 % and blurred 28 px, as is
+  the panel. The app still draws it from the live screen; through the blur the live video
+  under it is only colour.
+- **The panel closes at once:** it is reported as kind "panel" (`PageBox.IsPanel`,
+  `BoxSet.Panels`), and `LiveControls` draws its place in the held frame shown from the live
+  screen again. The bar still lingers for the delay when it hides.
+- **Exit:** closing leaves every level of full screen (the site's too), so the page is back in
+  its window.
+
+Tests: 168 (the overlays test now carries a panel box).
+
+**Captions read only when they change** (extension 1.5.2, user request: "optimize its
+performance"). Each read makes the page under the player lay itself out (visibility, boxes,
+`innerText`), and the theater read on every frame it drew plus four times a second. Measured on
+WeTV (Playwright, another element full screen as in the theater, one caption box): 0.17 ms a
+read (worst 0.6), and read on every animation frame 2032 reads in 15 s, 23 ms of the page's
+main thread a second, for one caption change. Now a MutationObserver on the page's player
+(child lists, text, class/style/hidden) marks the captions changed when a record touches a
+caption box or something holding one, a new caption-like element marks the boxes to be found
+again, text tracks report `cuechange` (and `addtrack`, `change`), and the animation loop or the
+next drawn frame reads once. Once a second they are found and read anyway (a class given
+later, a style above the player). Checked on WeTV by seeking (an ad held the video paused):
+79 page changes, 2 reads, every text the page showed seen.
+
+**YouTube stuck in full screen after the theater** (user report, 1.5.2: captions "working
+great"). Opened from YouTube's full screen, the player went full screen over it, and closing
+left both, one after the other; YouTube kept its full-screen layout and its button said "exit
+full screen" with the document no longer full screen. 1.5.3: when the page is already full
+screen the player goes inside its full-screen element and uses that full screen; closing ends
+it once, as YouTube's own button would. Leaving that full screen (Esc) closes the theater.
+
 ### Next
 
-1. Same run again (reload the extension: 1.4.0): no hops in the `matched … ms` value, no
-   "no longer following" around theater toggles, sound without gaps in the buffer, and the
-   `post … ms` part of the depth status at 756×420 (expected under 10 ms).
-2. The edge blur: compare Soft edges Auto against 1 and 0, and Warp Splat against Lookup, on
+1. Reload the extension (1.5.3) and try the theater with the buffer: the frosted bar, the panel
+   closing at once, the page in its window after Exit, subtitles on WeTV and YouTube from the
+   normal page layout, the tray's theater (window full screen, F11 leaving it).
+2. Ask the user what the 10-13 run looked like: the held frames' smoothness, lip sync at 0.5 s.
+3. The flicker figure above: compare M4 for the same clip in live, matched and buffer timing.
+4. At 756×420 with the buffer at 2 s: the `post … ms` part (expected under 10 ms) and the
+   buffer's memory cap at 25 fps.
+5. The edge blur: compare Soft edges Auto against 1 and 0, and Warp Splat against Lookup, on
    the same scene.
-3. DA2 Large stays too heavy at 756×420 on this GPU (capture fell to 8–12 fps): Balanced only.
+6. DA2 Large stays too heavy at 756×420 on this GPU (capture fell to 8–12 fps): Balanced only.
 
 ## Carried over from the DesktopSbS session
 

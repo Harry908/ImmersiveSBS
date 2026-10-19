@@ -211,11 +211,12 @@ public sealed class AiStereo : IDisposable
     public Rectangle FoundRegion { get; private set; }
 
     /// <summary>
-    /// The player's own controls and 3D panel (source px) to draw from the live capture, flat in
-    /// both eyes, over the 3D picture: those on the screen now, and those in the held frame shown
-    /// (gone from the screen meanwhile). The page draws them over its video, so they came with
-    /// the picture: through the buffer seconds late and bent by the depth, while the pointer
-    /// moved live. Empty outside the theater.
+    /// The player's bar and 3D panel (source px) to draw from the live capture, flat in both eyes,
+    /// over the 3D picture. The page draws them over its video, so they came with the picture:
+    /// through the buffer seconds late and bent by the depth, while the pointer moved live. Those
+    /// on the screen now, and the panel where it was in the held frame shown: closed, it goes at
+    /// once. A hidden bar is left in the held frame as it was (it lingers for the delay, flat):
+    /// drawn live, its place would show the video at another time. Empty outside the theater.
     /// </summary>
     public IReadOnlyList<Rectangle> LiveControls(VideoHint? hint)
     {
@@ -225,7 +226,7 @@ public sealed class AiStereo : IDisposable
         PageVideo.BoxSet? current = page.BoxesAt(now);
         if (current != null) liveControls.AddRange(current.Overlays);
         if (shownTicks > 0 && page.BoxesAt(shownTicks) is { } shown && !ReferenceEquals(shown, current))
-            liveControls.AddRange(shown.Overlays);
+            liveControls.AddRange(shown.Panels);
         return liveControls;
     }
 

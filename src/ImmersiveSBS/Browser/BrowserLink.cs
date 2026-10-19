@@ -11,10 +11,11 @@ using ImmersiveSBS.Depth;
 namespace ImmersiveSBS.Browser;
 
 /// <summary>A box the theater's player draws over its picture (a control or a caption), viewport CSS px.</summary>
-/// <param name="Kind">"caption", "control" or "other".</param>
+/// <param name="Kind">"caption", "control", "panel" (the 3D settings panel) or "other".</param>
 public sealed record PageBox(CssRect Box, string Kind)
 {
     public bool IsCaption => Kind == "caption";
+    public bool IsPanel => Kind == "panel";
 }
 
 /// <summary>
@@ -489,7 +490,8 @@ public sealed class BrowserLink : IDisposable
                             long from = double.IsFinite(at) ? (long)(at * Stopwatch.Frequency / 1000) : received;
                             boxed.AddBoxes(Math.Min(from, Stopwatch.GetTimestamp()),
                                 parsed.Where(b => !b.IsCaption).Select(b => shown.ToScreen(b.Box)).ToArray(),
-                                parsed.Where(b => b.IsCaption).Select(b => shown.ToScreen(b.Box)).ToArray());
+                                parsed.Where(b => b.IsCaption).Select(b => shown.ToScreen(b.Box)).ToArray(),
+                                parsed.Where(b => b.IsPanel).Select(b => shown.ToScreen(b.Box)).ToArray());
                         }
                     }
                     break;
@@ -552,7 +554,7 @@ public sealed class BrowserLink : IDisposable
             double x = Number(b, "x", double.NaN), y = Number(b, "y", double.NaN);
             double w = Number(b, "width", double.NaN), h = Number(b, "height", double.NaN);
             if (!double.IsFinite(x + y + w + h) || w <= 0 || h <= 0) continue;
-            string kind = Text(b, "kind") is "caption" or "control" ? Text(b, "kind") : "other";
+            string kind = Text(b, "kind") is "caption" or "control" or "panel" ? Text(b, "kind") : "other";
             result.Add(new PageBox(new CssRect(x, y, w, h), kind));
         }
         return result;

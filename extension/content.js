@@ -5,11 +5,12 @@
 //   delayed) and, when the app asks, plays their sound late through Web Audio: element ->
 //   DelayNode -> output. The sound never leaves the browser.
 // - While the app says the glasses are in 3D mode, it shows a "3D theater" button over a video
-//   under the mouse. The theater is a player covering the page, full screen, that draws the
-//   video at its own size on a canvas; the app captures that screen and turns it into 3D.
+//   under the mouse. The theater is that video alone, full screen for as long as it is open: a
+//   player covering the page draws it at its own size on a canvas, with the page's captions and
+//   one opaque control bar; the app captures that screen and turns the picture into 3D.
 // - While the theater is open it reports, for that video only: where the picture is on the
 //   screen, each frame it draws (on the app's clock), its playback state, and the boxes of its
-//   own controls and captions (which the app keeps flat).
+//   bar, its 3D panel and its caption (which the app keeps flat).
 //
 // What cannot be delayed is left alone and reported: protected (DRM) media, media from another
 // origin without CORS (Web Audio would get silence from it), and pages where the browser does
@@ -363,20 +364,27 @@
   }
 
   // ---- The 3D theater --------------------------------------------------------------------
-  // While the app is connected and the glasses are in 3D mode, a "3D theater" button shows over
-  // a video the mouse is on. Pressed (a real click in the page, so the page may go full screen),
-  // a player covers the page and goes full screen: it draws the video at its own size on a
-  // canvas, so the app captures it sharp, not as small as the page showed it, and turns it into
-  // 3D in the glasses. Its controls and the page's captions are drawn here and reported as boxes,
-  // which the app keeps flat. The original element keeps playing, with its sound (delayed as usual).
+  // While the app is connected and the glasses are in 3D mode, a "3D theater" button shows over a
+  // video the mouse is on. The theater is that video alone, full screen: a player covering the
+  // page draws it at its own size on a canvas (the capture gets it sharp, not as small as the
+  // page laid it out), with the page's captions inside the picture and one bar of controls. It is
+  // full screen for as long as it is open, so the glasses never show the page or the desktop
+  // around the video: leaving full screen (Esc, F11) leaves the theater.
+  //
+  // The app shows the picture late (buffer, matched timing) and the rest of the screen live. So
+  // the bar and the 3D panel are reported as one box each, which the app draws from the live
+  // screen: they answer the mouse at once. Both are frosted (blurred and tinted), so the live
+  // video under them shows only as soft colour, not as a picture out of step with the one
+  // around them. The caption stays inside the picture, late with it, in step with the sound.
 
   const THEATER_MIN_WIDTH = 160, THEATER_MIN_HEIGHT = 90;
-  const CONTROLS_MS = 2500;   // controls fade after this long without the mouse moving
-  const SEEK_STEP = 10;       // s, the ← → keys and the back / on buttons
+  const CONTROLS_MS = 2500;      // the bar hides this long after the mouse stops (while playing)
+  const SEEK_STEP = 10;          // s, the ← → keys and the back / on buttons
+  const CAPTION_ANCESTORS = 6;   // how far up from the video the page's player is looked for
   /** What the app tells: { glasses: in 3D mode, offer: show the button, settings: the 3D panel's values }. */
   let appStatus = { glasses: false, offer: false, settings: null };
-  let button = null;          // { host, el (the video under it), timer }
-  let theater = null;         // the open player, see openTheater
+  let button = null;             // { host, el (the video under it), timer }
+  let theater = null;            // the open player, see openTheater
   let moveQueued = false;
 
   const ICONS = {
@@ -387,8 +395,6 @@
     forward: 'M12 5V1l5 5-5 5V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8z',
     volume: 'M3 9v6h4l5 5V4L7 9zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z',
     muted: 'M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.45 2.45q.05-.3.05-.65M19 12q0 1.4-.55 2.65l1.5 1.5A9 9 0 0 0 14 3.2v2.1a7 7 0 0 1 5 6.7M4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25A7 7 0 0 1 14 18.7v2.1a9 9 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9zM12 4 9.91 6.09 12 8.18z',
-    full: 'M7 14H5v5h5v-2H7zm-2-4h2V7h3V5H5zm12 7h-3v2h5v-5h-2zM14 5v2h3v3h2V5z',
-    window: 'M5 16h3v3h2v-5H5zm3-8H5v2h5V5H8zm6 11h2v-3h3v-2h-5zm2-11V5h-2v5h5V8z',
     settings: 'M19.4 13a7.5 7.5 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.5 7.5 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.4 7.4 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7.4 7.4 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z',
     close: 'M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4l5.6 5.6L5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6z',
   };
@@ -397,11 +403,13 @@
   const STYLE = `
     :host { all: initial; }
     * { box-sizing: border-box; font-family: "Segoe UI", system-ui, sans-serif; }
+    [hidden] { display: none !important; }
     svg { width: 24px; height: 24px; fill: currentColor; display: block; }
     button { all: unset; cursor: pointer; color: #fff; display: inline-flex; align-items: center; justify-content: center;
-      gap: 8px; min-width: 44px; height: 44px; padding: 0 12px; border-radius: 22px; background: rgba(24,24,26,.78);
-      border: 1px solid rgba(255,255,255,.35); font-size: 15px; white-space: nowrap; }
-    button:hover, button:focus-visible { background: rgba(70,70,74,.92); border-color: #60cdff; }
+      gap: 8px; min-width: 44px; height: 44px; padding: 0 12px; border-radius: 22px; background: rgba(28,28,32,.55);
+      border: 1px solid rgba(255,255,255,.22); font-size: 15px; white-space: nowrap;
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+    button:hover, button:focus-visible { background: rgba(90,90,100,.6); border-color: #60cdff; }
     button.round { width: 48px; min-width: 48px; padding: 0; }
     button.big { width: 60px; height: 60px; border-radius: 30px; }
     button.big svg { width: 32px; height: 32px; }
@@ -472,9 +480,12 @@
 
   // -- The player
 
+  const MEDIA_EVENTS = ['play', 'pause', 'seeked', 'volumechange', 'loadeddata', 'durationchange', 'ended'];
+
   /**
-   * Opens the player on <el>. <gesture>: called from a click in the page, which lets it go full
-   * screen; asked by the app instead, the browser window goes full screen (the worker does it).
+   * Opens the player on <el>, full screen. <gesture>: called from a click in the page, which lets
+   * the player go full screen itself; asked by the app instead (tray, shortcut), the worker puts
+   * the browser window in full screen.
    */
   function openTheater(el, gesture) {
     if (theater) closeTheater();
@@ -487,37 +498,31 @@
       .stage { position: absolute; inset: 0; background: #000; }
       .stage.idle { cursor: none; }
       canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
-      .caption { position: absolute; left: 10%; right: 10%; bottom: 20%; text-align: center; pointer-events: none;
-        font-size: clamp(18px, 3.2vh, 44px); }
+      .caption { position: absolute; text-align: center; pointer-events: none; }
       .caption span { display: inline; white-space: pre-line; color: #fff; background: rgba(8,8,8,.75); padding: 2px 8px;
         font-size: inherit; line-height: 1.35; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
-      .top { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); display: flex; gap: 12px; }
-      .bar { position: absolute; left: 0; right: 0; bottom: 0; padding: 40px 32px 16px;
-        background: linear-gradient(transparent, rgba(0,0,0,.75)); }
+      .frosted { background: rgba(20,20,24,.5); border: 1px solid rgba(255,255,255,.14);
+        backdrop-filter: blur(28px) saturate(1.3); -webkit-backdrop-filter: blur(28px) saturate(1.3); }
+      .frosted button { background: rgba(255,255,255,.08); backdrop-filter: none; -webkit-backdrop-filter: none; }
+      .frosted button:hover, .frosted button:focus-visible { background: rgba(255,255,255,.2); }
+      .bar { position: absolute; left: 16px; right: 16px; bottom: 16px; padding: 8px 18px 12px; border-radius: 12px; }
       .seek { position: relative; height: 24px; cursor: pointer; touch-action: none; }
-      .track { position: absolute; left: 0; right: 0; top: 9px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.35); }
+      .track { position: absolute; left: 0; right: 0; top: 9px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.3); }
       .seek:hover .track { top: 7px; height: 10px; border-radius: 5px; }
       .done { position: absolute; left: 0; top: 0; bottom: 0; border-radius: inherit; background: #60cdff; }
       .knob { position: absolute; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; background: #fff; }
-      .row { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; margin-top: 10px; }
+      .row { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; margin-top: 6px; }
       .time { color: #fff; font-size: 16px; font-variant-numeric: tabular-nums; }
       .middle, .right { display: flex; gap: 14px; align-items: center; }
       .right { justify-self: end; }
-      .panel { position: absolute; top: 76px; left: 50%; transform: translateX(-50%); padding: 12px; border-radius: 16px;
-        background: rgba(24,24,26,.92); border: 1px solid rgba(255,255,255,.25); display: grid; gap: 8px; }
+      .panel { position: absolute; right: 16px; padding: 12px; border-radius: 12px; display: grid; gap: 8px; }
       .panel .line { display: grid; grid-template-columns: 48px 340px 48px; gap: 8px; align-items: center; }
       .panel .value { color: #fff; font-size: 15px; padding: 0 12px; }
       .panel button.wide { grid-column: 1 / 4; justify-content: flex-start; }
-      .hidden { display: none !important; }
-      .top, .bar { transition: opacity .25s; }
       </style>
       <div class="stage"><canvas></canvas><div class="caption"></div></div>
-      <div class="top">
-        <button data-act="settings" title="3D settings">${icon('settings')}3D settings</button>
-        <button data-act="exit" title="Leave the theater (Esc)">${icon('close')}Exit theater</button>
-      </div>
-      <div class="panel hidden"></div>
-      <div class="bar">
+      <div class="panel frosted" hidden></div>
+      <div class="bar frosted">
         <div class="seek"><div class="track"><div class="done"></div></div><div class="knob"></div></div>
         <div class="row">
           <div class="time"></div>
@@ -528,42 +533,34 @@
           </div>
           <div class="right">
             <button class="round" data-act="mute" title="Mute (M)"></button>
-            <button class="round" data-act="fullscreen" title="Full screen (F, double click)"></button>
+            <button data-act="settings" title="3D settings">${icon('settings')}3D</button>
+            <button data-act="exit" title="Leave the theater (Esc)">${icon('close')}Exit</button>
           </div>
         </div>
       </div>`;
     const $ = s => root.querySelector(s);
     const t = {
       el, id: media.get(el).id, host, root, canvas: $('canvas'), stage: $('.stage'), caption: $('.caption'), panel: $('.panel'),
-      bar: $('.bar'), top: $('.top'), seek: $('.seek'), done: $('.done'), knob: $('.knob'), time: $('.time'),
-      play: $('[data-act="play"]'), mute: $('[data-act="mute"]'), full: $('[data-act="fullscreen"]'),
+      bar: $('.bar'), seek: $('.seek'), done: $('.done'), knob: $('.knob'), time: $('.time'),
+      play: $('[data-act="play"]'), mute: $('[data-act="mute"]'),
       ctx: null, vfc: 0, raf: 0, timer: 0, clock: 0, ticks: 0, lastFrame: 0, lastMove: performance.now(), dragging: null,
-      clickTimer: 0, windowFull: false, leaving: false, controlsShown: false, player: playerOf(el), shownCaption: '', captionStyle: '',
-      drawn: 0, drawnTime: NaN, reported: '', boxes: '', state: '', onMedia: null,
+      full: null, windowFull: false, wasScreen: false, controlsShown: true,
+      captions: [], captionPlayer: null, captionObserver: null, captionsDirty: true, captionsStale: true, tracks: [],
+      onCaptionChange: null, onTracks: null, shownCaption: '', captionStyle: '',
+      drawn: 0, drawnTime: NaN, reported: '', boxes: '', state: '', onMedia: null, onResize: null,
     };
     t.ctx = t.canvas.getContext('2d', { alpha: false });
     theater = t;
 
     root.addEventListener('click', e => {
       const target = e.target.closest?.('[data-act]');
-      if (target) {
-        e.stopPropagation();
-        theaterAction(target.dataset.act, target);
-      }
+      if (target) theaterAction(target.dataset.act, target);
+      else if (t.stage.contains(e.target)) theaterAction('play');   // a click on the picture
     });
-    t.stage.addEventListener('click', () => {
-      // A single click plays or pauses; a double click switches full screen instead.
-      clearTimeout(t.clickTimer);
-      t.clickTimer = setTimeout(() => theaterAction('play'), 250);
-    });
-    t.stage.addEventListener('dblclick', () => {
-      clearTimeout(t.clickTimer);
-      theaterAction('fullscreen');
-    });
-    host.addEventListener('pointermove', () => wake(), { passive: true });
+    host.addEventListener('pointermove', wake, { passive: true });
+    // The page under the player must not see the mouse or scroll.
     for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'dblclick', 'wheel', 'contextmenu'])
       host.addEventListener(type, e => e.stopPropagation());
-    // The page under the player must not scroll.
     host.addEventListener('wheel', e => e.preventDefault(), { passive: false });
     t.seek.addEventListener('pointerdown', e => {
       t.seek.setPointerCapture(e.pointerId);
@@ -583,15 +580,34 @@
       if (el.paused) drawFrame();
       showControls();
     };
-    for (const type of ['play', 'pause', 'seeked', 'volumechange', 'loadeddata', 'durationchange', 'ended'])
-      el.addEventListener(type, t.onMedia);
-
+    for (const type of MEDIA_EVENTS) el.addEventListener(type, t.onMedia);
+    // The window put in full screen by the worker: once it was the screen, ceasing to be (F11)
+    // leaves the theater.
+    t.onResize = () => {
+      placeCaption(t);
+      reportBoxes(t);
+      if (!t.windowFull) return;
+      if (viewportIsScreen()) t.wasScreen = true;
+      else if (t.wasScreen) closeTheater();
+    };
+    window.addEventListener('resize', t.onResize);
     window.addEventListener('keydown', onTheaterKey, true);
     document.addEventListener('fullscreenchange', onFullscreenChange);
-    (document.fullscreenElement ?? document.documentElement).appendChild(host);
+
+    // Full screen: the page's own, when it is already (the player goes inside that element and
+    // covers it), else the player's, else the window's. Never one full screen over another: on
+    // leaving, the page (YouTube) missed the end of its own and stayed in its full-screen layout.
+    const siteFull = document.fullscreenElement;
+    (siteFull ?? document.documentElement).appendChild(host);
     host.focus({ preventScroll: true });
-    if (gesture && host.requestFullscreen) {
-      host.requestFullscreen({ navigationUI: 'hide' }).catch(() => windowFullscreen(true));
+    if (siteFull) {
+      t.full = siteFull;
+    } else if (gesture) {
+      t.full = host;
+      host.requestFullscreen({ navigationUI: 'hide' }).catch(() => {
+        t.full = null;
+        windowFullscreen(true);
+      });
     } else {
       windowFullscreen(true);
     }
@@ -610,25 +626,30 @@
       if (theater !== t) return;
       if (!el.isConnected) return closeTheater();
       if (!el.paused && performance.now() - t.lastFrame > 250) drawFrame();
+      readCaptions(t);
       showProgress();
       t.raf = requestAnimationFrame(loop);
     };
     t.raf = requestAnimationFrame(loop);
     t.timer = setInterval(() => {
-      if (performance.now() - t.lastMove > CONTROLS_MS) fadeControls();
-      updateCaption();
+      if (performance.now() - t.lastMove > CONTROLS_MS) hideControls();
+      if (++t.ticks % 4 === 0) {
+        // Once a second anyway: boxes the watch cannot see change (a class given later, a style
+        // set above the page's player).
+        t.captionsStale = t.captionsDirty = true;
+      }
       placeCaption(t);
-      reportTheater(t, false);
       reportBoxes(t);
-      if (++t.ticks % 2 === 0) sendState(true);
+      reportTheater(t, false);
+      if (t.ticks % 2 === 0) sendState(true);
     }, 250);
+    watchCaptions(t);
     clockSamples = [];
     theta = clockError = NaN;
     for (let i = 0; i < CLOCK_SAMPLES; i++) setTimeout(pingClock, i * 60);
     t.clock = setInterval(pingClock, CLOCK_MS);
     drawFrame();
     showControls();
-    renderPanel();
     reportTheater(t, true);
     sendState(true);
     sendSoon();
@@ -642,36 +663,32 @@
     cancelAnimationFrame(t.raf);
     clearInterval(t.timer);
     clearInterval(t.clock);
-    clearTimeout(t.clickTimer);
-    for (const type of ['play', 'pause', 'seeked', 'volumechange', 'loadeddata', 'durationchange', 'ended'])
-      t.el.removeEventListener(type, t.onMedia);
+    for (const type of MEDIA_EVENTS) t.el.removeEventListener(type, t.onMedia);
+    unwatchCaptions(t);
+    window.removeEventListener('resize', t.onResize);
     window.removeEventListener('keydown', onTheaterKey, true);
     document.removeEventListener('fullscreenchange', onFullscreenChange);
-    if (document.fullscreenElement === t.host) {
-      t.leaving = true;
-      document.exitFullscreen().catch(() => {});
-    }
+    // Back to the page in its window, also when the theater was opened in the page's own full
+    // screen: the page sees its full screen end as if its own button did it.
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     if (t.windowFull) post({ type: 'windowFullscreen', on: false });
     t.host.remove();
     post({ type: 'theater', id: t.id, open: false });
     sendSoon();
   }
 
-  /** Asks the worker to put the browser window in full screen (no click to allow the page's own), or back. */
+  /** Asks the worker to put the browser window in full screen (no click to allow the page's own). */
   function windowFullscreen(on) {
     if (theater) theater.windowFull = on;
     post({ type: 'windowFullscreen', on });
   }
 
+  /** The theater's full screen ended (Esc, or the page left its own): so does the theater. */
   function onFullscreenChange() {
     const t = theater;
-    if (!t) return;
-    // Esc leaves the browser's full screen by itself; that leaves the theater too. The full
-    // screen button only leaves full screen.
-    if (document.fullscreenElement !== t.host && !t.leaving && !t.windowFull) return closeTheater();
-    t.leaving = false;
-    showControls();
-    reportTheater(t, false);
+    if (!t || !t.full) return;
+    if (document.fullscreenElement === t.full) reportTheater(t, false);
+    else closeTheater();
   }
 
   function theaterAction(act, target) {
@@ -691,25 +708,14 @@
       case 'mute':
         el.muted = !el.muted;
         break;
-      case 'fullscreen':
-        if (document.fullscreenElement === t.host) {
-          t.leaving = true;
-          document.exitFullscreen().catch(() => {});
-        } else if (t.windowFull) {
-          windowFullscreen(false);
-        } else {
-          t.host.requestFullscreen?.({ navigationUI: 'hide' }).catch(() => windowFullscreen(true));
-        }
-        break;
       case 'settings':
-        t.panel.classList.toggle('hidden');
+        t.panel.hidden = !t.panel.hidden;
         renderPanel();
-        reportBoxes(t);
         break;
       case 'exit':
         closeTheater();
         return;
-      default:
+      case 'cmd':
         // The 3D panel's buttons: the app changes its settings and tells the new values back.
         if (target?.dataset.command) post({ type: 'command', name: target.dataset.command });
         break;
@@ -718,12 +724,11 @@
   }
 
   function onTheaterKey(e) {
-    const t = theater;
-    if (!t || e.ctrlKey || e.altKey || e.metaKey) return;
+    if (!theater || e.ctrlKey || e.altKey || e.metaKey) return;
     const act = {
       ' ': 'play', k: 'play', K: 'play', MediaPlayPause: 'play',
       ArrowLeft: 'back', j: 'back', J: 'back', ArrowRight: 'forward', l: 'forward', L: 'forward',
-      m: 'mute', M: 'mute', f: 'fullscreen', F: 'fullscreen', Escape: 'exit',
+      m: 'mute', M: 'mute', Escape: 'exit',
     }[e.key];
     if (!act) return;
     // The page under the player must not act on the key too.
@@ -738,32 +743,31 @@
     showControls();
   }
 
+  /** Shows the bar (and the panel, if open) and tells the app at once: it draws them from the live screen. */
   function showControls() {
     const t = theater;
     if (!t) return;
-    t.stage.classList.remove('idle');
-    t.top.style.opacity = t.bar.style.opacity = '';
-    t.top.style.pointerEvents = t.bar.style.pointerEvents = '';
     t.play.innerHTML = icon(t.el.paused || t.el.ended ? 'play' : 'pause');
     t.mute.innerHTML = icon(t.el.muted ? 'muted' : 'volume');
-    t.full.innerHTML = icon(document.fullscreenElement === t.host || t.windowFull ? 'window' : 'full');
-    t.controlsShown = true;
-    placeCaption(t);
+    if (!t.controlsShown) {
+      t.controlsShown = true;
+      t.bar.hidden = false;
+      t.stage.classList.remove('idle');
+    }
+    t.panel.style.bottom = `${Math.round(t.bar.offsetHeight + 12)}px`;
     showProgress();
-    // The app shows the controls from the live screen where they are: tell it at once.
+    placeCaption(t);
     reportBoxes(t);
   }
 
-  /** Controls stay while the video is paused, the panel is open or the mouse is on them. */
-  function fadeControls() {
+  /** The bar stays while the video is paused, the panel is open, or the mouse is on it or dragging. */
+  function hideControls() {
     const t = theater;
     if (!t || !t.controlsShown) return;
-    if (t.el.paused || !t.panel.classList.contains('hidden') || t.dragging !== null) return;
-    if (t.top.matches(':hover') || t.bar.matches(':hover')) return;
-    t.top.style.opacity = t.bar.style.opacity = '0';
-    t.top.style.pointerEvents = t.bar.style.pointerEvents = 'none';
-    t.stage.classList.add('idle');
+    if (t.el.paused || !t.panel.hidden || t.dragging !== null || t.bar.matches(':hover')) return;
     t.controlsShown = false;
+    t.bar.hidden = true;
+    t.stage.classList.add('idle');
     placeCaption(t);
     reportBoxes(t);
   }
@@ -777,7 +781,7 @@
     const t = theater;
     if (!t || !t.controlsShown) return;
     const el = t.el, live = !Number.isFinite(el.duration) || el.duration <= 0;
-    t.seek.classList.toggle('hidden', live);
+    t.seek.hidden = live;
     const fraction = t.dragging ?? (live ? 0 : el.currentTime / el.duration);
     t.done.style.width = `${fraction * 100}%`;
     t.knob.style.left = `${fraction * 100}%`;
@@ -806,6 +810,7 @@
     if (t.canvas.width !== w || t.canvas.height !== h) {
       t.canvas.width = w;
       t.canvas.height = h;
+      placeCaption(t);
     }
     try {
       t.ctx.drawImage(el, 0, 0, w, h);
@@ -816,8 +821,8 @@
     if (mediaTime === t.drawnTime) return;
     t.drawnTime = mediaTime;
     t.drawn++;
-    // The page's caption as it is with this frame (the timer alone would show it up to 250 ms late).
-    updateCaption();
+    // The page's caption as it is with this frame, if it changed.
+    readCaptions(t);
     if (!Number.isFinite(theta)) return;   // not on the app's clock yet
     // Drawn now, the canvas is on the screen with the next frame of the page.
     const display = meta ? meta.expectedDisplayTime : performance.now() + 1000 / 60;
@@ -841,14 +846,14 @@
 
   /**
    * Where the player's picture is, in this frame's CSS px with the px ratio, and whether the
-   * viewport is the whole screen (full screen, the page's or the window's): only then is that
+   * viewport is the whole screen (the player's or the window's full screen): only then is that
    * also its place on the screen.
    */
   function reportTheater(t, force) {
     const picture = theaterPicture(t);
     const round = v => Math.round(v * 10) / 10;
-    // The player full screen (the page's own full screen) fills the screen by definition.
-    const full = document.fullscreenElement === t.host;
+    // An element full screen fills the screen by definition (Edge's outer size need not match).
+    const full = t.full !== null && document.fullscreenElement === t.full;
     const message = {
       type: 'theater', id: t.id, open: true,
       picture: picture ? { x: round(picture.x), y: round(picture.y), width: round(picture.width), height: round(picture.height) } : null,
@@ -864,99 +869,137 @@
   }
 
   /**
-   * Whether this frame's viewport is the whole screen (the page or the window is full screen):
-   * the window as big as the screen (screen units, which page zoom does not change) and the
-   * viewport of the screen's shape (no tab strip or toolbar left).
+   * Whether this frame's viewport is the whole screen (the window is full screen): the viewport
+   * the screen's size, or (page zoom changes the viewport's CSS px, not the screen's) the window
+   * as big as the screen with a viewport of the screen's shape (no tab strip or toolbar left).
+   * Edge's outer size in full screen can be a few px off the screen's (1489×832 against 1501×844).
    */
   function viewportIsScreen() {
+    if (Math.abs(innerWidth - screen.width) <= 2 && Math.abs(innerHeight - screen.height) <= 2) return true;
     if (Math.abs(outerWidth - screen.width) > 2 || Math.abs(outerHeight - screen.height) > 2) return false;
     return innerHeight > 0 && Math.abs(innerWidth / innerHeight - screen.width / screen.height) < 0.01;
   }
 
-  /** The boxes of the player's own controls and caption over the picture (the app keeps them flat). */
+  /**
+   * The boxes the player draws over its picture, sent when they change: the bar and the panel
+   * (which the app draws live and flat) and the caption's lines (which it keeps flat).
+   */
   function reportBoxes(t) {
     const boxes = [];
     const add = (r, kind) => {
       if (r.width >= 2 && r.height >= 2)
         boxes.push({ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height), kind });
     };
-    if (t.controlsShown) {
-      for (const b of t.root.querySelectorAll('.top button, .bar .row button')) add(b.getBoundingClientRect(), 'control');
-      add(t.seek.getBoundingClientRect(), 'control');
-      add(t.time.getBoundingClientRect(), 'control');
-    }
-    if (!t.panel.classList.contains('hidden')) add(t.panel.getBoundingClientRect(), 'control');
-    const span = t.caption.firstChild;
-    if (span) for (const r of span.getClientRects()) add(r, 'caption');
+    if (t.controlsShown) add(t.bar.getBoundingClientRect(), 'control');
+    if (!t.panel.hidden) add(t.panel.getBoundingClientRect(), 'panel');
+    for (const r of t.caption.firstChild?.getClientRects() ?? []) add(r, 'caption');
     const text = JSON.stringify(boxes);
     if (text === t.boxes) return;
     t.boxes = text;
-    // When they changed, on the app's clock: the app gives each frame the boxes it shows (a frame
-    // early rather than late: a caption shown before its box would bend with the scene).
+    // When they changed, on the app's clock: the app gives each frame the boxes it shows.
     post({ type: 'overlays', id: t.id, boxes, at: Number.isFinite(theta) ? performance.now() + theta : null });
   }
 
   /** The 3D settings panel, from the values the app last sent. */
   function renderPanel() {
     const t = theater;
-    if (!t || t.panel.classList.contains('hidden')) return;
+    if (!t || t.panel.hidden) return;
     const s = appStatus.settings;
     if (!s) {
       t.panel.innerHTML = '<div class="value">The 3D settings come from the ImmersiveSBS app.</div>';
-      return;
+    } else {
+      const step = (label, less, more) =>
+        `<div class="line"><button class="round" data-act="cmd" data-command="${less}">−</button>` +
+        `<div class="value">${label}</div><button class="round" data-act="cmd" data-command="${more}">+</button></div>`;
+      const toggle = (label, command) =>
+        `<div class="line"><button class="wide" data-act="cmd" data-command="${command}">${label}</button></div>`;
+      const esc = v => String(v ?? '').replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`);
+      const plane = Number(s.plane);
+      const layout = { sideBySide: 'side-by-side 3D, shown as is', topBottom: 'top-bottom 3D, shown as is' }[s.layout] ?? '2D, converted';
+      t.panel.innerHTML =
+        step(`Model:  ${esc(s.model)}`, 'modelPrevious', 'modelNext') +
+        step(`Resolution:  ${esc(s.size)}`, 'sizePrevious', 'sizeNext') +
+        step(`Depth:  ${Number(s.depth).toFixed(1)}`, 'depthLess', 'depthMore') +
+        step(`Screen plane:  ${plane.toFixed(2)} (${plane < 0.5 ? 'behind' : plane > 0.5 ? 'in front' : 'balanced'})`, 'planeBack', 'planeForward') +
+        step(`Timing:  ${esc(s.timing)}`, 'timingLess', 'timingMore') +
+        step(`Stretch:  ×${Number(s.stretch ?? 1).toFixed(2)}`, 'stretchLess', 'stretchMore') +
+        toggle(`Video:  ${layout}`, 'layoutNext') +
+        toggle(`Snap depth edges to the picture:  ${s.edgeSnap ? 'on' : 'off'}`, 'edgeSnap') +
+        toggle(`Keep subtitles flat:  ${s.captions ? 'on' : 'off'}`, 'captions');
     }
-    const step = (label, less, more) =>
-      `<div class="line"><button class="round" data-act="cmd" data-command="${less}">−</button>` +
-      `<div class="value">${label}</div><button class="round" data-act="cmd" data-command="${more}">+</button></div>`;
-    const toggle = (label, command) =>
-      `<div class="line"><button class="wide" data-act="cmd" data-command="${command}">${label}</button></div>`;
-    const esc = v => String(v ?? '').replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`);
-    const plane = Number(s.plane);
-    const layout = { sideBySide: 'side-by-side 3D, shown as is', topBottom: 'top-bottom 3D, shown as is' }[s.layout] ?? '2D, converted';
-    t.panel.innerHTML =
-      step(`Model:  ${esc(s.model)}`, 'modelPrevious', 'modelNext') +
-      step(`Resolution:  ${esc(s.size)}`, 'sizePrevious', 'sizeNext') +
-      step(`Depth:  ${Number(s.depth).toFixed(1)}`, 'depthLess', 'depthMore') +
-      step(`Screen plane:  ${plane.toFixed(2)} (${plane < 0.5 ? 'behind' : plane > 0.5 ? 'in front' : 'balanced'})`, 'planeBack', 'planeForward') +
-      step(`Timing:  ${esc(s.timing)}`, 'timingLess', 'timingMore') +
-      step(`Stretch:  ×${Number(s.stretch ?? 1).toFixed(2)}`, 'stretchLess', 'stretchMore') +
-      toggle(`Video:  ${layout}`, 'layoutNext') +
-      toggle(`Snap depth edges to the picture:  ${s.edgeSnap ? 'on' : 'off'}`, 'edgeSnap') +
-      toggle(`Keep subtitles flat:  ${s.captions ? 'on' : 'off'}`, 'captions');
-    // New values can change its size; the app shows it from the live screen where it is.
+    // New values can change its size.
     reportBoxes(t);
   }
 
-  /** The player around a video: its largest ancestor not much bigger than its picture. */
-  function playerOf(el) {
-    const pic = pictureRect(el);
-    const area = pic ? pic.width * pic.height : 0;
-    let player = el;
-    for (let up = el.parentElement, k = 0; up && k < 8 && area > 0; up = up.parentElement, k++) {
-      const r = up.getBoundingClientRect();
-      if (r.width * r.height > 1.6 * area) break;
-      player = up;
-    }
-    return player;
+  // -- The page's captions
+  // The page's captions, shown in the player: the text of its caption boxes (the page keeps
+  // drawing them under the player) and the element's native cues. Read here, never sent.
+  //
+  // They are read only when they may have changed. A read makes the page lay itself out
+  // (visibility, boxes, innerText), and the page under the player changes every frame (its
+  // controls, its progress), so reading on every frame drawn cost the page a forced layout 25–60
+  // times a second for text that changes every few seconds. A MutationObserver on the page's
+  // player marks them changed when a caption box (or anything holding one) does, a text track's
+  // cue change does the same, and the next animation frame reads them once.
+
+  /** Starts watching the page's captions for the open theater. */
+  function watchCaptions(t) {
+    t.onCaptionChange = () => { t.captionsDirty = true; };
+    t.captionObserver = new MutationObserver(records => onCaptionMutations(t, records));
+    const tracks = t.el.textTracks;
+    t.onTracks = () => {
+      for (const track of tracks) {
+        if (t.tracks.includes(track)) continue;
+        t.tracks.push(track);
+        track.addEventListener('cuechange', t.onCaptionChange);
+      }
+      t.captionsDirty = true;
+    };
+    tracks.addEventListener('addtrack', t.onTracks);
+    tracks.addEventListener('change', t.onCaptionChange);   // a track shown or hidden
+    t.onTracks();
   }
 
-  /**
-   * The page's captions, shown in the player: its own caption boxes' text (the page keeps
-   * drawing them under the player) and the element's native cues. Read here, never sent.
-   */
+  function unwatchCaptions(t) {
+    t.captionObserver?.disconnect();
+    t.el.textTracks.removeEventListener('addtrack', t.onTracks);
+    t.el.textTracks.removeEventListener('change', t.onCaptionChange);
+    for (const track of t.tracks) track.removeEventListener('cuechange', t.onCaptionChange);
+  }
+
+  /** What the page changed in its player: a caption box's text, look or presence, or a new box. */
+  function onCaptionMutations(t, records) {
+    for (const r of records) {
+      if (t.captionsDirty && t.captionsStale) return;
+      if (r.type === 'childList' && !t.captionsStale) {
+        for (const node of r.addedNodes)
+          if (node.nodeType === 1 && (node.matches(CAPTION_SELECTORS) || node.querySelector(CAPTION_SELECTORS))) t.captionsStale = true;
+      }
+      if (t.captionsDirty) continue;
+      const target = r.target.nodeType === 1 ? r.target : r.target.parentElement;
+      if (target && t.captions.some(node => node.contains(target) || target.contains(node))) t.captionsDirty = true;
+    }
+    if (t.captionsStale) t.captionsDirty = true;
+  }
+
+  /** Reads the page's captions if they may have changed since the last read. */
+  function readCaptions(t) {
+    if (t.captionsStale) findCaptionBoxes(t);
+    if (t.captionsDirty) updateCaption();
+  }
+
   function updateCaption() {
     const t = theater;
     if (!t) return;
+    t.captionsDirty = false;
     const lines = [];
-    if (t.player !== t.el) {
-      const video = t.el.getBoundingClientRect();
-      const nodes = [...t.player.querySelectorAll(CAPTION_SELECTORS)].filter(node => isCaption(node, video, t.player));
-      for (const node of nodes) {
-        if (nodes.some(other => other !== node && other.contains(node))) continue;
-        const text = (node.innerText ?? '').trim();
-        // A list (a menu of subtitle languages the class names did not give away) is no caption.
-        if (text && text.split('\n').length <= CAPTION_MAX_LINES) lines.push(text);
-      }
+    const video = t.el.getBoundingClientRect();
+    const shown = t.captions.filter(node => isCaption(node, video));
+    for (const node of shown) {
+      if (shown.some(other => other !== node && other.contains(node))) continue;
+      const text = (node.innerText ?? '').trim();
+      // A list (a menu of subtitle languages the class names did not give away) is no caption.
+      if (text && text.split('\n').length <= CAPTION_MAX_LINES) lines.push(text);
     }
     for (const track of t.el.textTracks) {
       if (track.mode !== 'showing' || !track.activeCues) continue;
@@ -978,19 +1021,55 @@
   }
 
   /**
-   * Whether a box the caption selectors matched is a caption shown now: rendered and visible
-   * (a hidden box's innerText is all its text: WeTV's hidden subtitle menu), over the video, and
-   * not a control, a menu or a settings panel (players name those "subtitle" too).
+   * Finds the elements that could hold the page's captions, and watches the player they are in:
+   * those the selectors match in the page's player around the video (its nearest ancestors, up
+   * to CAPTION_ANCESTORS, below the body), less controls and menus. Which of them show a caption
+   * is decided on each read.
    */
-  function isCaption(node, video, player) {
+  function findCaptionBoxes(t) {
+    t.captionsStale = false;
+    let player = null;
+    for (let up = t.el.parentElement, k = 0; up && k < CAPTION_ANCESTORS; up = up.parentElement, k++) {
+      if (up === document.body || up === document.documentElement) break;
+      player = up;
+    }
+    if (player !== t.captionPlayer) {
+      t.captionObserver.disconnect();
+      if (player) {
+        t.captionObserver.observe(player, {
+          subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'],
+        });
+      }
+      t.captionPlayer = player;
+    }
+    t.captions = [];
+    if (player)
+      for (const node of player.querySelectorAll(CAPTION_SELECTORS)) {
+        // A box holding the video is the player or a wrapper, never its caption.
+        if (node.contains(t.el) || node.matches(CAPTION_NOT) || node.querySelector(CAPTION_NOT)) continue;
+        if (typeof node.className === 'string' && CAPTION_NOT_CLASS.test(node.className)) continue;
+        // Inside a control or a menu (one that does not hold the whole video, as a page's dialog may).
+        const around = node.parentElement?.closest(CAPTION_NOT);
+        if (around && !around.contains(t.el)) continue;
+        t.captions.push(node);
+      }
+    t.captionsDirty = true;
+  }
+
+  /**
+   * Whether a caption box shows a caption now: rendered and visible (a hidden box's innerText is
+   * all its text: WeTV's hidden subtitle menu), and mostly over the video. Under the player's
+   * full screen the page may lay its video out at no size at all (WeTV: 937×0) while its caption
+   * stays shown; being in the page's player is the test then.
+   */
+  function isCaption(node, video) {
+    if (!node.isConnected) return false;
     const visible = node.checkVisibility
       ? node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true, opacityProperty: true, visibilityProperty: true })
       : node.getClientRects().length > 0;
     if (!visible) return false;
-    const around = node.closest(CAPTION_NOT);
-    if ((around && player.contains(around)) || node.querySelector(CAPTION_NOT)) return false;
-    if (typeof node.className === 'string' && CAPTION_NOT_CLASS.test(node.className)) return false;
     const r = node.getBoundingClientRect();
+    if (video.width < 2 || video.height < 2) return r.width > 0 && r.height > 0;
     const x = Math.min(r.right, video.right) - Math.max(r.left, video.left);
     const y = Math.min(r.bottom, video.bottom) - Math.max(r.top, video.top);
     return r.width > 0 && r.height > 0 && x > 0 && y > 0 && x * y >= 0.5 * r.width * r.height;
@@ -1000,7 +1079,7 @@
    * Keeps the caption inside the picture: the app shows the picture's rectangle late (the
    * buffer, matched timing) and the rest of the screen live, so a caption in the black bars
    * would show before its line is spoken, and one across the edge twice. Low in the picture,
-   * above the controls while they show, never above the picture's middle.
+   * above the bar while it shows, never above the picture's middle.
    */
   function placeCaption(t) {
     const pic = theaterPicture(t);
@@ -1016,6 +1095,7 @@
     if (style === t.captionStyle) return;
     t.captionStyle = style;
     t.caption.style.cssText = style;
+    reportBoxes(t);
   }
 
   /** Where the canvas shows the picture, in this frame's viewport CSS px. */

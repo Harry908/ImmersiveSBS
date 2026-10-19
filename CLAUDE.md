@@ -91,10 +91,19 @@ per file. Source files mix CRLF and LF line endings; keep each file's own.
   (`BrowserLink.SetStatus`, with the 3D panel's values, the stretch and what the video is), a
   "3D theater" button shows over a video the mouse is on; pressed (a real click, so the page may
   go full screen), a player in a closed shadow root covers the page, goes full screen and draws
-  the video at its own size (stretched if set) on a canvas, with its own controls (seek bar,
-  time, ±10 s, play/pause, mute, full screen, exit, keys Space/K, ←/→ J/L, M, F, Esc, double
-  click), a 3D panel whose buttons come back as `command` messages, and the page's captions
-  copied in. While open it reports itself (`theater`: its picture in viewport CSS px, the px
+  the video at its own size (stretched if set) on a canvas. It stays full screen while open:
+  leaving full screen closes it (no windowed theater), and the page is back in its window. Opened
+  while the page is in its own full screen, the player goes inside that element and uses it
+  instead of going full screen over it: with two levels, YouTube missed the end of its own and
+  stayed in its full-screen layout after the theater closed. One frosted bar (seek bar, time, ±10 s, play/pause, mute, 3D
+  panel, exit; keys Space/K, ←/→ J/L, M, Esc; a click on the picture plays or pauses), a 3D
+  panel whose buttons come back as `command` messages, and the page's captions copied in (its
+  caption boxes within 6 ancestors of the video, and text tracks; read only when a
+  MutationObserver on the page's player or a `cuechange` says they changed, and once a second
+  anyway: a read forces the page's layout). The bar ("control") and the
+  panel ("panel") are one box each, drawn live and flat over the delayed picture
+  (`AiStereo.LiveControls`: those on the screen now, plus the panel's place in the held frame
+  shown, so a closed panel goes at once; a hidden bar lingers for the delay). While open it reports itself (`theater`: its picture in viewport CSS px, the px
   ratio, whether the viewport is the screen), each frame it draws on the app's clock, its state
   and its own boxes; `TheaterReport` maps the picture to the screen. The controller follows the
   newest open theater, if the browser is full screen on the virtual monitor (`FullScreenOn`),
@@ -135,7 +144,9 @@ per file. Source files mix CRLF and LF line endings; keep each file's own.
 - In an element's full screen Edge's `outerWidth`/`outerHeight` need not match `screen` (1489×832
   against 1501×844): the theater counts as on the screen when `document.fullscreenElement` is
   its player, not by comparing sizes. A hidden element's `innerText` is all its text, so caption
-  boxes are read only when `checkVisibility()` says they are shown.
+  boxes are read only when `checkVisibility()` says they are shown. While another element (the
+  theater) is full screen, WeTV lays its video out at no height (937×0) but keeps its caption
+  shown: captions are not tested against a video box that has no size.
 - The app delays only the theater picture's rectangle (buffer, matched timing) and shows the
   rest live: a caption drawn in the black bars showed seconds early, and one across the
   picture's edge twice. The player keeps its caption inside the picture (`placeCaption`).
