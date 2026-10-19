@@ -51,20 +51,16 @@ public class ParallelSpeedTests(ITestOutputHelper output)
         double serialLuma = Time(() => { using (RowBands.Limit(1)) foreach (float[] x in s.Inputs) DepthService.Luma(x, luma, w * h); }) / Frames;
         double parallelLuma = Time(() => { foreach (float[] x in s.Inputs) DepthService.Luma(x, luma, w * h); }) / Frames;
 
-        // 3. The render thread's blends for each shown frame: the buffer's five neighbours, matched timing's two.
-        float[][] maps = [.. parallelOut.Take(5)];
-        float[] weights = [1, 2, 3, 2, 1];
+        // 3. The render thread's blend for a shown frame whose own depth the model skipped.
+        float[][] maps = [.. parallelOut.Take(2)];
         var blended = new float[w * h];
-        double serialFive = Time(() => { using (RowBands.Limit(1)) for (int k = 0; k < Frames; k++) NearnessBlend.Weighted(maps, weights, 5, blended); }) / Frames;
-        double parallelFive = Time(() => { for (int k = 0; k < Frames; k++) NearnessBlend.Weighted(maps, weights, 5, blended); }) / Frames;
         double serialTwo = Time(() => { using (RowBands.Limit(1)) for (int k = 0; k < Frames; k++) NearnessBlend.Lerp(maps[0], maps[1], 0.4f, blended); }) / Frames;
         double parallelTwo = Time(() => { for (int k = 0; k < Frames; k++) NearnessBlend.Lerp(maps[0], maps[1], 0.4f, blended); }) / Frames;
 
         output.WriteLine("ms per frame          one core   parallel   speed-up");
         Row("post-processing", serialPost, parallelPost);
         Row("luma (depth thread)", serialLuma, parallelLuma);
-        Row("buffer blend of 5", serialFive, parallelFive);
-        Row("matched blend of 2", serialTwo, parallelTwo);
+        Row("blend of 2", serialTwo, parallelTwo);
         output.WriteLine($"Largest difference between the two outputs: {largest:0.#######} (nearness 0..1).");
 
         Assert.True(largest < 1e-4f, $"the split changed the depth by {largest}");
@@ -118,7 +114,7 @@ public class ParallelSpeedTests(ITestOutputHelper output)
         }
 
         List<float[]> raw = [];
-        using (DepthEstimator? estimator = SampleClip.TryLoad(model, out string why))
+        using (IDepthRunner? estimator = SampleClip.TryLoad(model, out string why))
         {
             if (estimator != null)
             {

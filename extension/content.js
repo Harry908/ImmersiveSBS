@@ -6,11 +6,14 @@
 //   DelayNode -> output. The sound never leaves the browser.
 // - While the app says the glasses are in 3D mode, it shows a "3D theater" button over a video
 //   under the mouse. The theater is that video alone, full screen for as long as it is open: a
-//   player covering the page draws it at its own size on a canvas, with the page's captions and
-//   one opaque control bar; the app captures that screen and turns the picture into 3D.
+//   player covering the page draws it on a canvas, with the page's captions and one control bar.
+//   While the sound is delayed, the player shows the picture as late itself, its controls live
+//   over it: the app shows that screen as it is and turns the picture into 3D.
 // - While the theater is open it reports, for that video only: where the picture is on the
-//   screen, each frame it draws (on the app's clock), its playback state, and the boxes of its
-//   bar, its 3D panel and its caption (which the app keeps flat).
+//   screen, each frame it draws (on the app's clock), its playback state, the boxes of its bar,
+//   its 3D panel and its caption (which the app keeps flat), and each frame the video presents,
+//   small (the depth model's input size, JPEG), as it plays: the app's model gets the depth
+//   ready before the player shows it. The frames go only to the app on this PC.
 //
 // What cannot be delayed is left alone and reported: protected (DRM) media, media from another
 // origin without CORS (Web Audio would get silence from it), and pages where the browser does
@@ -50,7 +53,10 @@
   let port = null;
   let appConnected = false; // the worker has the app: only then is anything measured and sent
   let wanted = 0;           // delay asked for, s
+  let wantedPicture = 0;    // how late the theater shows the picture, s (the sound's, less the trim and output latency)
   let context = null;       // AudioContext, made on the first delay
+  let holding = false;      // the context is suspended by us: the theater's video is paused
+  let contextRan = false;   // the browser has let the context run once: audio is allowed in this page
   let applying = Promise.resolve();
   let lastSent = '';
   let lastShadowScan = 0;
@@ -98,7 +104,10 @@
         if (!state) return;
         if (type === 'seeked') state.seeks = (state.seeks ?? 0) + 1;
         if (type === 'playing') queueApply();
-        if (theater?.el === el) sendState(false);
+        if (theater?.el === el) {
+          onTheaterMedia(el, state, type);
+          sendState(false);
+        }
         sendSoon();
       });
     }
@@ -167,7 +176,10 @@
 
   /** What the app needs to know about an element: for the sound, and which video the theater shows. */
   function describe(el, state) {
-    const reason = blocker(el) ?? (wanted > 0 && context && context.state !== 'running' ? 'blocked' : null);
+    // A context the browser has not let run yet (no click in the page) blocks the delay. One that
+    // ran once and is suspended now is ours: held for a pause, or resuming from one, which takes
+    // a moment; reported as blocked then, the app dropped the buffer on every play.
+    const reason = blocker(el) ?? (wanted > 0 && context && context.state !== 'running' && !holding && !contextRan ? 'blocked' : null);
     const r = document.visibilityState === 'visible' ? pictureRect(el) : null;
     return {
       id: state.id,
@@ -213,6 +225,7 @@
   function onWorkerMessage(m) {
     if (m?.type === 'delay') {
       wanted = Number(m.seconds) > 0 ? Number(m.seconds) : 0;
+      wantedPicture = wanted > 0 && Number(m.picture) > 0 ? Number(m.picture) : 0;
       queueApply();
     } else if (m?.type === 'app') {
       appConnected = m.connected === true;
@@ -221,10 +234,19 @@
       send();
       if (theater) reportTheater(theater, true);
     } else if (m?.type === 'status') {
-      appStatus = { glasses: m.glasses === true, offer: m.offer === true, settings: m.settings ?? null };
-      if (!appStatus.glasses || !appStatus.offer) showButton(null);
+      const size = m.picture;
+      appStatus = {
+        glasses: m.glasses === true, settings: m.settings ?? null,
+        picture: Number(size?.width) > 0 && Number(size?.height) > 0 ? { width: Number(size.width), height: Number(size.height) } : null,
+      };
+      if (!appStatus.glasses) showButton(null);
       renderPanel();
-      if (theater) drawFrame();   // the stretch may have changed
+      if (theater) {
+        // The stretch may have changed.
+        if (delaying(theater)) sizePicture(theater);
+        else drawLive(theater, null);
+        sendState(true);
+      }
     } else if (m?.type === 'theater') {
       // The app's tray or shortcut: open the player on one video (the worker chose it), or close it.
       if (m.open !== true) closeTheater();
@@ -281,12 +303,16 @@
     send();
   }
 
-  /** The browser lets audio start only after the page had a click; resolves whether it runs. */
+  /** The browser lets audio start only after the page had a click; resolves whether it runs (or is held by us). */
   async function contextRunning() {
     if (!context) {
       context = new AudioContext({ latencyHint: 'interactive' });
-      context.onstatechange = sendSoon;
+      context.onstatechange = () => {
+        if (context.state === 'running') contextRan = true;
+        sendSoon();
+      };
     }
+    if (holding) return true;
     if (context.state !== 'running') {
       try {
         await Promise.race([context.resume(), new Promise(r => setTimeout(r, 500))]);
@@ -322,6 +348,7 @@
         const node = new DelayNode(context, { maxDelayTime: maxDelay, delayTime: want });
         node.maxDelay = maxDelay;
         route(el, state, node);
+        if (theater?.el === el) filling(theater, want);
       }
       state.applied = want;
     } else if (state.applied !== 0 || state.node) {
@@ -339,6 +366,64 @@
     if (state.node && state.node !== node) state.node.disconnect();
     state.node = node;
     if (!node) state.applied = 0;
+  }
+
+  // ---- Holding the delayed sound -----------------------------------------------------------
+  // While the theater's video is paused its delayed sound is held, not drained: the audio
+  // context is suspended, so the delay line keeps the seconds not yet heard and plays them when
+  // the video plays again, without a gap; the picture, kept on that clock, holds with it. At the
+  // end the delayed tail plays out. A network stall is not held: the buffered seconds play on,
+  // and the stall comes that much later, sound and picture together, as it happened. A seek
+  // starts the line again: the old position's sound and frames are dropped, and the theater
+  // shows a spinner until the new position's are heard.
+
+  function onTheaterMedia(el, state, type) {
+    const t = theater;
+    if (type === 'pause' && !el.ended) holdSound(state.node !== null);
+    else if (type === 'playing' || type === 'ended') {
+      holdSound(false);
+      t.preview = false;
+    } else if (type === 'seeking') {
+      // A jump in the video: its times start a new line for the depth the app files by them.
+      t.line++;
+      // A looping video's jump back to the start plays on through the delay.
+      if (el.loop && el.currentTime < 0.5) return;
+      if (restartDelay(el, state)) {
+        dropPictures(t);
+        // The spinner stays until the new place's first frame is drawn (finding it takes a moment).
+        t.waitFor = t.line;
+        // Paused, the new place shows at once (it is heard as late, after play).
+        t.preview = holding;
+      }
+    }
+  }
+
+  function holdSound(on) {
+    if (!context || holding === on) return;
+    holding = on;
+    (on ? context.suspend() : context.resume()).catch(() => {});
+  }
+
+  /** A seek: the delay line starts again, silent for its delay. False when there is none. */
+  function restartDelay(el, state) {
+    if (!context || !state.node || state.applied <= 0) return false;
+    const node = new DelayNode(context, { maxDelayTime: state.node.maxDelay, delayTime: state.applied });
+    node.maxDelay = state.node.maxDelay;
+    route(el, state, node);
+    filling(theater, state.applied);
+    return true;
+  }
+
+  /** The theater's spinner shows while a new delay line is silent (half a second or more). */
+  function filling(t, seconds) {
+    if (seconds >= 0.5) t.fillUntil = context.currentTime + seconds;
+  }
+
+  /** How far behind the video what the viewer hears (and sees) is, s. */
+  function behind(t) {
+    const state = media.get(t.el);
+    if (!context || !state?.node) return 0;
+    return Math.max(0, state.applied - Math.max(0, t.fillUntil - context.currentTime));
   }
 
   // ---- The app's clock -------------------------------------------------------------------
@@ -371,18 +456,17 @@
   // full screen for as long as it is open, so the glasses never show the page or the desktop
   // around the video: leaving full screen (Esc, F11) leaves the theater.
   //
-  // The app shows the picture late (buffer, matched timing) and the rest of the screen live. So
-  // the bar and the 3D panel are reported as one box each, which the app draws from the live
-  // screen: they answer the mouse at once. Both are frosted (blurred and tinted), so the live
-  // video under them shows only as soft colour, not as a picture out of step with the one
-  // around them. The caption stays inside the picture, late with it, in step with the sound.
+  // While the sound is delayed (the buffer, matched timing) the player shows the picture as late
+  // (see "The picture, late with the sound"), with the caption that went with each frame, and its
+  // bar, 3D panel and spinner live over it: the screen is always the finished picture. Those are
+  // reported as one box each, which the app draws flat in both eyes.
 
   const THEATER_MIN_WIDTH = 160, THEATER_MIN_HEIGHT = 90;
   const CONTROLS_MS = 2500;      // the bar hides this long after the mouse stops (while playing)
   const SEEK_STEP = 10;          // s, the ← → keys and the back / on buttons
   const CAPTION_ANCESTORS = 6;   // how far up from the video the page's player is looked for
-  /** What the app tells: { glasses: in 3D mode, offer: show the button, settings: the 3D panel's values }. */
-  let appStatus = { glasses: false, offer: false, settings: null };
+  /** What the app tells: { glasses: in 3D mode (the button shows only then), settings: the 3D panel's values }. */
+  let appStatus = { glasses: false, settings: null };
   let button = null;             // { host, el (the video under it), timer }
   let theater = null;            // the open player, see openTheater
   let moveQueued = false;
@@ -430,7 +514,7 @@
 
   /** The tracked video whose picture is at a point of this frame's viewport, big enough for the theater. */
   function videoAt(x, y) {
-    if (!appConnected || !appStatus.glasses || !appStatus.offer) return null;
+    if (!appConnected || !appStatus.glasses) return null;
     for (const [el] of media) {
       if (el.tagName !== 'VIDEO' || !el.isConnected) continue;
       const r = pictureRect(el);
@@ -501,26 +585,34 @@
       .caption { position: absolute; text-align: center; pointer-events: none; }
       .caption span { display: inline; white-space: pre-line; color: #fff; background: rgba(8,8,8,.75); padding: 2px 8px;
         font-size: inherit; line-height: 1.35; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
-      .frosted { background: rgba(20,20,24,.5); border: 1px solid rgba(255,255,255,.14);
+      .frosted { background: rgba(20,20,24,.4); border: 1px solid rgba(255,255,255,.11);
         backdrop-filter: blur(28px) saturate(1.3); -webkit-backdrop-filter: blur(28px) saturate(1.3); }
-      .frosted button { background: rgba(255,255,255,.08); backdrop-filter: none; -webkit-backdrop-filter: none; }
-      .frosted button:hover, .frosted button:focus-visible { background: rgba(255,255,255,.2); }
-      .bar { position: absolute; left: 16px; right: 16px; bottom: 16px; padding: 8px 18px 12px; border-radius: 12px; }
+      .frosted button { background: rgba(255,255,255,.064); backdrop-filter: none; -webkit-backdrop-filter: none; }
+      .frosted button:hover, .frosted button:focus-visible { background: rgba(255,255,255,.16); }
+      /* Kept toward the middle: the glasses blur the edges of the picture. */
+      .bar { position: absolute; left: max(18%, calc(50% - 560px)); right: max(18%, calc(50% - 560px)); bottom: 6%;
+        padding: 8px 18px 12px; border-radius: 12px; }
       .seek { position: relative; height: 24px; cursor: pointer; touch-action: none; }
       .track { position: absolute; left: 0; right: 0; top: 9px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.3); }
       .seek:hover .track { top: 7px; height: 10px; border-radius: 5px; }
       .done { position: absolute; left: 0; top: 0; bottom: 0; border-radius: inherit; background: #60cdff; }
       .knob { position: absolute; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; background: #fff; }
       .row { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; margin-top: 6px; }
-      .time { color: #fff; font-size: 16px; font-variant-numeric: tabular-nums; }
+      .time { color: #fff; font-size: 18px; padding-left: 12px; font-variant-numeric: tabular-nums; }
       .middle, .right { display: flex; gap: 14px; align-items: center; }
       .right { justify-self: end; }
-      .panel { position: absolute; right: 16px; padding: 12px; border-radius: 12px; display: grid; gap: 8px; }
+      .panel { position: absolute; left: 50%; transform: translateX(-50%); padding: 12px; border-radius: 12px; display: grid; gap: 8px; }
+      .spinner { position: absolute; left: 50%; top: 50%; width: 88px; height: 88px; margin: -44px 0 0 -44px;
+        border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+      .spinner .ring { width: 48px; height: 48px; border-radius: 50%; border: 5px solid rgba(255,255,255,.25);
+        border-top-color: #fff; animation: spin .9s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
       .panel .line { display: grid; grid-template-columns: 48px 340px 48px; gap: 8px; align-items: center; }
       .panel .value { color: #fff; font-size: 15px; padding: 0 12px; }
       .panel button.wide { grid-column: 1 / 4; justify-content: flex-start; }
       </style>
       <div class="stage"><canvas></canvas><div class="caption"></div></div>
+      <div class="spinner frosted" hidden><div class="ring"></div></div>
       <div class="panel frosted" hidden></div>
       <div class="bar frosted">
         <div class="seek"><div class="track"><div class="done"></div></div><div class="knob"></div></div>
@@ -543,13 +635,17 @@
       el, id: media.get(el).id, host, root, canvas: $('canvas'), stage: $('.stage'), caption: $('.caption'), panel: $('.panel'),
       bar: $('.bar'), seek: $('.seek'), done: $('.done'), knob: $('.knob'), time: $('.time'),
       play: $('[data-act="play"]'), mute: $('[data-act="mute"]'),
-      ctx: null, vfc: 0, raf: 0, timer: 0, clock: 0, ticks: 0, lastFrame: 0, lastMove: performance.now(), dragging: null,
+      ctx: null, pic: null, vfc: 0, raf: 0, timer: 0, clock: 0, ticks: 0, lastFrame: 0, lastMove: performance.now(), dragging: null,
       full: null, windowFull: false, wasScreen: false, controlsShown: true,
+      fillUntil: 0, line: 0, waitFor: null, preview: false, spinner: $('.spinner'),
       captions: [], captionPlayer: null, captionObserver: null, captionsDirty: true, captionsStale: true, tracks: [],
-      onCaptionChange: null, onTracks: null, shownCaption: '', captionStyle: '',
-      drawn: 0, drawnTime: NaN, reported: '', boxes: '', state: '', onMedia: null, onResize: null,
+      onCaptionChange: null, onTracks: null, liveCaption: '', shownCaption: '', captionStyle: '',
+      liveTime: NaN, drawn: 0, drawnTime: NaN, drawnLine: 0, reported: '', boxes: '', state: '', onMedia: null, onResize: null,
+      small: null, smallCtx: null, picturesOut: 0, picturesBlocked: false,
     };
-    t.ctx = t.canvas.getContext('2d', { alpha: false });
+    // Kept frames need WebGL, which refuses a video the page may not read (another site's, without CORS).
+    t.pic = blocker(el) === 'cross-origin' ? null : createPicture(t.canvas);
+    if (!t.pic) t.ctx = t.canvas.getContext('2d', { alpha: false });
     theater = t;
 
     root.addEventListener('click', e => {
@@ -577,7 +673,8 @@
       t.dragging = null;
     });
     t.onMedia = () => {
-      if (el.paused) drawFrame();
+      // Paused, a seek shows its frame (with the picture delayed, only a seek's: see onTheaterMedia).
+      if (el.paused && (!delaying(t) || t.preview)) onVideoFrame(t, null);
       showControls();
     };
     for (const type of MEDIA_EVENTS) el.addEventListener(type, t.onMedia);
@@ -612,20 +709,26 @@
       windowFullscreen(true);
     }
 
-    // Each frame the video presents is drawn as it comes; a frame callback that stops coming
-    // (an element the browser no longer presents under the player) is covered by the
-    // animation loop, which draws whatever the element shows now.
+    // Each frame the video presents is sent to the app and drawn, or kept to be drawn late; a
+    // frame callback that stops coming (an element the browser no longer presents under the
+    // player) is covered by the animation loop, which takes whatever the element shows now. The
+    // loop draws the kept frames as their sound is heard.
     const onFrame = (now, meta) => {
       if (theater !== t) return;
       t.lastFrame = performance.now();
-      drawFrame(meta);
+      onVideoFrame(t, meta);
       t.vfc = el.requestVideoFrameCallback?.(onFrame) ?? 0;
     };
     t.vfc = el.requestVideoFrameCallback?.(onFrame) ?? 0;
     const loop = () => {
       if (theater !== t) return;
       if (!el.isConnected) return closeTheater();
-      if (!el.paused && performance.now() - t.lastFrame > 250) drawFrame();
+      if (!el.paused && performance.now() - t.lastFrame > 250) onVideoFrame(t, null);
+      if (t.pic?.queue.length) {
+        if (delaying(t)) showDue(t);
+        else dropPictures(t);
+      }
+      showSpinner(t);
       readCaptions(t);
       showProgress();
       t.raf = requestAnimationFrame(loop);
@@ -648,7 +751,7 @@
     theta = clockError = NaN;
     for (let i = 0; i < CLOCK_SAMPLES; i++) setTimeout(pingClock, i * 60);
     t.clock = setInterval(pingClock, CLOCK_MS);
-    drawFrame();
+    onVideoFrame(t, null);
     showControls();
     reportTheater(t, true);
     sendState(true);
@@ -665,6 +768,9 @@
     clearInterval(t.clock);
     for (const type of MEDIA_EVENTS) t.el.removeEventListener(type, t.onMedia);
     unwatchCaptions(t);
+    holdSound(false);
+    // The kept frames' GPU memory goes at once, not when the page is collected.
+    t.pic?.gl.getExtension('WEBGL_lose_context')?.loseContext();
     window.removeEventListener('resize', t.onResize);
     window.removeEventListener('keydown', onTheaterKey, true);
     document.removeEventListener('fullscreenchange', onFullscreenChange);
@@ -703,7 +809,7 @@
       case 'back':
       case 'forward':
         if (Number.isFinite(el.duration))
-          el.currentTime = Math.min(Math.max(0, el.currentTime + (act === 'back' ? -SEEK_STEP : SEEK_STEP)), el.duration);
+          el.currentTime = Math.min(Math.max(0, el.currentTime - behind(t) + (act === 'back' ? -SEEK_STEP : SEEK_STEP)), el.duration);
         break;
       case 'mute':
         el.muted = !el.muted;
@@ -754,9 +860,19 @@
       t.bar.hidden = false;
       t.stage.classList.remove('idle');
     }
-    t.panel.style.bottom = `${Math.round(t.bar.offsetHeight + 12)}px`;
+    // Just above the bar, wherever it sits.
+    t.panel.style.bottom = `${Math.round(t.stage.getBoundingClientRect().bottom - t.bar.getBoundingClientRect().top + 12)}px`;
     showProgress();
     placeCaption(t);
+    reportBoxes(t);
+  }
+
+  /** The spinner while a new delay line fills, and after a seek until its first frame shows (not while paused: the bar says that). */
+  function showSpinner(t) {
+    if (t.waitFor !== null && !delaying(t)) t.waitFor = null;
+    const on = !!context && (t.fillUntil > context.currentTime || t.waitFor !== null) && !t.el.paused;
+    if (t.spinner.hidden !== on) return;
+    t.spinner.hidden = !on;
     reportBoxes(t);
   }
 
@@ -782,10 +898,12 @@
     if (!t || !t.controlsShown) return;
     const el = t.el, live = !Number.isFinite(el.duration) || el.duration <= 0;
     t.seek.hidden = live;
-    const fraction = t.dragging ?? (live ? 0 : el.currentTime / el.duration);
+    // The time seen and heard, which the delay keeps behind the video's own.
+    const seen = Math.max(0, el.currentTime - behind(t));
+    const fraction = t.dragging ?? (live ? 0 : seen / el.duration);
     t.done.style.width = `${fraction * 100}%`;
     t.knob.style.left = `${fraction * 100}%`;
-    const now = live ? el.currentTime : fraction * el.duration;
+    const now = live ? seen : fraction * el.duration;
     t.time.textContent = live ? clock(now) : `${clock(now)} / ${clock(el.duration)}`;
   }
 
@@ -796,37 +914,343 @@
   }
 
   /**
-   * Draws the video's current picture on the canvas, stretched as the app's setting says, and
-   * reports it to the app when it is a new frame: its count, its time in the video and when it
-   * is shown, on the app's clock. <meta>: the frame callback's, when it came from one.
+   * A frame the video presents (<meta>: the frame callback's; null: whatever it shows now): with
+   * the page's caption as it is with it, sent to the app for the depth model, and drawn now, or
+   * kept to be drawn as late as the sound.
    */
-  function drawFrame(meta) {
-    const t = theater;
-    if (!t) return;
+  function onVideoFrame(t, meta) {
+    const mediaTime = meta ? meta.mediaTime : t.el.currentTime;
+    if (!meta && mediaTime === t.liveTime) return;
+    t.liveTime = mediaTime;
+    readCaptions(t);
+    sendPicture(t, mediaTime);
+    if (delaying(t)) keepFrame(t, meta);
+    else drawLive(t, meta);
+  }
+
+  /** Draws the video's current picture on the canvas, stretched as the app's setting says. */
+  function drawLive(t, meta) {
+    if (!sizePicture(t)) return;
+    if (t.pic) {
+      if (!uploadVideo(t)) return;
+      glPass(t.pic, 'copy', null, t.canvas.width, t.canvas.height, t.pic.live);
+      releaseShown(t.pic);
+    } else {
+      try {
+        t.ctx.drawImage(t.el, 0, 0, t.canvas.width, t.canvas.height);
+      } catch {
+        return; // not decodable now (no frame yet): the last one stays
+      }
+    }
+    presented(t, meta ? meta.mediaTime : t.el.currentTime, t.line, meta);
+    showCaption(t, t.liveCaption);
+  }
+
+  /**
+   * Tells the app a new frame is on the canvas: its count, its time in the video and its line,
+   * and when it is shown, on the app's clock (drawn now, it is on the screen with the page's next frame).
+   */
+  function presented(t, mediaTime, line, meta) {
+    if (mediaTime === t.drawnTime && line === t.drawnLine) return;
+    t.drawnTime = mediaTime;
+    t.drawnLine = line;
+    t.drawn++;
+    if (!Number.isFinite(theta)) return;   // not on the app's clock yet
+    const display = meta ? meta.expectedDisplayTime : performance.now() + 1000 / 60;
+    post({ type: 'frame', id: t.id, presented: t.drawn, media: mediaTime, line, display: display + theta,
+      width: t.canvas.width, height: t.canvas.height });
+  }
+
+  /**
+   * Sizes the canvas: with kept frames, the picture's size on the screen (they are kept at that
+   * size); without, the video's own (stretched). False while the video has no picture yet.
+   */
+  function sizePicture(t) {
     const el = t.el, vw = el.videoWidth, vh = el.videoHeight;
-    if (!vw || !vh) return;
+    if (!vw || !vh) return false;
     const stretch = Number(appStatus.settings?.stretch) > 0 ? Number(appStatus.settings.stretch) : 1;
-    const w = Math.round(vw * stretch), h = vh;
+    let w = Math.round(vw * stretch), h = vh;
+    if (t.pic) {
+      const box = t.stage.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+      const aspect = vw * stretch / vh;
+      let cw = box.width, ch = cw / aspect;
+      if (ch > box.height) {
+        ch = box.height;
+        cw = ch * aspect;
+      }
+      w = Math.max(2, Math.round(cw * dpr));
+      h = Math.max(2, Math.round(ch * dpr));
+    }
     if (t.canvas.width !== w || t.canvas.height !== h) {
       t.canvas.width = w;
       t.canvas.height = h;
+      if (t.pic) {
+        t.pic.width = w;
+        t.pic.height = h;
+        // A new size clears the canvas: the kept frame on it again (frames kept at the old size are drawn scaled).
+        if (t.pic.shown) glPass(t.pic, 'show', null, w, h, t.pic.shown.y.tex, t.pic.shown.uv.tex);
+      }
       placeCaption(t);
     }
+    return true;
+  }
+
+  // -- The picture, late with the sound
+  // While the sound is delayed the player shows the picture as late itself, so the screen is
+  // always the finished picture: the video late, the bar, the panel and the spinner over it
+  // live, and the app shows that screen as it is. (The app used to delay the captured screen,
+  // where the page had already merged video and controls: those came seconds late, and patched in
+  // from the live screen they showed the video at another time, a see-through hole that stayed
+  // where a panel had been.) Each frame the video presents is kept in GPU memory as luma and
+  // half-size chroma (1.5 bytes a pixel, at the size it is shown) with the time on the audio
+  // clock, and drawn when its sound is heard: that clock stops while the sound is held (a pause),
+  // so the picture holds with it.
+
+  const PICTURE_BUDGET = 640 * 1024 * 1024;  // bytes of kept frames at most (2 s of 1080p at 60 fps: 373 MB)
+  const PICTURE_LEAD = 0.035;                // s from drawing to the glasses: the page's next frame, the app's capture and present
+
+  const GL_VERTEX = `#version 300 es
+    out vec2 uv;
+    void main() {
+      vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+      uv = p;
+      gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+    }`;
+  // The video texture's first row is the picture's top; everything drawn here has it at the bottom.
+  const glFragment = body => `#version 300 es
+    precision highp float;
+    in vec2 uv;
+    out vec4 o;
+    uniform sampler2D a, b;
+    const vec3 K = vec3(0.2126, 0.7152, 0.0722);
+    vec3 video() { return texture(a, vec2(uv.x, 1.0 - uv.y)).rgb; }
+    void main() { ${body} }`;
+  const GL_PROGRAMS = {
+    copy: 'o = vec4(video(), 1.0);',
+    luma: 'o = vec4(dot(video(), K), 0.0, 0.0, 1.0);',
+    chroma: 'vec3 c = video(); float y = dot(c, K); o = vec4((c.b - y) / 1.8556 + 0.5, (c.r - y) / 1.5748 + 0.5, 0.0, 1.0);',
+    show: 'float y = texture(a, uv).r; vec2 c = texture(b, uv).rg - 0.5; float r = y + 1.5748 * c.y, bl = y + 1.8556 * c.x; ' +
+      'o = vec4(r, (y - 0.2126 * r - 0.0722 * bl) / 0.7152, bl, 1.0);',
+  };
+
+  /** The canvas's WebGL 2 drawing and kept frames, or null without WebGL 2. */
+  function createPicture(canvas) {
+    let gl = null;
     try {
-      t.ctx.drawImage(el, 0, 0, w, h);
+      gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false, powerPreference: 'high-performance' });
     } catch {
-      return; // not decodable now (no frame yet): the last one stays
+      gl = null;
     }
-    const mediaTime = meta ? meta.mediaTime : el.currentTime;
-    if (mediaTime === t.drawnTime) return;
-    t.drawnTime = mediaTime;
-    t.drawn++;
-    // The page's caption as it is with this frame, if it changed.
-    readCaptions(t);
-    if (!Number.isFinite(theta)) return;   // not on the app's clock yet
-    // Drawn now, the canvas is on the screen with the next frame of the page.
-    const display = meta ? meta.expectedDisplayTime : performance.now() + 1000 / 60;
-    post({ type: 'frame', id: t.id, presented: t.drawn, media: mediaTime, display: display + theta, width: w, height: h });
+    if (!gl) return null;
+    const shader = (type, text) => {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, text);
+      gl.compileShader(s);
+      return s;
+    };
+    const vertex = shader(gl.VERTEX_SHADER, GL_VERTEX);
+    const programs = {};
+    for (const [name, body] of Object.entries(GL_PROGRAMS)) {
+      const p = gl.createProgram();
+      gl.attachShader(p, vertex);
+      gl.attachShader(p, shader(gl.FRAGMENT_SHADER, glFragment(body)));
+      gl.linkProgram(p);
+      if (!gl.getProgramParameter(p, gl.LINK_STATUS)) return null;
+      gl.useProgram(p);
+      gl.uniform1i(gl.getUniformLocation(p, 'a'), 0);
+      gl.uniform1i(gl.getUniformLocation(p, 'b'), 1);
+      programs[name] = p;
+    }
+    gl.bindVertexArray(gl.createVertexArray());
+    // The video at its own size, with mipmaps: drawn smaller (4K into the screen's size) without shimmer.
+    const live = glTexture(gl, gl.LINEAR_MIPMAP_LINEAR);
+    return { gl, programs, live, width: 0, height: 0, slots: [], free: [], queue: [], shown: null };
+  }
+
+  function glTexture(gl, minFilter) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, minFilter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return tex;
+  }
+
+  function glPass(pic, program, framebuffer, width, height, a, b) {
+    const gl = pic.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.viewport(0, 0, width, height);
+    gl.useProgram(pic.programs[program]);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, a);
+    if (b) {
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, b);
+    }
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  /** The video's current picture into the live texture; false when there is none, or the page may not read it (then without WebGL from now on). */
+  function uploadVideo(t) {
+    if (t.el.readyState < 2) return false;
+    const gl = t.pic.gl;
+    try {
+      gl.bindTexture(gl.TEXTURE_2D, t.pic.live);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, t.el);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      return true;
+    } catch {
+      fallBackTo2d(t);
+      return false;
+    }
+  }
+
+  /** A canvas drawn with 2D and no kept frames: the sound is not delayed for it (see delaying). */
+  function fallBackTo2d(t) {
+    const canvas = document.createElement('canvas');
+    t.canvas.replaceWith(canvas);
+    t.pic?.gl.getExtension('WEBGL_lose_context')?.loseContext();
+    t.pic = null;
+    t.canvas = canvas;
+    t.ctx = canvas.getContext('2d', { alpha: false });
+    sendState(true);
+  }
+
+  /** A free place for a frame at the canvas's size, made while the budget allows; null when full. */
+  function takeSlot(pic) {
+    while (pic.free.length) {
+      const slot = pic.free.pop();
+      if (slot.y.w === pic.width && slot.y.h === pic.height) return slot;
+      // Of a size before (the stretch changed): its memory goes.
+      const gl = pic.gl;
+      for (const plane of [slot.y, slot.uv]) {
+        gl.deleteFramebuffer(plane.fb);
+        gl.deleteTexture(plane.tex);
+      }
+      pic.slots.splice(pic.slots.indexOf(slot), 1);
+    }
+    const bytes = slot => slot.y.w * slot.y.h * 1.5;
+    if (pic.slots.reduce((sum, slot) => sum + bytes(slot), 0) + pic.width * pic.height * 1.5 > PICTURE_BUDGET) return null;
+    const gl = pic.gl;
+    const plane = (format, w, h) => {
+      const tex = glTexture(gl, gl.LINEAR);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, format, w, h);
+      const fb = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      return { tex, fb, w, h };
+    };
+    const slot = { y: plane(gl.R8, pic.width, pic.height), uv: plane(gl.RG8, (pic.width + 1) >> 1, (pic.height + 1) >> 1) };
+    pic.slots.push(slot);
+    return slot;
+  }
+
+  /** The picture is delayed: kept frames, a delay asked for, and the sound going through its delay line. */
+  function delaying(t) {
+    return !!t.pic && wantedPicture > 0 && !!context && !!media.get(t.el)?.node;
+  }
+
+  /** The audio clock <ahead> s from now, s; it stands still while the sound is held. */
+  function soundClock(ahead) {
+    return context.state === 'running' ? context.currentTime + ahead : context.currentTime;
+  }
+
+  /** Keeps the video's current picture, stamped with the audio clock at the moment it is presented. */
+  function keepFrame(t, meta) {
+    const pic = t.pic;
+    if (!sizePicture(t) || !uploadVideo(t)) return;
+    let slot = takeSlot(pic);
+    if (!slot) {
+      // Over the budget (a long delay at a high frame rate): every other frame not yet shown goes.
+      pic.queue = pic.queue.filter((entry, i) => {
+        if (i % 2 === 1 || i === pic.queue.length - 1) return true;
+        pic.free.push(entry.slot);
+        return false;
+      });
+      slot = takeSlot(pic);
+      if (!slot) return;
+    }
+    glPass(pic, 'luma', slot.y.fb, slot.y.w, slot.y.h, pic.live);
+    glPass(pic, 'chroma', slot.uv.fb, slot.uv.w, slot.uv.h, pic.live);
+    const ahead = meta ? Math.max(0, (meta.expectedDisplayTime - performance.now()) / 1000) : 0;
+    pic.queue.push({ slot, at: soundClock(ahead), media: meta ? meta.mediaTime : t.el.currentTime, line: t.line, caption: t.liveCaption });
+    if (t.preview) showKept(t, pic.queue.length - 1);
+  }
+
+  /** Draws the newest kept frame whose sound is heard by the time it reaches the glasses. */
+  function showDue(t) {
+    const queue = t.pic.queue;
+    const due = soundClock(1 / 60) + PICTURE_LEAD - wantedPicture;
+    let k = -1;
+    while (k + 1 < queue.length && queue[k + 1].at <= due) k++;
+    if (k >= 0) showKept(t, k);
+  }
+
+  function showKept(t, k) {
+    const pic = t.pic, entry = pic.queue[k];
+    glPass(pic, 'show', null, t.canvas.width, t.canvas.height, entry.slot.y.tex, entry.slot.uv.tex);
+    for (const old of pic.queue.splice(0, k)) pic.free.push(old.slot);
+    pic.queue.shift();
+    releaseShown(pic);
+    // The frame on the canvas stays kept, to draw it again if the canvas changes size.
+    pic.shown = entry.slot;
+    if (t.waitFor !== null && entry.line >= t.waitFor) t.waitFor = null;
+    presented(t, entry.media, entry.line, null);
+    showCaption(t, entry.caption);
+  }
+
+  function releaseShown(pic) {
+    if (pic.shown) pic.free.push(pic.shown);
+    pic.shown = null;
+  }
+
+  /** Forgets the kept frames not shown yet (a seek: the old place's; the delay off). */
+  function dropPictures(t) {
+    if (!t.pic) return;
+    for (const entry of t.pic.queue) t.pic.free.push(entry.slot);
+    t.pic.queue = [];
+  }
+
+  // -- The frames for the depth model
+  // Each frame the video presents goes to the app as it plays, at the model's input size, so its
+  // depth is ready before the player shows it late. Only to the app on this PC, as the capture
+  // of the screen does; not for a video the page may not read (another site's, without CORS).
+
+  function sendPicture(t, mediaTime) {
+    const size = appStatus.picture;
+    if (!size || t.picturesBlocked || t.picturesOut >= 2 || t.el.readyState < 2) return;
+    const w = size.width, h = size.height;
+    if (t.small?.width !== w || t.small?.height !== h) {
+      t.small = new OffscreenCanvas(w, h);
+      t.smallCtx = t.small.getContext('2d', { alpha: false });
+      t.smallCtx.imageSmoothingQuality = 'high';
+    }
+    try {
+      t.smallCtx.drawImage(t.el, 0, 0, w, h);
+    } catch {
+      return;
+    }
+    const line = t.line;
+    t.picturesOut++;
+    t.small.convertToBlob({ type: 'image/jpeg', quality: 0.9 })
+      .then(blob => blob.arrayBuffer())
+      .then(bytes => {
+        if (theater === t) post({ type: 'picture', id: t.id, line, media: mediaTime, width: w, height: h, jpeg: base64(bytes) });
+      })
+      .catch(() => {
+        // A video the page may not read: the app takes the depth from the screen instead.
+        t.picturesBlocked = true;
+        sendState(true);
+      })
+      .finally(() => { t.picturesOut--; });
+  }
+
+  function base64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let text = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(text);
   }
 
   /** The video's playback state: at once on a change, and twice a second so the app knows it is current. */
@@ -837,6 +1261,9 @@
     const message = {
       type: 'state', id: t.id, paused: el.paused || el.ended, seeking: el.seeking, seeks: media.get(el)?.seeks ?? 0,
       rate: el.playbackRate, clockError: Number.isFinite(clockError) ? Math.round(clockError * 100) / 100 : null,
+      // A video with no end (a live stream) is never delayed; the player sends its frames for
+      // the depth model and can show them late (WebGL, a video it may read).
+      live: el.duration === Infinity, pictures: !!appStatus.picture && !t.picturesBlocked && !!t.pic,
     };
     const text = JSON.stringify(message);
     if (!force && text === t.state) return;
@@ -892,6 +1319,7 @@
     };
     if (t.controlsShown) add(t.bar.getBoundingClientRect(), 'control');
     if (!t.panel.hidden) add(t.panel.getBoundingClientRect(), 'panel');
+    if (!t.spinner.hidden) add(t.spinner.getBoundingClientRect(), 'control');
     for (const r of t.caption.firstChild?.getClientRects() ?? []) add(r, 'caption');
     const text = JSON.stringify(boxes);
     if (text === t.boxes) return;
@@ -923,9 +1351,7 @@
         step(`Screen plane:  ${plane.toFixed(2)} (${plane < 0.5 ? 'behind' : plane > 0.5 ? 'in front' : 'balanced'})`, 'planeBack', 'planeForward') +
         step(`Timing:  ${esc(s.timing)}`, 'timingLess', 'timingMore') +
         step(`Stretch:  ×${Number(s.stretch ?? 1).toFixed(2)}`, 'stretchLess', 'stretchMore') +
-        toggle(`Video:  ${layout}`, 'layoutNext') +
-        toggle(`Snap depth edges to the picture:  ${s.edgeSnap ? 'on' : 'off'}`, 'edgeSnap') +
-        toggle(`Keep subtitles flat:  ${s.captions ? 'on' : 'off'}`, 'captions');
+        toggle(`Video:  ${layout}`, 'layoutNext');
     }
     // New values can change its size.
     reportBoxes(t);
@@ -1008,7 +1434,12 @@
         if (text) lines.push(text);
       }
     }
-    const text = [...new Set(lines)].join('\n');
+    t.liveCaption = [...new Set(lines)].join('\n');
+    // Late with the picture while it is delayed: each kept frame carries the caption read with it.
+    if (!delaying(t)) showCaption(t, t.liveCaption);
+  }
+
+  function showCaption(t, text) {
     if (text === t.shownCaption) return;
     t.shownCaption = text;
     t.caption.replaceChildren();
@@ -1076,10 +1507,8 @@
   }
 
   /**
-   * Keeps the caption inside the picture: the app shows the picture's rectangle late (the
-   * buffer, matched timing) and the rest of the screen live, so a caption in the black bars
-   * would show before its line is spoken, and one across the edge twice. Low in the picture,
-   * above the bar while it shows, never above the picture's middle.
+   * Keeps the caption inside the picture, where the app holds it flat in front of the scene:
+   * low in the picture, above the bar while it shows, never above the picture's middle.
    */
   function placeCaption(t) {
     const pic = theaterPicture(t);

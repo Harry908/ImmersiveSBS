@@ -1,14 +1,13 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
-using ImmersiveSBS.Capture;
 using ImmersiveSBS.Depth;
 using ImmersiveSBS.Displays;
 using ImmersiveSBS.Input;
 
 namespace ImmersiveSBS;
 
-/// <summary>Settings, plus the live status and measurements of the running session.</summary>
+/// <summary>Settings, with the live status of the app and its depth model.</summary>
 public partial class SettingsWindow : Window
 {
     /// <summary>A display in a picker; a null identity means "pick automatically".</summary>
@@ -55,28 +54,17 @@ public partial class SettingsWindow : Window
         Fill(VirtualMonitorBox, displays, s.VirtualMonitorIdentity, s.ResolveVirtualMonitorIdentity(displays));
         Fill(GlassesBox, displays, s.GlassesIdentity, s.ResolveGlassesIdentity(displays));
 
-        CaptureBox.SelectedIndex = s.CaptureMethod == CaptureMethod.GraphicsCapture ? 1 : 0;
         ShowIn2DBox.IsChecked = s.ShowIn2D;
-        CursorBox.IsChecked = s.KeepCursorOffGlasses;
-        WindowsBox.IsChecked = s.MoveWindowsOffGlasses;
-        ShowInWindowBox.IsChecked = s.ShowInWindowWhenNotOnGlasses;
-        EvacuateBox.IsChecked = s.MoveWindowsOffVirtualMonitorOnExit;
         StartWithWindowsBox.IsChecked = AppSettings.StartWithWindows;
         BuildShortcutRows(s);
 
-        AiTargetBox.SelectedIndex = s.Ai3D == AiTarget.WholeScreen ? 1 : 0;
+        WholeScreenBox.IsChecked = s.Ai3D == AiTarget.WholeScreen;
         DepthTierBox.SelectedIndex = (int)s.DepthTier;
         DepthPresetBox.SelectedIndex = (int)s.DepthPreset;
-        Native3DBox.SelectedIndex = (int)s.Native3D;
-        SelectClosest(StrengthBox, s.Ai3DStrength);
-        SelectClosest(ConvergenceBox, s.Ai3DConvergence);
-        SelectClosest(StretchBox, s.VideoStretch);
-        OfferTheaterBox.IsChecked = s.OfferTheater;
         for (int i = 0; i < AppController.TimingChoices.Length; i++) TimingBox.Items.Add(new ComboBoxItem());
         UpdateTimingChoices();
         TimingBox.SelectedIndex = AppController.TimingIndex(s);
-        SelectClosest(AudioOffsetBox, s.AudioOffsetMs);
-        ModelsText.Text = $"Model files: {DepthModel.ModelsDirectory}. The first use of a model on this PC prepares it for the GPU (about 20 s).";
+        shown = Shown(s);
 
         controller.StatusChanged += UpdateStatus;
         statsTimer.Tick += (_, _) => UpdateStatus();
@@ -102,17 +90,6 @@ public partial class SettingsWindow : Window
         box.SelectedIndex = match == null ? 0 : 1 + displays.IndexOf(match);
     }
 
-    /// <summary>Selects the item whose Tag value is nearest to <paramref name="value"/>.</summary>
-    private static void SelectClosest(ComboBox box, double value)
-    {
-        box.SelectedItem = box.Items.OfType<ComboBoxItem>()
-            .OrderBy(i => Math.Abs(TagValue(i) - value))
-            .FirstOrDefault();
-    }
-
-    private static double TagValue(ComboBoxItem item) =>
-        double.Parse((string)item.Tag, System.Globalization.CultureInfo.InvariantCulture);
-
     private void UpdateStatus()
     {
         StatusText.Text = controller.StatusText + (controller.AudioStatus is string audio ? "; " + audio : "");
@@ -126,7 +103,29 @@ public partial class SettingsWindow : Window
         BrowserText.Text = controller.BrowserStatus;
         BrowserHelp.Visibility = controller.BrowserConnected ? Visibility.Collapsed : Visibility.Visible;
         UpdateTimingChoices();
-        StatsText.Text = controller.Session?.Stats?.ToString() ?? string.Empty;
+        FollowSettings();
+    }
+
+    /// <summary>The 3D values this window last took from the settings.</summary>
+    private (bool WholeScreen, int Model, int Size, int Timing) shown;
+
+    private static (bool, int, int, int) Shown(AppSettings s) =>
+        (s.Ai3D == AiTarget.WholeScreen, (int)s.DepthTier, (int)s.DepthPreset, AppController.TimingIndex(s));
+
+    /// <summary>
+    /// Values changed elsewhere while the window is open (the theater's 3D panel, the tray): a box
+    /// the user has not changed here follows, so Save keeps the other change instead of writing
+    /// back what the window showed when it opened.
+    /// </summary>
+    private void FollowSettings()
+    {
+        var now = Shown(controller.Settings);
+        if (now == shown) return;
+        if (WholeScreenBox.IsChecked == shown.WholeScreen) WholeScreenBox.IsChecked = now.Item1;
+        if (DepthTierBox.SelectedIndex == shown.Model) DepthTierBox.SelectedIndex = now.Item2;
+        if (DepthPresetBox.SelectedIndex == shown.Size) DepthPresetBox.SelectedIndex = now.Item3;
+        if (TimingBox.SelectedIndex == shown.Timing) TimingBox.SelectedIndex = now.Item4;
+        shown = now;
     }
 
     /// <summary>The buffer choices are unavailable (greyed, saying why) while no browser extension is connected.</summary>
@@ -178,23 +177,12 @@ public partial class SettingsWindow : Window
         AppSettings settings = controller.Settings.Clone();
         settings.VirtualMonitorIdentity = (VirtualMonitorBox.SelectedItem as DisplayChoice)?.Identity;
         settings.GlassesIdentity = (GlassesBox.SelectedItem as DisplayChoice)?.Identity;
-        settings.CaptureMethod = CaptureBox.SelectedIndex == 1 ? CaptureMethod.GraphicsCapture : CaptureMethod.DesktopDuplication;
         settings.ShowIn2D = ShowIn2DBox.IsChecked == true;
-        settings.KeepCursorOffGlasses = CursorBox.IsChecked == true;
-        settings.MoveWindowsOffGlasses = WindowsBox.IsChecked == true;
-        settings.ShowInWindowWhenNotOnGlasses = ShowInWindowBox.IsChecked == true;
-        settings.MoveWindowsOffVirtualMonitorOnExit = EvacuateBox.IsChecked == true;
         settings.Shortcuts = shortcuts;
-        settings.Ai3D = AiTargetBox.SelectedIndex == 1 ? AiTarget.WholeScreen : AiTarget.Off;
+        settings.Ai3D = WholeScreenBox.IsChecked == true ? AiTarget.WholeScreen : AiTarget.Off;
         settings.DepthTier = (DepthTier)Math.Max(0, DepthTierBox.SelectedIndex);
         settings.DepthPreset = (DepthPreset)Math.Max(0, DepthPresetBox.SelectedIndex);
-        settings.Native3D = (Native3DMode)Math.Max(0, Native3DBox.SelectedIndex);
-        if (StrengthBox.SelectedItem is ComboBoxItem strength) settings.Ai3DStrength = TagValue(strength);
-        if (ConvergenceBox.SelectedItem is ComboBoxItem convergence) settings.Ai3DConvergence = TagValue(convergence);
-        if (StretchBox.SelectedItem is ComboBoxItem stretch) settings.VideoStretch = TagValue(stretch);
-        settings.OfferTheater = OfferTheaterBox.IsChecked == true;
         if (TimingBox.SelectedIndex >= 0) AppController.SetTiming(settings, TimingBox.SelectedIndex);
-        if (AudioOffsetBox.SelectedItem is ComboBoxItem offset) settings.AudioOffsetMs = (int)TagValue(offset);
 
         try
         {

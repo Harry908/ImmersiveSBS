@@ -15,7 +15,6 @@ namespace ImmersiveSBS.Browser;
 public sealed record PageBox(CssRect Box, string Kind)
 {
     public bool IsCaption => Kind == "caption";
-    public bool IsPanel => Kind == "panel";
 }
 
 /// <summary>
@@ -73,7 +72,9 @@ public sealed class BrowserConnection
     internal bool SetFollowed(string? mediaId)
     {
         if (followed?.MediaId == mediaId) return false;
+        PageVideo? was = followed;
         followed = mediaId == null ? null : new PageVideo(mediaId);
+        was?.Dispose();
         overlays = [];
         return true;
     }
@@ -90,11 +91,15 @@ public sealed class BrowserConnection
     /// <summary>The tab whose sound is delayed, or null for every tab.</summary>
     public int? RequestedTab { get; private set; }
 
-    internal bool SetRequestedDelay(double seconds, int? tab)
+    /// <summary>How late the theater should show the picture, last asked, seconds.</summary>
+    public double RequestedPicture { get; private set; }
+
+    internal bool SetRequestedDelay(double seconds, int? tab, double picture)
     {
-        bool tabChanged = RequestedTab != tab;
+        bool changed = RequestedTab != tab || RequestedPicture != picture;
         RequestedTab = tab;
-        return (Interlocked.Exchange(ref requestedDelay, seconds) != seconds) | tabChanged;
+        RequestedPicture = picture;
+        return (Interlocked.Exchange(ref requestedDelay, seconds) != seconds) | changed;
     }
 
     internal Task SendAsync(object message, CancellationToken cancel) =>
@@ -199,15 +204,17 @@ public sealed class BrowserLink : IDisposable
 
     /// <summary>
     /// Asks <paramref name="connection"/> to play the sound of tab <paramref name="tab"/>'s pages
-    /// <paramref name="seconds"/> late (0: live), and every other tab's live; sent only when it
-    /// changes. Any thread.
+    /// <paramref name="seconds"/> late (0: live), and every other tab's live, and its theater to
+    /// show the picture <paramref name="picture"/> late (the delay without the user's trim and the
+    /// output's latency, which the page's clock includes); sent only when it changes. Any thread.
     /// </summary>
-    public void SetDelay(BrowserConnection connection, double seconds, int tab)
+    public void SetDelay(BrowserConnection connection, double seconds, int tab, double picture = 0)
     {
         seconds = Math.Round(Math.Max(0, seconds), 3);
+        picture = seconds > 0 ? Math.Round(Math.Max(0, picture), 3) : 0;
         int? delayed = seconds > 0 ? tab : null;
-        if (!connection.SetRequestedDelay(seconds, delayed)) return;
-        Send(connection, new { type = "delay", seconds, tab = delayed });
+        if (!connection.SetRequestedDelay(seconds, delayed, picture)) return;
+        Send(connection, new { type = "delay", seconds, tab = delayed, picture });
     }
 
     /// <summary>
@@ -220,13 +227,15 @@ public sealed class BrowserLink : IDisposable
     private string status = "";
 
     /// <summary>
-    /// What every browser is told about the app: whether the glasses show 3D,
-    /// whether to offer the theater button, and the 3D settings its panel shows. Sent when it
-    /// changes and to each browser that connects. Any thread.
+    /// What every browser is told about the app: whether the glasses show 3D (the theater
+    /// button shows only then), the 3D settings its panel shows, and the size the theater sends
+    /// its frames at for the depth model (null: none wanted). Sent when it changes and to each
+    /// browser that connects. Any thread.
     /// </summary>
-    public void SetStatus(bool glasses, bool offer, object? settings)
+    public void SetStatus(bool glasses, object? settings, System.Drawing.Size? picture = null)
     {
-        string text = JsonSerializer.Serialize(new { type = "status", glasses, offer, settings });
+        object? size = picture is { Width: > 0, Height: > 0 } p ? new { width = p.Width, height = p.Height } : null;
+        string text = JsonSerializer.Serialize(new { type = "status", glasses, settings, picture = size });
         if (Interlocked.Exchange(ref status, text) == text) return;
         foreach (BrowserConnection c in Connections) SendText(c, text);
     }
@@ -320,6 +329,7 @@ public sealed class BrowserLink : IDisposable
                         connections.Remove(connection);
                         Volatile.Write(ref snapshot, connections.Where(c => c.Accepted).ToArray());
                     }
+                    connection.Followed?.Dispose();
                     Log.Write($"Browser: {connection} disconnected.");
                     Changed?.Invoke();
                 }
@@ -465,13 +475,26 @@ public sealed class BrowserLink : IDisposable
                         double display = Number(root, "display", double.NaN), mediaTime = Number(root, "media", double.NaN);
                         long presented = (long)Number(root, "presented", -1);
                         if (double.IsFinite(display) && double.IsFinite(mediaTime) && presented >= 0)
-                            page.AddFrame(new PageVideo.FrameEvent(presented, mediaTime, (long)(display * Stopwatch.Frequency / 1000)));
+                            page.AddFrame(new PageVideo.FrameEvent(presented, mediaTime, (long)(display * Stopwatch.Frequency / 1000),
+                                (int)Number(root, "line", 0)));
+                    }
+                    break;
+                case "picture":
+                    // A frame as the video presents it, for the depth model (the theater shows it later).
+                    if (FollowedBy(connection, root) is { } sent && root.TryGetProperty("jpeg", out JsonElement jpeg)
+                        && jpeg.ValueKind == JsonValueKind.String && jpeg.TryGetBytesFromBase64(out byte[]? bytes))
+                    {
+                        double mediaTime = Number(root, "media", double.NaN);
+                        int width = (int)Number(root, "width", 0), height = (int)Number(root, "height", 0);
+                        if (double.IsFinite(mediaTime) && width > 0 && height > 0)
+                            sent.Pictures.Add((int)Number(root, "line", 0), mediaTime, width, height, bytes, received);
                     }
                     break;
                 case "state":
                     if (FollowedBy(connection, root) is { } followed)
                     {
-                        followed.SetState(Flag(root, "paused"), Flag(root, "seeking"), (int)Number(root, "seeks", 0));
+                        followed.SetState(Flag(root, "paused"), Flag(root, "seeking"), (int)Number(root, "seeks", 0),
+                            Flag(root, "live"), Flag(root, "pictures"));
                         double error = Number(root, "clockError", double.NaN);
                         if (double.IsFinite(error)) followed.ClockErrorMs = error;
                     }
@@ -490,8 +513,7 @@ public sealed class BrowserLink : IDisposable
                             long from = double.IsFinite(at) ? (long)(at * Stopwatch.Frequency / 1000) : received;
                             boxed.AddBoxes(Math.Min(from, Stopwatch.GetTimestamp()),
                                 parsed.Where(b => !b.IsCaption).Select(b => shown.ToScreen(b.Box)).ToArray(),
-                                parsed.Where(b => b.IsCaption).Select(b => shown.ToScreen(b.Box)).ToArray(),
-                                parsed.Where(b => b.IsPanel).Select(b => shown.ToScreen(b.Box)).ToArray());
+                                parsed.Where(b => b.IsCaption).Select(b => shown.ToScreen(b.Box)).ToArray());
                         }
                     }
                     break;

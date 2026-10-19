@@ -103,16 +103,16 @@ public sealed class BrowserLinkTests : IDisposable
     [Fact]
     public async Task TheAppTellsItsStatusAndTakesTheTheatersCommands()
     {
-        link.SetStatus(glasses: true, offer: true, settings: new { depth = 0.6, timing = "auto" });
+        link.SetStatus(glasses: true, settings: new { depth = 0.6, timing = "auto" });
         using ClientWebSocket socket = await ConnectAsync(ExtensionOrigin);
         await SendAsync(socket, Hello);
         JsonElement first = await ReceiveAsync(socket);
         Assert.Equal("status", first.GetProperty("type").GetString());
-        Assert.True(first.GetProperty("glasses").GetBoolean() && first.GetProperty("offer").GetBoolean());
+        Assert.True(first.GetProperty("glasses").GetBoolean());
         Assert.Equal(0.6, first.GetProperty("settings").GetProperty("depth").GetDouble());
 
-        link.SetStatus(glasses: true, offer: true, settings: new { depth = 0.6, timing = "auto" });
-        link.SetStatus(glasses: false, offer: true, settings: new { depth = 0.6, timing = "auto" });
+        link.SetStatus(glasses: true, settings: new { depth = 0.6, timing = "auto" });
+        link.SetStatus(glasses: false, settings: new { depth = 0.6, timing = "auto" });
         JsonElement second = await ReceiveAsync(socket);
         Assert.False(second.GetProperty("glasses").GetBoolean());
 
@@ -211,7 +211,7 @@ public sealed class BrowserLinkTests : IDisposable
         double now = BrowserLink.ClockMs(System.Diagnostics.Stopwatch.GetTimestamp());
         await SendAsync(socket, $$"""{"type":"frame","id":"7:0:abc#1","presented":41,"media":12.5,"display":{{now + 16}},"width":1920,"height":1080}""");
         await SendAsync(socket, """{"type":"frame","id":"7:0:other#2","presented":99,"media":1,"display":1}""");
-        await SendAsync(socket, """{"type":"state","id":"7:0:abc#1","paused":true,"seeking":false,"seeks":3,"rate":1,"clockError":0.4}""");
+        await SendAsync(socket, """{"type":"state","id":"7:0:abc#1","paused":true,"seeking":false,"seeks":3,"rate":1,"clockError":0.4,"live":true,"pictures":true}""");
         await SendAsync(socket, """
             {"type":"overlays","id":"7:0:abc#1","boxes":[{"x":10,"y":980,"width":620,"height":40,"kind":"control"},
               {"x":100,"y":850,"width":400,"height":30,"kind":"caption"},{"x":1400,"y":300,"width":460,"height":500,"kind":"panel"},
@@ -228,17 +228,18 @@ public sealed class BrowserLinkTests : IDisposable
         Assert.True(page.Paused);
         Assert.Equal(3, page.Seeks);
         Assert.Equal(0.4, page.ClockErrorMs);
+        Assert.True(page.Live);
+        Assert.True(page.SendsPictures);
         Assert.Equal(3, c.Overlays.Count);
         Assert.True(c.Overlays[1].IsCaption);
-        Assert.True(c.Overlays[2].IsPanel);
+        Assert.Equal("panel", c.Overlays[2].Kind);
         // For the depth thread: in screen px, from when the page says they appeared.
         long at = (long)((now - 5) * System.Diagnostics.Stopwatch.Frequency / 1000);
         Assert.Null(page.BoxesAt(at - System.Diagnostics.Stopwatch.Frequency / 100));
         Depth.PageVideo.BoxSet set = page.BoxesAt(at)!;
-        // The panel is held flat with the rest, and kept apart for drawing it live as it closes.
+        // The panel is drawn flat with the rest.
         Assert.Equal([new Rectangle(10, 980, 620, 40), new Rectangle(1400, 300, 460, 500)], set.Overlays);
         Assert.Equal([new Rectangle(100, 850, 400, 30)], set.Captions);
-        Assert.Equal([new Rectangle(1400, 300, 460, 500)], set.Panels);
 
         // Moved (full screen now at another px ratio): the same theater, still followed.
         long since = t.Since;

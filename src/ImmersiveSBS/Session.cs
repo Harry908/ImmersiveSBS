@@ -58,6 +58,8 @@ public sealed class Session
     private volatile int stereoVersion;
     private double soundDelay;
     private volatile VideoHint? browserVideo;
+    /// <summary>The theater's timing as it runs now (<see cref="AiStereo.TimingNow"/>), for its panel.</summary>
+    private volatile string timingNow = "";
     private readonly TheaterUi theaterUi = new();
     private readonly object delayLock = new();
     private Rectangle delayRegion;
@@ -92,8 +94,8 @@ public sealed class Session
 
     /// <summary>
     /// Set by the controller: how late the page plays the sound of the video under
-    /// <see cref="DelayRegion"/> now, seconds (0: live). The picture follows it, so the two can
-    /// never drift apart. Any thread.
+    /// <see cref="DelayRegion"/> now, seconds (0: live); its player shows the picture as late.
+    /// The depth model looks ahead by it. Any thread.
     /// </summary>
     public double SoundDelay
     {
@@ -103,8 +105,8 @@ public sealed class Session
 
     /// <summary>
     /// Set by the controller: the browser extension follows the video and can delay its sound in
-    /// the page. Only then are delays longer than lip sync allows (the buffer, matched timing over
-    /// 90 ms) used; the app never delays sound itself. Any thread.
+    /// the page. Only then is it delayed (the buffer, matched timing), sound and picture together
+    /// in the page; the app never delays sound or picture itself. Any thread.
     /// </summary>
     public bool PageCanDelay
     {
@@ -159,18 +161,21 @@ public sealed class Session
     {
         StereoSettings stereo = Stereo;
         DepthModel? m = Depth?.Model;
-        StereoTuning tuning = stereo.Tuning ?? StereoTuning.Default;
         string size = m == null ? "-" : $"{m.Preset} ({m.Width}×{m.Height})";
-        string timing = stereo.BufferSeconds > 0
-            ? PageCanDelay ? $"buffer {stereo.BufferSeconds:0.#} s" : "auto (buffer needs the extension)"
-            : stereo.Timing switch
+        // The choice, by the name the settings window gives it, and what runs now when that is not
+        // simply the choice: Auto's matched delay, or live for a video that cannot be delayed.
+        var choice = AppController.TimingChoices[AppController.TimingIndex(stereo.Timing, stereo.BufferSeconds)];
+        string now = timingNow;
+        string timing = now switch
         {
-            VideoTiming.Live => "live",
-            VideoTiming.Matched => "matched",
-            _ => "auto",
+            "" => choice.Short,
+            _ when choice.Buffer > 0 && now.StartsWith("buffer") => choice.Short,
+            _ when choice.Buffer == 0 && choice.Timing == VideoTiming.Live && now == "live" => choice.Short,
+            _ when choice.Buffer == 0 && choice.Timing == VideoTiming.Matched && now.StartsWith("matched ") => $"Matched ({now[8..]})",
+            _ => $"{choice.Short} (now {now})",
         };
         return new TheaterPanel(m == null ? "none" : DepthModel.Name(m.Tier), size, stereo.Strength, stereo.Convergence,
-            timing, tuning.EdgeSnap, tuning.Captions);
+            timing);
     }
 
     /// <summary>The shared depth model, owned by the controller; null while AI 3D is off.</summary>
@@ -349,13 +354,7 @@ public sealed class Session
                 redraw = true;
             }
 
-            // The delayed picture (the buffer, matched timing) shows its next held frame on time,
-            // whether or not the desktop changes meanwhile.
-            long due = renderer.SideBySide ? ai.NextDueTicks : long.MaxValue;
-            int waitMs = redraw ? 0 : 16;
-            if (due != long.MaxValue)
-                waitMs = (int)Math.Clamp(Math.Ceiling((due - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency), 0, waitMs);
-            CaptureUpdate update = capture.Acquire(waitMs);
+            CaptureUpdate update = capture.Acquire(redraw ? 0 : 16);
             meter.OnCapture(update);
             // The depth model gets the new frame now, not after waiting for the swap chain.
             if (update.Frame && renderer.SideBySide && capture.Texture is { } arrived) ai.HandOverEarly(arrived, Depth, update.FrameQpc);
@@ -364,7 +363,7 @@ public sealed class Session
             // The model's state shows as a badge in the glasses, and its loading ends a flat picture.
             DepthServiceState? modelState = Depth?.State;
             bool aiChanged = Depth?.HasResult == true || stereoVersion != seenStereoVersion || theaterUi.NeedsRedraw
-                             || modelState != seenModelState || Stopwatch.GetTimestamp() >= due;
+                             || modelState != seenModelState;
             seenStereoVersion = stereoVersion;
             seenModelState = modelState;
             if (!update.Any && !redraw && !aiChanged)
@@ -393,11 +392,11 @@ public sealed class Session
                 var fd = frame.Description;
                 var eye = new Size(renderer.Width / 2, renderer.Height);
                 double scale = Math.Min((double)eye.Width / fd.Width, (double)eye.Height / fd.Height);
-                if (stats is { VideoMemoryBudgetMb: > 0 } st) ai.VideoMemoryBudget = (long)(st.VideoMemoryBudgetMb * 1024 * 1024);
                 VideoHint? hint = BrowserVideo;
                 overlay = ai.Process(frame, update.Frame || late.Frame, stereo, Depth, eye, scale, SoundDelay, PageCanDelay, hint, frameQpc);
                 if (overlay != null) live = ai.LiveControls(hint);
                 aiStatus = ai.Status;
+                timingNow = ai.TimingNow;
                 ui = theaterUi.Build(overlay, ai.FoundRegion, eye, new Size((int)fd.Width, (int)fd.Height), stereo.Target, Depth?.State);
                 SetDelay(ai.DelayRegion, ai.DelaySeconds);
             }

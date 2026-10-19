@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:theme="clr-namespace:ImmersiveSBS.Theme"
         theme:ThemeManager.IsEnabled="True"
-        Title="ImmersiveSBS settings" Width="760" Height="900"
+        Title="ImmersiveSBS settings" Width="680" Height="820"
         WindowStartupLocation="CenterScreen">
     <Window.Resources>
         <Style x:Key="FieldLabel" TargetType="TextBlock">
@@ -21,11 +21,8 @@
 
         <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel Margin="24 20 24 24">
-                <TextBlock Text="ImmersiveSBS" Style="{StaticResource TitleText}" Margin="0 0 0 16"/>
-
                 <Border Style="{StaticResource Card}">
                     <StackPanel>
-                        <TextBlock Text="Status" Style="{StaticResource SectionText}"/>
                         <TextBlock x:Name="StatusText" TextWrapping="Wrap"/>
                         <Grid Margin="0 8 0 0">
                             <Grid.ColumnDefinitions>
@@ -56,131 +53,59 @@
                         </Grid>
                         <TextBlock x:Name="MainDisplayWarning" Foreground="{DynamicResource CautionBrush}" TextWrapping="Wrap"
                                    Margin="0 8 0 0" Visibility="Collapsed"
-                                   Text="The virtual monitor is your main display, so the taskbar, the Start menu and most new windows are on it. When ImmersiveSBS is not running, nothing shows them. Consider keeping a real monitor as the main display and turning on 'Show my taskbar on all displays' (Settings &gt; Personalization &gt; Taskbar). Without the glasses: Win+P, 'PC screen only'."/>
-                        <TextBlock x:Name="StatsText" FontFamily="Consolas" FontSize="15" Margin="0 8 0 0"
-                                   Style="{StaticResource SecondaryText}"/>
+                                   Text="The virtual monitor is your main display: without ImmersiveSBS running, nothing shows the taskbar. Keep a real monitor as the main display, or press Win+P and choose 'PC screen only' to get it back."/>
                     </StackPanel>
                 </Border>
 
                 <Border Style="{StaticResource Card}" Margin="0 12 0 0">
                     <StackPanel>
                         <TextBlock Text="Displays" Style="{StaticResource SectionText}"/>
-                        <TextBlock Text="Virtual monitor (what you work on)" Style="{StaticResource FieldLabel}"/>
+                        <TextBlock Text="Virtual monitor" Style="{StaticResource FieldLabel}"/>
                         <ComboBox x:Name="VirtualMonitorBox"/>
                         <TextBlock Text="Glasses" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
                         <ComboBox x:Name="GlassesBox"/>
+                        <CheckBox x:Name="ShowIn2DBox" Margin="0 16 0 0" Content="Also show it when the glasses are in 2D mode"/>
                         <TextBlock Style="{StaticResource CaptionText}" Margin="0 12 0 0"
-                                   Text="Arrange the displays in Settings &gt; System &gt; Display. Place the glasses where the cursor rarely goes, for example above another monitor."/>
+                                   Text="Arrange the displays in Windows Settings &gt; System &gt; Display."/>
                     </StackPanel>
                 </Border>
 
                 <Border Style="{StaticResource Card}" Margin="0 12 0 0">
                     <StackPanel>
-                        <TextBlock Text="Showing" Style="{StaticResource SectionText}"/>
-                        <TextBlock Text="Capture" Style="{StaticResource FieldLabel}"/>
-                        <ComboBox x:Name="CaptureBox">
-                            <ComboBoxItem Content="Desktop Duplication (recommended)"/>
-                            <ComboBoxItem Content="Windows.Graphics.Capture (cursor drawn by Windows)"/>
-                        </ComboBox>
-                        <CheckBox x:Name="ShowIn2DBox" Margin="0 16 0 0"
-                                  Content="Also show the virtual monitor when the glasses are in 2D mode"/>
-                        <CheckBox x:Name="CursorBox" Margin="0 8 0 0"
-                                  Content="Stop the cursor at the edge of the glasses"/>
-                        <CheckBox x:Name="WindowsBox" Margin="0 8 0 0"
-                                  Content="Move windows that land on the glasses to the virtual monitor"/>
-                        <CheckBox x:Name="ShowInWindowBox" Margin="0 8 0 0"
-                                  Content="Show the virtual monitor in a window when it is not on the glasses"/>
-                        <CheckBox x:Name="EvacuateBox" Margin="0 8 0 0"
-                                  Content="On exit, move windows from the virtual monitor to a visible display"/>
-                    </StackPanel>
-                </Border>
-
-                <Border Style="{StaticResource Card}" Margin="0 12 0 0">
-                    <StackPanel>
-                        <TextBlock Text="AI 3D" Style="{StaticResource SectionText}"/>
-                        <TextBlock Style="{StaticResource CaptionText}" Margin="0 0 0 12"
-                                   Text="Turns 2D video into real 3D with a depth model, while the glasses are in 3D mode. Needs an NVIDIA RTX GPU."/>
-                        <TextBlock Text="Convert" Style="{StaticResource FieldLabel}"/>
-                        <ComboBox x:Name="AiTargetBox">
-                            <ComboBoxItem Content="Off: browser video in the 3D theater only"/>
-                            <ComboBoxItem Content="The whole screen (text shimmers a little)"/>
-                        </ComboBox>
+                        <TextBlock Text="3D" Style="{StaticResource SectionText}"/>
+                        <CheckBox x:Name="WholeScreenBox" Content="Convert the whole screen to 3D"/>
                         <TextBlock Style="{StaticResource CaptionText}" Margin="0 4 0 0"
-                                   Text="Browser video is converted in the 3D theater: the button the extension shows over a video while the glasses are in 3D mode."/>
+                                   Text="Browser video always converts in the 3D theater: the button over a video while the glasses are in 3D mode."/>
                         <TextBlock Text="Depth model" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
                         <ComboBox x:Name="DepthTierBox">
                             <ComboBoxItem Content="Depth Anything V2 Small (fastest)"/>
                             <ComboBoxItem Content="Distill-Any-Depth Base (recommended)"/>
-                            <ComboBoxItem Content="Depth Anything 3 Small (newest generation; about 8 ms)"/>
-                            <ComboBoxItem Content="Depth Anything 3 Base (newest generation; about 12 ms, 19 at Quality)"/>
+                            <ComboBoxItem Content="Depth Anything 3 Small"/>
+                            <ComboBoxItem Content="Depth Anything 3 Base"/>
+                            <ComboBoxItem Content="Video Depth Anything Small (steadier over time; trial)"/>
                         </ComboBox>
                         <TextBlock Text="Model resolution" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
                         <ComboBox x:Name="DepthPresetBox">
                             <ComboBoxItem Content="Fast (392×224)"/>
                             <ComboBoxItem Content="Balanced (518×294, recommended)"/>
-                            <ComboBoxItem Content="Quality (756×420, 30 fps video)"/>
+                            <ComboBoxItem Content="Quality (756×420)"/>
                         </ComboBox>
-                        <TextBlock Text="Depth" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
-                        <ComboBox x:Name="StrengthBox">
-                            <ComboBoxItem Content="Gentle" Tag="0.4"/>
-                            <ComboBoxItem Content="Normal" Tag="0.6"/>
-                            <ComboBoxItem Content="Strong" Tag="0.8"/>
-                            <ComboBoxItem Content="Maximum comfortable" Tag="1.0"/>
-                        </ComboBox>
-                        <TextBlock Text="Screen plane" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
-                        <ComboBox x:Name="ConvergenceBox">
-                            <ComboBoxItem Content="Mostly behind the screen (recommended)" Tag="0.35"/>
-                            <ComboBoxItem Content="Half in front, half behind" Tag="0.5"/>
-                            <ComboBoxItem Content="More in front" Tag="0.65"/>
-                        </ComboBox>
-                        <TextBlock Text="The video is" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
-                        <ComboBox x:Name="Native3DBox">
-                            <ComboBoxItem Content="2D: convert with depth"/>
-                            <ComboBoxItem Content="Side-by-side 3D: show as is"/>
-                            <ComboBoxItem Content="Top-bottom 3D: show as is"/>
-                        </ComboBox>
+                        <TextBlock Text="Timing" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
+                        <ComboBox x:Name="TimingBox"/>
                         <TextBlock Style="{StaticResource CaptionText}" Margin="0 4 0 0"
-                                   Text="The theater's 3D panel switches it too."/>
-                        <TextBlock x:Name="ModelsText" Style="{StaticResource CaptionText}" Margin="0 12 0 0"/>
+                                   Text="Matched and the buffer show the video a little late so every frame has its own depth; the extension delays the sound with it."/>
                     </StackPanel>
                 </Border>
 
                 <Border Style="{StaticResource Card}" Margin="0 12 0 0">
                     <StackPanel>
-                        <TextBlock Text="Video" Style="{StaticResource SectionText}"/>
-                        <CheckBox x:Name="OfferTheaterBox" Margin="0 0 0 16"
-                                  Content="Show a &quot;3D theater&quot; button over browser videos (the extension's full-screen player, always in 3D) while the glasses are in 3D mode"/>
-                        <TextBlock Text="Stretch" Style="{StaticResource FieldLabel}"/>
-                        <ComboBox x:Name="StretchBox">
-                            <ComboBoxItem Content="None" Tag="1.0"/>
-                            <ComboBoxItem Content="×1.1" Tag="1.1"/>
-                            <ComboBoxItem Content="×1.2" Tag="1.2"/>
-                            <ComboBoxItem Content="×1.25" Tag="1.25"/>
-                            <ComboBoxItem Content="×1.33 (4:3 shown as 16:9)" Tag="1.3333"/>
-                            <ComboBoxItem Content="×1.5" Tag="1.5"/>
-                        </ComboBox>
-                        <TextBlock Style="{StaticResource CaptionText}" Margin="0 4 0 0"
-                                   Text="Widens the theater's picture, for content in the wrong aspect ratio; its 3D panel changes it too."/>
-                        <TextBlock Text="Timing" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
-                        <ComboBox x:Name="TimingBox"/>
-                        <TextBlock Style="{StaticResource CaptionText}" Margin="0 4 0 0"
-                                   Text="Live shows the newest picture with the newest depth; with a slow model, moving edges tear. Matched shows the video just late enough (typically 50–250 ms) that every frame has its own depth. A buffer shows it seconds late, for the steadiest depth. Delays apply only to the video AI 3D follows; the rest of the desktop stays live. Not for calls or live streams. The sound is delayed with the picture inside the page, by the ImmersiveSBS extension; for protected or cross-site media it cannot be, and then there is no buffer and matched timing stays within 90 ms with the sound live."/>
-                        <TextBlock x:Name="BrowserText" Style="{StaticResource CaptionText}" Margin="0 8 0 0"/>
-                        <StackPanel x:Name="BrowserHelp" Margin="0 4 0 0">
+                        <TextBlock Text="Browser extension" Style="{StaticResource SectionText}"/>
+                        <TextBlock x:Name="BrowserText" TextWrapping="Wrap"/>
+                        <StackPanel x:Name="BrowserHelp" Margin="0 8 0 0">
                             <TextBlock Style="{StaticResource CaptionText}"
                                        Text="To add it: open edge://extensions or chrome://extensions, turn on Developer mode, choose Load unpacked and pick the extension folder."/>
-                            <Button Content="Open extension folder" HorizontalAlignment="Left" Margin="0 6 0 0" Padding="12 4" Click="OnOpenExtensionFolder"/>
+                            <Button Content="Open extension folder" HorizontalAlignment="Left" Margin="0 8 0 0" Padding="12 4" Click="OnOpenExtensionFolder"/>
                         </StackPanel>
-                        <TextBlock Text="Sound offset (with the extension's delayed sound)" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
-                        <ComboBox x:Name="AudioOffsetBox">
-                            <ComboBoxItem Content="Sound 80 ms earlier" Tag="-80"/>
-                            <ComboBoxItem Content="Sound 40 ms earlier" Tag="-40"/>
-                            <ComboBoxItem Content="Sound 20 ms earlier" Tag="-20"/>
-                            <ComboBoxItem Content="In step" Tag="0"/>
-                            <ComboBoxItem Content="Sound 20 ms later" Tag="20"/>
-                            <ComboBoxItem Content="Sound 40 ms later" Tag="40"/>
-                            <ComboBoxItem Content="Sound 80 ms later" Tag="80"/>
-                        </ComboBox>
                     </StackPanel>
                 </Border>
 
@@ -194,8 +119,8 @@
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                         </Grid>
-                        <TextBlock Style="{StaticResource CaptionText}" Margin="0 8 0 0"
-                                   Text="Written like Ctrl+Alt+B; at least one of Ctrl, Alt, Shift or Win. Leave empty for none."/>
+                        <TextBlock Style="{StaticResource CaptionText}" Margin="0 4 0 0"
+                                   Text="Like Ctrl+Alt+B; empty for none."/>
                         <TextBlock x:Name="ErrorText" Foreground="{DynamicResource CautionBrush}" TextWrapping="Wrap"
                                    Margin="0 8 0 0" Visibility="Collapsed"/>
                     </StackPanel>

@@ -81,6 +81,18 @@ public sealed class CaptionLock
     /// </summary>
     public void Apply(float[] luma, float[] nearness, double dtSeconds, double screenPlane,
         IReadOnlyList<Rectangle>? given = null, IReadOnlyList<Rectangle>? overlays = null)
+        => Apply(luma, nearness, dtSeconds, screenPlane, given, overlays, detect: true);
+
+    /// <summary>
+    /// Holds only the page's captions <paramref name="given"/> flat in <paramref name="nearness"/>,
+    /// without looking for any in the picture: the theater's own captions, which it draws over
+    /// its frames late with them, so they are not in the frames the model saw.
+    /// </summary>
+    public void ApplyGiven(float[] nearness, double dtSeconds, double screenPlane, IReadOnlyList<Rectangle> given)
+        => Apply([], nearness, dtSeconds, screenPlane, given, null, detect: false);
+
+    private void Apply(float[] luma, float[] nearness, double dtSeconds, double screenPlane,
+        IReadOnlyList<Rectangle>? given, IReadOnlyList<Rectangle>? overlays, bool detect)
     {
         double dt = Math.Clamp(dtSeconds, 1.0 / 240, 1.0);
         Array.Clear(inBox);
@@ -101,6 +113,10 @@ public sealed class CaptionLock
             Found = union.IsEmpty ? null : union;
             candidate = Rectangle.Empty;
             candidateSeconds = 0;
+        }
+        else if (!detect)
+        {
+            Found = null;
         }
         else
         {

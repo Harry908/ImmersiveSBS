@@ -236,9 +236,11 @@ public sealed class AppController : IDisposable
         double requested = Math.Max(0.001, Math.Round(wanted + trim, 3));
         if (!(Math.Abs(requested - delayRequests.Now.Seconds) <= 0.0005)) delayRequests = ((requested, trim), delayRequests.Now);
         browserTrim = trim;
-        StartBrowserDelay(video.Connection, video.Theater.Tab, requested);
-        // The picture follows the page's sound: how late it is heard now, without the trim (0
-        // until the video is taken into the delay, which happens once it plays). Until the page
+        // The theater shows the picture as late as asked, by its audio clock, which counts the
+        // output's latency: so without the trim.
+        StartBrowserDelay(video.Connection, video.Theater.Tab, requested, wanted);
+        // How late it is heard now, without the trim (0 until the video is taken into the delay,
+        // which happens once it plays): the depth model looks that far ahead. Until the page
         // reports the new delay, the one it reports went with the trim asked for before.
         double delay = video.Media?.Delay ?? 0;
         double applied = Math.Abs(delay - delayRequests.Before.Seconds) < 0.0005 && Math.Abs(delay - requested) >= 0.0005
@@ -348,8 +350,10 @@ public sealed class AppController : IDisposable
 
     /// <summary>
     /// Whether the page can delay this video's sound and that of everything else audible in its
-    /// tab. Media it cannot delay (protected, from another site without CORS, audio not allowed to
-    /// start before a click) are remembered, so the choice does not flip back and forth.
+    /// tab. Media it can never delay (protected, from another site without CORS) are remembered,
+    /// so the choice does not flip back and forth. Audio not allowed to start yet ("blocked", no
+    /// click in the page) is not: it passes, and remembered it turned the buffer off for good
+    /// when a resuming context was taken for it (2026-10-19).
     /// </summary>
     private bool BrowserCanDelay(BrowserVideo video)
     {
@@ -357,6 +361,7 @@ public sealed class AppController : IDisposable
         {
             if (m.Tab != video.Theater.Tab || (m.Id != video.Theater.MediaId && !(m.Playing && m.Audible))) continue;
             var key = (video.Connection.Number, m.Id);
+            if (!m.Delayable && m.Reason == "blocked") return false;
             if (!m.Delayable && browserRefused.Add(key))
                 Log.Write($"Browser: {video.Connection} cannot delay a {m.Kind}'s sound in the page ({m.Reason}); no buffer for it, matched timing within 90 ms with the sound live.");
             if (browserRefused.Contains(key)) return false;
@@ -364,8 +369,11 @@ public sealed class AppController : IDisposable
         return true;
     }
 
-    /// <summary>Has the browser play the theater video's tab <paramref name="seconds"/> late, every other tab live.</summary>
-    private void StartBrowserDelay(BrowserConnection connection, int tab, double seconds)
+    /// <summary>
+    /// Has the browser play the theater video's tab <paramref name="seconds"/> late, every other
+    /// tab live, and the theater show its picture <paramref name="picture"/> late.
+    /// </summary>
+    private void StartBrowserDelay(BrowserConnection connection, int tab, double seconds, double picture)
     {
         if (browserDelaying != connection)
         {
@@ -374,7 +382,7 @@ public sealed class AppController : IDisposable
             browserLogAt = 0;
             Notify();
         }
-        browserLink!.SetDelay(connection, seconds, tab);
+        browserLink!.SetDelay(connection, seconds, tab, picture);
     }
 
     private void StopBrowserDelay()
@@ -475,33 +483,29 @@ public sealed class AppController : IDisposable
     {
         AppSettings s = Settings.Clone();
         change(s);
-        LastAdjustment = describe(s);
-        Log.Write("App: " + LastAdjustment + ".");
+        Log.Write("App: " + describe(s) + ".");
         ApplySettings(s);
         tuningWindow?.Reload();
     }
 
-    /// <summary>The last change made with a hotkey, e.g. "Depth 0.7"; shown in the tuning panel.</summary>
-    public string? LastAdjustment { get; private set; }
-
     #region Theater
 
     /// <summary>What the browsers were last told (<see cref="UpdateStatus"/>).</summary>
-    private (bool Glasses, bool Offer, TheaterPanel? Panel, double Stretch, Native3DMode Layout) sentStatus;
+    private (bool Glasses, TheaterPanel? Panel, double Stretch, Native3DMode Layout, System.Drawing.Size? Picture) sentStatus;
 
     /// <summary>
-    /// The timing choices, from no delay to the longest (the theater panel steps through them,
-    /// the tray and the settings window list them): live, auto, matched (improvement-plan.md §6),
-    /// then the buffer.
+    /// The timing choices, from no delay to the longest (the theater panel steps through them by
+    /// their short names, the settings window lists them): live, auto, matched
+    /// (improvement-plan.md §6), then the buffer.
     /// </summary>
-    public static readonly (string Label, VideoTiming Timing, double Buffer)[] TimingChoices =
+    public static readonly (string Label, string Short, VideoTiming Timing, double Buffer)[] TimingChoices =
     [
-        ("Live", VideoTiming.Live, 0),
-        ("Auto: matched when depth is slow", VideoTiming.Auto, 0),
-        ("Matched: video just late enough for its depth", VideoTiming.Matched, 0),
-        ("Buffer 0.5 s", VideoTiming.Auto, 0.5),
-        ("Buffer 1 s", VideoTiming.Auto, 1),
-        ("Buffer 2 s", VideoTiming.Auto, 2),
+        ("Live", "Live", VideoTiming.Live, 0),
+        ("Auto: matched when depth is slow", "Auto", VideoTiming.Auto, 0),
+        ("Matched: video just late enough for its depth", "Matched", VideoTiming.Matched, 0),
+        ("Buffer 0.5 s", "Buffer 0.5 s", VideoTiming.Auto, 0.5),
+        ("Buffer 1 s", "Buffer 1 s", VideoTiming.Auto, 1),
+        ("Buffer 2 s", "Buffer 2 s", VideoTiming.Auto, 2),
     ];
 
     /// <summary>
@@ -534,12 +538,15 @@ public sealed class AppController : IDisposable
     }
 
     /// <summary>Which of <see cref="TimingChoices"/> the settings make.</summary>
-    public static int TimingIndex(AppSettings s)
+    public static int TimingIndex(AppSettings s) => TimingIndex(s.Timing, s.BufferSeconds);
+
+    /// <summary>Which of <see cref="TimingChoices"/> a timing and buffer make (the nearest buffer).</summary>
+    public static int TimingIndex(VideoTiming timing, double bufferSeconds)
     {
-        if (s.BufferSeconds <= 0) return Array.FindIndex(TimingChoices, c => c.Buffer == 0 && c.Timing == s.Timing) is var i and >= 0 ? i : 1;
+        if (bufferSeconds <= 0) return Array.FindIndex(TimingChoices, c => c.Buffer == 0 && c.Timing == timing) is var i and >= 0 ? i : 1;
         int best = 3;
         for (int k = 3; k < TimingChoices.Length; k++)
-            if (Math.Abs(TimingChoices[k].Buffer - s.BufferSeconds) < Math.Abs(TimingChoices[best].Buffer - s.BufferSeconds)) best = k;
+            if (Math.Abs(TimingChoices[k].Buffer - bufferSeconds) < Math.Abs(TimingChoices[best].Buffer - bufferSeconds)) best = k;
         return best;
     }
 
@@ -604,12 +611,6 @@ public sealed class AppController : IDisposable
             case "timingLess" or "timingMore":
                 Adjust(s => SetTiming(s, NextTiming(s, name == "timingMore" ? 1 : -1)), s => "Timing: " + TimingLabel(TimingIndex(s)));
                 break;
-            case "edgeSnap":
-                Adjust(s => s.Tuning = s.Tuning with { EdgeSnap = !s.Tuning.EdgeSnap }, s => "Edge snapping " + (s.Tuning.EdgeSnap ? "on" : "off"));
-                break;
-            case "captions":
-                Adjust(s => s.Tuning = s.Tuning with { Captions = !s.Tuning.Captions }, s => "Flat subtitles " + (s.Tuning.Captions ? "on" : "off"));
-                break;
             case "stretchLess" or "stretchMore":
                 // The player draws the stretch; 1 to 1.5 in steps of 0.05.
                 Adjust(s => s.VideoStretch = Math.Round(Math.Clamp(s.VideoStretch + (name == "stretchMore" ? 0.05 : -0.05), 1, 1.5), 2),
@@ -646,14 +647,19 @@ public sealed class AppController : IDisposable
     /// <summary>
     /// Tells the browsers what their theater needs (UI thread, every tick; sent only on a
     /// change): whether the glasses show the virtual monitor in 3D (the button shows only then),
-    /// whether the user wants the button, and the 3D panel's values.
+    /// the 3D panel's values, and the depth model's input size, at which the theater sends its
+    /// frames (none while the model is not ready, or the video is shown as the 3D it already is).
     /// </summary>
     private void UpdateStatus()
     {
         if (browserLink == null) return;
         bool glasses = session is { Windowed: false } && VirtualMonitor != null && !shuttingDown;
         TheaterPanel? panel = session?.Panel();
-        var status = (glasses, Settings.OfferTheater, panel, Settings.VideoStretch, Settings.Native3D);
+        System.Drawing.Size? picture = glasses && Settings.Native3D == Native3DMode.Off
+                                       && session?.Depth is { State: DepthServiceState.Ready, Model: var model }
+            ? new System.Drawing.Size(model.Width, model.Height)
+            : null;
+        var status = (glasses, panel, Settings.VideoStretch, Settings.Native3D, picture);
         if (status == sentStatus) return;
         sentStatus = status;
         object? settings = panel == null ? null : new
@@ -663,8 +669,6 @@ public sealed class AppController : IDisposable
             depth = Math.Round(panel.Depth, 2),
             plane = Math.Round(panel.Plane, 2),
             timing = panel.Timing,
-            edgeSnap = panel.EdgeSnap,
-            captions = panel.Captions,
             stretch = Math.Round(Settings.VideoStretch, 2),
             layout = Settings.Native3D switch
             {
@@ -673,28 +677,10 @@ public sealed class AppController : IDisposable
                 _ => "2d",
             },
         };
-        browserLink.SetStatus(glasses, Settings.OfferTheater, settings);
+        browserLink.SetStatus(glasses, settings, picture);
     }
 
     #endregion
-
-    /// <summary>Sets the video stretch (1 = none).</summary>
-    public void SetStretch(double factor)
-    {
-        if (Math.Abs(Settings.VideoStretch - factor) < 0.001) return;
-        AppSettings s = Settings.Clone();
-        s.VideoStretch = factor;
-        ApplySettings(s);
-    }
-
-    /// <summary>Sets the timing to one of <see cref="TimingChoices"/>.</summary>
-    public void SetTiming(int index)
-    {
-        if (TimingIndex(Settings) == index) return;
-        AppSettings s = Settings.Clone();
-        SetTiming(s, index);
-        ApplySettings(s);
-    }
 
     /// <summary>The depth model's state: loading, preparing, ready or failed; null when there is none (file missing).</summary>
     public DepthServiceState? ModelState => depthService?.State;
@@ -741,23 +727,8 @@ public sealed class AppController : IDisposable
         else
         {
             windowDismissed = false;
-            if (!Settings.ShowInWindowWhenNotOnGlasses)
-            {
-                AppSettings s = Settings.Clone();
-                s.ShowInWindowWhenNotOnGlasses = true;
-                ApplySettings(s);
-                return;
-            }
         }
         Evaluate("window toggled", force: true);
-    }
-
-    public void SetCaptureMethod(CaptureMethod method)
-    {
-        if (Settings.CaptureMethod == method) return;
-        AppSettings s = Settings.Clone();
-        s.CaptureMethod = method;
-        ApplySettings(s);
     }
 
     /// <summary>Saves new settings and applies them at once.</summary>
@@ -789,11 +760,6 @@ public sealed class AppController : IDisposable
 
     public string ShortcutText(ShortcutCommand command) =>
         Settings.Shortcuts.TryGetValue(command, out string? text) && Shortcut.TryParse(text, out Shortcut s) ? s.ToString() : string.Empty;
-
-    public void OpenLog()
-    {
-        if (File.Exists(Log.FilePath)) Process.Start(new ProcessStartInfo(Log.FilePath) { UseShellExecute = true });
-    }
 
     private void BuildShortcuts()
     {
@@ -874,7 +840,7 @@ public sealed class AppController : IDisposable
             StatusText = $"On: {Glasses.Identity} in {(GlassesStatus.State == GlassesState.Mode3D ? "3D" : "2D")} " +
                          $"({Glasses.Mode.Width}×{Glasses.Mode.Height})";
         }
-        else if (VirtualMonitor != null && Settings.ShowInWindowWhenNotOnGlasses && !windowDismissed
+        else if (VirtualMonitor != null && !windowDismissed
                  && failures <= MaxRetries && !retryTimer.IsEnabled
                  && WindowBoundsFor(displays) is Rectangle windowBounds)
         {
@@ -1065,7 +1031,7 @@ public sealed class AppController : IDisposable
     {
         bool active = session is { Windowed: false } && Glasses != null && VirtualMonitor != null && !shuttingDown;
 
-        if (active && Settings.KeepCursorOffGlasses)
+        if (active)
         {
             if (cursorGuard == null) cursorGuard = new CursorGuard(Glasses!.Bounds);
             else cursorGuard.Blocked = Glasses!.Bounds;
@@ -1076,7 +1042,7 @@ public sealed class AppController : IDisposable
             cursorGuard = null;
         }
 
-        if (active && Settings.MoveWindowsOffGlasses)
+        if (active)
         {
             if (windowGuard == null) windowGuard = new StrayWindowGuard(Glasses!.Bounds, VirtualMonitor!.WorkingArea);
             else windowGuard.Update(Glasses!.Bounds, VirtualMonitor!.WorkingArea);
@@ -1108,7 +1074,7 @@ public sealed class AppController : IDisposable
             MessageBoxResult answer = MessageBox.Show(
                 "The virtual monitor is your main display. After ImmersiveSBS exits, the taskbar, the Start menu " +
                 "and new windows stay on it, where nothing shows them." +
-                (Settings.MoveWindowsOffVirtualMonitorOnExit && host != null ? $"\n\nOpen windows will be moved to {host.Identity}." : "") +
+                (host != null ? $"\n\nOpen windows will be moved to {host.Identity}." : "") +
                 "\n\nTo get the taskbar back, make another display the main one in Settings > System > Display, " +
                 "or press Win+P and choose \"PC screen only\".\n\nExit anyway?",
                 "ImmersiveSBS", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
@@ -1133,7 +1099,7 @@ public sealed class AppController : IDisposable
         session = null;
 
         // Nothing will show the virtual monitor after exit: bring its windows into sight.
-        if (Settings.MoveWindowsOffVirtualMonitorOnExit && VirtualMonitor != null && host != null)
+        if (VirtualMonitor != null && host != null)
         {
             Log.Write($"App: moving windows from the virtual monitor to {host.Identity}.");
             StrayWindowGuard.Evacuate(VirtualMonitor.Bounds, host.WorkingArea);

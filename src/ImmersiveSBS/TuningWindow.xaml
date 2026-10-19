@@ -19,7 +19,7 @@
 
         <StackPanel Margin="24 20 24 16">
             <TextBlock Style="{StaticResource CaptionText}" Margin="0 0 0 12"
-                       Text="Changes apply at once. Save keeps them; Cancel goes back to the saved values."/>
+                       Text="Changes show at once. Save keeps them; Cancel goes back."/>
             <Grid x:Name="Rows">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
@@ -34,14 +34,7 @@
             <CheckBox x:Name="CaptionsBox" Margin="0 8 0 0" Click="OnCaptions"
                       Content="Keep subtitles flat, just in front of the scene"/>
             <CheckBox x:Name="StaticOverlaysBox" Margin="0 8 0 0" Click="OnStaticOverlays"
-                      Content="Logos and other still overlays at the screen plane (experimental)"/>
-            <Border Style="{StaticResource Card}" Margin="0 16 0 0">
-                <StackPanel>
-                    <TextBlock x:Name="StatusText" TextWrapping="Wrap"/>
-                    <TextBlock x:Name="StatsText" FontFamily="Consolas" FontSize="14" Margin="0 8 0 0"
-                               Style="{StaticResource SecondaryText}"/>
-                </StackPanel>
-            </Border>
+                      Content="Logos and other still overlays at the screen plane"/>
         </StackPanel>
     </DockPanel>
 </Window>

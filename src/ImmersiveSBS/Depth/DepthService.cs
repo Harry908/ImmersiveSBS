@@ -66,6 +66,9 @@ public sealed class DepthService : IDisposable
     private Thread? postThread;
     private volatile bool stopping;
     private volatile bool resetRequested;
+    private volatile bool modelResetRequested;
+    /// <summary>The luma of the last frame a temporal model saw, for its scene cuts.</summary>
+    private float[] modelLuma = [];
 
     private float[]? pending;          // submitted, not yet taken by the worker
     private long pendingId;
@@ -136,7 +139,7 @@ public sealed class DepthService : IDisposable
     public DepthService(DepthModel model, Func<DepthModel, Action<string>, IDepthRunner>? load = null)
     {
         Model = model;
-        this.load = load ?? ((m, progress) => DepthEstimator.Load(m, progress));
+        this.load = load ?? ((m, progress) => m.Temporal ? VideoDepthEstimator.Load(m, progress) : DepthEstimator.Load(m, progress));
         Status = $"Loading {model}…";
         thread = new Thread(Run) { Name = "Depth", IsBackground = true, Priority = ThreadPriority.AboveNormal };
         thread.Start();
@@ -293,10 +296,11 @@ public sealed class DepthService : IDisposable
             try
             {
                 if (!freeJobs.TryTake(out PostJob? job)) job = new PostJob(estimator.OutputLength);
+                Luma(input, job.Luma, Model.Width * Model.Height);
+                if (estimator is VideoDepthEstimator video) StartOverAtCut(video, job.Luma);
                 long t0 = Stopwatch.GetTimestamp();
                 estimator.Run(input, job.Output);
                 job.InferenceMs = Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
-                Luma(input, job.Luma, Model.Width * Model.Height);
                 job.Id = id;
                 job.Time = time;
                 job.IdleMs = idle;
@@ -400,6 +404,22 @@ public sealed class DepthService : IDisposable
         PostJob first = held[0];
         held.RemoveAt(0);
         return first;
+    }
+
+    /// <summary>
+    /// A temporal model starts over, as at the stream's first frame, after a seek or a new region
+    /// (<see cref="ResetHistory"/>) and at a scene cut: the frames before belong to another shot.
+    /// </summary>
+    private void StartOverAtCut(VideoDepthEstimator video, float[] luma)
+    {
+        bool cut = modelLuma.Length == luma.Length && MeanChange(modelLuma, luma) > Tuning.SceneCut;
+        if (cut || modelResetRequested)
+        {
+            modelResetRequested = false;
+            video.Reset();
+        }
+        if (modelLuma.Length != luma.Length) modelLuma = new float[luma.Length];
+        Array.Copy(luma, modelLuma, luma.Length);
     }
 
     private static double MeanChange(float[] a, float[] b)
@@ -516,7 +536,7 @@ public sealed class DepthService : IDisposable
     }
 
     /// <summary>Forgets temporal history, e.g. when the video region changed; any thread.</summary>
-    public void ResetHistory() => resetRequested = true;
+    public void ResetHistory() => resetRequested = modelResetRequested = true;
 
     private void SetStatus(DepthServiceState state, string status)
     {

@@ -25,19 +25,17 @@ public static class SampleClip
         MediaClip clip = await MediaClip.CreateFromFileAsync(file);
         var composition = new MediaComposition();
         composition.Clips.Add(clip);
-        var times = Enumerable.Range(0, count).Select(i => TimeSpan.FromSeconds(1 + i * step / 30.0)).ToList();
-        IReadOnlyList<ImageStream> thumbnails = await composition.GetThumbnailsAsync(times, w, h, VideoFramePrecision.NearestFrame);
         var frames = new List<byte[]>();
-        foreach (ImageStream stream in thumbnails)
+        for (int i = 0; i < count; i++)
         {
-            using (stream)
-            {
-                BitmapDecoder decoder = await BitmapDecoder.CreateAsync(stream);
-                PixelDataProvider pixels = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore,
-                    new BitmapTransform { ScaledWidth = (uint)w, ScaledHeight = (uint)h }, ExifOrientationMode.IgnoreExifOrientation,
-                    ColorManagementMode.DoNotColorManage);
-                frames.Add(pixels.DetachPixelData());
-            }
+            // One at a time: asked for a list 1/30 s apart, GetThumbnailsAsync gave one picture for all.
+            using ImageStream stream = await composition.GetThumbnailAsync(TimeSpan.FromSeconds(1 + i * step / 30.0), w, h,
+                VideoFramePrecision.NearestFrame);
+            BitmapDecoder decoder = await BitmapDecoder.CreateAsync(stream);
+            PixelDataProvider pixels = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore,
+                new BitmapTransform { ScaledWidth = (uint)w, ScaledHeight = (uint)h }, ExifOrientationMode.IgnoreExifOrientation,
+                ColorManagementMode.DoNotColorManage);
+            frames.Add(pixels.DetachPixelData());
         }
         return frames;
     }
@@ -55,8 +53,8 @@ public static class SampleClip
         return input;
     }
 
-    /// <summary>The model's estimator, or null (with the reason) when it cannot run here.</summary>
-    public static DepthEstimator? TryLoad(DepthModel model, out string why)
+    /// <summary>The model's runner (as the depth service picks it), or null (with the reason) when it cannot run here.</summary>
+    public static IDepthRunner? TryLoad(DepthModel model, out string why)
     {
         why = "";
         if (!model.Exists)
@@ -66,7 +64,7 @@ public static class SampleClip
         }
         try
         {
-            return DepthEstimator.Load(model, _ => { });
+            return model.Temporal ? VideoDepthEstimator.Load(model, _ => { }) : DepthEstimator.Load(model, _ => { });
         }
         catch (InvalidOperationException e)
         {

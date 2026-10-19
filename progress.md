@@ -1181,9 +1181,195 @@ full screen" with the document no longer full screen. 1.5.3: when the page is al
 screen the player goes inside its full-screen element and uses that full screen; closing ends
 it once, as YouTube's own button would. Leaving that full screen (Esc) closes the theater.
 
+### UI sweep: one place for each control (2026-10-19, user request: "remove redundant features, text and buttons")
+
+Each control now lives in one place, the one where it is used:
+- **Tray** (12 entries → 7): status, Pause, Whole screen in 3D (a check, Ctrl+Alt+D), 3D
+  theater, Show in a window, Settings, Tuning, Exit. Gone: Video stretch and Video timing (the
+  theater's panel and Settings), Capture (see below), the AI 3D submenu and its model line (the
+  tooltip and Settings say it), Open log.
+- **Settings** (six cards → five, about 20 controls → 9): status with the model line; Displays
+  (the two pickers, "also show in 2D"); 3D (whole screen, model, resolution, timing); the
+  browser extension (status and how to add it); startup and shortcuts. Gone: the session's
+  measurements (they are in the log), the capture method, the cursor and window guards, "show
+  in a window when not on the glasses" and "move windows off on exit" (always on now), depth and
+  screen plane (Tuning, the panel, the hotkeys), what the video is and the stretch (the panel),
+  the theater-button checkbox (the button shows only while the glasses are in 3D anyway), the
+  sound offset (Tuning), the model folder line, and most of the long captions.
+- **Tuning**: no stretch slider (the panel), no status and measurements card.
+- **The theater's 3D panel** (extension 1.6.0): no edge-snapping and flat-subtitle switches
+  (Tuning has them). The status message no longer carries `offer`.
+- Settings removed from `AppSettings`: `KeepCursorOffGlasses`, `MoveWindowsOffGlasses`,
+  `ShowInWindowWhenNotOnGlasses`, `MoveWindowsOffVirtualMonitorOnExit`, `OfferTheater`; old
+  files with them load (unknown properties are ignored). `CaptureMethod` stays in the file for
+  troubleshooting (Windows.Graphics.Capture), with no control.
+
+Tests: 168.
+
+### Video Depth Anything Small, streaming: the spike (2026-10-19, user request)
+
+improvement-plan.md §10.2, with its go/no-go: at most 25 ms a frame at 518, and M4 at least 30 %
+lower than Distill-Any-Depth Base.
+
+- **Export.** The authors' code (DepthAnything/Video-Depth-Anything at 4f5ae23) and the Small
+  checkpoint (Apache-2.0, 28.4 M parameters, `video_depth_anything_vits.pth`, SHA-256
+  13379300…3609). Their streaming mode runs the encoder on the new frame alone; the head's 4
+  temporal modules × 2 attention blocks also read the hidden states the frames before left.
+  Exported as two static graphs a size: the first frame (image → depth, state) and the step
+  (image and 31 past states → depth, state); a state is the 8 tensors flattened, 956,160 floats
+  at 518×294. The window is theirs: 32 copies of the first frame's state, then that frame kept
+  for good and the 41 newest; each call reads the first two and the last 29. Against their
+  `infer_video_depth_one` on 60 frames (CPU, fp32): at most 3·10⁻⁵ of the depth range.
+- **TensorRT for RTX gave NaN.** The encoder was right; 3 of the 4 temporal modules were not:
+  its fused attention (MatMul–softmax–MatMul, also with the softmax written out) fails for heads
+  of 8 and 24 channels; the 48-channel module was right. The export writes that attention
+  without matrix products (one query over at most 32 keys: products and sums; the same maths,
+  3·10⁻⁵), and without baddbmm's `torch.empty`, which tracing had turned into a constant of
+  leftover memory. Then fp16 (constants folded first) on TensorRT against fp32: 0.04 % of the
+  range on average, r 1.0000, through the window's slide at frame 11.
+- **Speed.** Python, states on the GPU: a step 8.0 ms (p95 8.8), a first frame 4.5 ms. In .NET,
+  with the image and depth over the bus: 8.9 ms against Distill-Any-Depth Base's 8.4.
+- **In the app** (a trial, at Balanced 518×294 and Quality 756×420; not Fast): `DepthTier.VdaSmall`,
+  `VideoDepthEstimator` (two sessions; a ring of 43 state tensors on the GPU, 164 MB, bound in
+  the window's order through I/O binding, no copies; `Reset`), the depth service resets it at
+  seeks, region changes and scene cuts (luma before the model runs), engine caching shared
+  (`DepthEstimator.Open`). Files: `vda-small_{H}x{W}.onnx` and `vda-small-first_{H}x{W}.onnx`
+  (55 MB each) in the models folder. In the Settings model list as a trial. At 756×420 a state
+  is 1,969,920 floats (the ring 339 MB); a step 16.0 ms (p95 17.2), a first frame 21.9 ms;
+  fp16 on TensorRT within 0.03 % of fp32 over 60 frames.
+- **The gate** (`TemporalDepthTests`, 150 consecutive frames of the sample clip, all distinct):
+
+  | | ms/frame | M4, the model alone | M4, through the depth service |
+  |---|---|---|---|
+  | Distill-Any-Depth Base 518×294 | 8.4 | 0.0057 | 0.0013 |
+  | Video Depth Anything Small 518×294 | 8.9 | 0.0021 | 0.0011 |
+  | Distill-Any-Depth Base 756×420 | 17.9 | 0.0042 | 0.0010 |
+  | Video Depth Anything Small 756×420 | 17.0 | 0.0020 | 0.0010 |
+
+  The model alone flickers 64 % less at 518×294 and 53 % less at 756×420; through the depth
+  service, whose temporal smoothing already takes most of Distill-Any-Depth's flicker away, 14 %
+  less and the same. At Quality it is slightly faster than Distill-Any-Depth Base. **No-go by the plan's
+  measure** (30 %). Near and far agree (ρ 0.98–0.99 with DA2 Small and DAD Base). What M4 does
+  not see (moving parts, depth breathing over seconds, the smoothing's lag) only the glasses can
+  show; the trial model lets that be judged before it is removed or kept.
+- **Found on the way:** `SampleClip` asked `GetThumbnailsAsync` for times 1/30 s apart and got
+  one picture for all, so `ParallelSpeedTests` had timed one picture 48 times. One thumbnail a
+  call now; on 48 consecutive frames post-processing takes 2.2 ms at 518×294 and 3.1 ms at
+  756×420 (parallel; 4.7 and 8.7 on one core), not 3.3 and 5.7.
+- The export scripts (export, validate, fp16, bench, the TensorRT checks) and both venvs are in
+  this session's scratchpad (`vda\`), not the repo: Python 3.10 with CPU PyTorch for the
+  export, Python 3.14 with ONNX Runtime 1.31 for TensorRT (the provider needs API 24+).
+
+Tests: 169, Release.
+
+### The buffer without gaps (2026-10-19, user request: "even 2 seconds buffer doesn't matter as long as there is no interruptions")
+
+The buffer interrupted playback in three places: opening the theater (picture held, sound
+silent for the buffer's length), pause then play (after a pause both ran on for the buffer's
+length, and after play came that long of frozen picture and silence), and seeks (the old
+position went on for the buffer's length). The user chose a spinner for the waits that cannot
+be avoided. Extension 1.7.0:
+- **Pause holds both delay lines.** The page suspends its AudioContext on the theater video's
+  `pause` (not on a network stall: the buffered seconds play on and the stall comes that much
+  later, as it happened) and resumes it on `playing`; the delay line keeps the seconds not yet
+  heard. The state message carries `held` and `at` (app clock); `PageVideo.PlayTicks` is a clock
+  that stops while held, and `AiStereo` stamps and chooses held frames on it, so the picture
+  stands with the sound and goes on from the same frame. A context we suspend is not reported as
+  blocked (the first page test caught that: the app would have dropped the buffer on every pause).
+- **A seek starts the page's line again** (silent for the delay) and reports `seekAt`; the app
+  drops the old position's frames not yet shown (`VideoDelayBuffer.DropBetween`), so the frame
+  on the screen holds until the new position's come due. A looping video's jump back to the
+  start plays on through.
+- **A spinner** (frosted, centred, a live box like the bar) shows while a new line of 0.5 s or
+  more is silent: opening the theater, after a seek, not while paused. The time and the seek
+  bar show the time seen and heard (the video's less the delay), and ±10 s steps from it.
+- **A live stream** (`live`: no end) is never buffered. New settings default to a 2 s buffer
+  (`BufferSeconds`).
+- Checked with the real `content.js` in a test browser on a local page (the worker stubbed, its
+  messages recorded): the spinner for 2.0 s after the delay starts and after each seek, none at
+  a loop's jump, `held` on pause and off on play, the media still delayable while held.
+
+Tests: 172 (the play clock, the seek drop, the new state fields).
+
+**First run (14:55–15:01, user: "the extension crashes mid way after some pause and seek").** Not
+a crash: at play after a pause (15:00:02) the page reported its sound "blocked" for the moment
+its suspended context took to resume, and the app remembers a refusal for good, so the buffer
+was off for the rest of the theater (sound live, the panel's buffer steps greyed). 1.7.1: a
+context that has run once is never "blocked" (`contextRan`), and the app no longer remembers
+"blocked" (only protected and cross-site media). The video was 3840×2160 at 60 fps.
+
+### Depth ahead from the player's own buffer: the check (2026-10-19, user request: "can we tap directly into that?")
+
+The idea: a page cannot read decoded frames ahead of the one shown, but the site's player hands
+its `<video>` compressed segments seconds ahead through Media Source Extensions. A hook on
+`SourceBuffer.appendBuffer` in the page's own world, demuxing and decoding them with WebCodecs,
+would let the app have each frame's depth before it shows: no picture or sound delay at all.
+Checked in a test browser (Chromium 155, the spike's hook and a minimal fragmented-MP4 demuxer in
+the scratchpad's `mse\`, not the repo):
+
+| | YouTube (Big Buck Bunny 4K60) | WeTV (a free episode) |
+|---|---|---|
+| Fed through | MSE, the main page, no worker | MSE, the main page (two workers, not the media's) |
+| Format | AV1 in fragmented MP4, Opus in WebM | H.264 in fragmented MP4, AAC |
+| DRM | none | none on this episode (the site asks for Widevine and PlayReady) |
+| Ahead of playback | 16–34 s; 20 s before play | 190 s |
+| Decoded | every sample, across a 360p → 720p switch (2,280 frames, 48 s) | every sample (4,745 frames, 190 s) |
+| Decode, scale to 756×420 and read back | 149 fps at 3840×2160, 256 at 1080p, while the page plays the same 4K60 (5 of 5,150 dropped) | 308 fps at 864×486 |
+| Decoded timestamps against `requestVideoFrameCallback`'s `mediaTime` | equal (1 µs rounding) | equal |
+
+So it is feasible on both. What the build would need: a MAIN-world content script at
+`document_start` (all frames) wrapping `addSourceBuffer`/`appendBuffer`/`remove`; demuxers for
+fragmented MP4 and WebM (YouTube can serve VP9 in WebM); decoding, scaling and readback in a
+worker, not on the page's thread (6.4 ms a 4K frame here); sending model-size frames keyed by
+media time (756×420 RGB at 60 fps ≈ 57 MB/s, or luma plus a quarter-size chroma); the app
+running depth ahead into a store by media time and taking each live frame's depth by the
+page's frame reports. A second MediaSource after a quality change, seeks (segments for the new
+place) and `timestampOffset` are part of it. Protected media, players in workers and plain-file
+videos (no MSE: a hidden second element would do) stay on today's delay.
+
+### Two layers: the player delays its own picture (2026-10-19, user report: "whenever a setting panel or a loading spinner shows up there is a transparent cutout ... after these are closed there is a big cutout on the video")
+
+**Why it kept breaking.** The app captures the screen, where the browser has already merged the
+video and the player's controls into one picture, and with the buffer showed that capture 2 s
+late. So the controls in the delayed picture were 2 s old; patched in from the live screen
+(`LiveControls`) they showed the video 2 s ahead, flat, through the frosted panel and spinner
+(the see-through cutout), and after a panel closed the delayed picture still had it for 2 s,
+patched live again (the big cutout). The video under an old panel is in no capture: no patch
+in the app could be right.
+
+**Now the two layers are made in the page** (extension 1.8.0). While the sound is delayed, the
+player keeps each frame the video presents in GPU memory (WebGL 2; luma and half-size chroma,
+1.5 bytes a pixel at the size shown, 640 MB at most: 2 s of 1080p at 60 fps is 373 MB) stamped
+on the audio clock, and draws it when its sound is heard, with the caption read with it; its
+bar, panel and spinner are live on top. The screen is always the finished picture and the app
+shows it as it is, never late. For depth ahead, the player sends each frame as it plays at the
+model's input size (JPEG, about 55 KB, `picture`); `PagePictures` decodes it into the model
+input, hands it over in order and files the depth by line (the player's count of jumps) and
+time in the video; the render thread takes the depth of the frame the player reports on the
+screen (its own, or interpolated between neighbours, or the newest before it in live timing).
+The page's caption boxes are held flat at render time (`CaptionLock.ApplyGiven`), the controls
+drawn flat from the capture. A pause suspends the audio clock (sound and picture hold); at the
+end the tail plays out; a seek drops the kept frames not shown, starts the delay line again and
+a new line, and the spinner stays until the new place's first frame; a paused seek shows its
+frame at once. A video the player may not read (another site's without CORS) and protected
+media play live with depth from the screen.
+
+Removed: `VideoDelayBuffer` (and its tests), the app's held-frame picking, the play clock
+(`PlayTicks`, `held`/`at`/`seekAt`), `NextDueTicks` and the held-frame memory budget, the
+panel-in-held-frame patch, `NearnessBlend.Weighted`, the 90 ms live-sound matched cap.
+
+Checked with the real `content.js` in a test browser (worker stubbed, clock answered; the clip
+served over HTTP and, for seeks, as a blob): frames drawn 1.9–2.0 s behind the video
+throughout; the spinner the first 2 s; pause at 5.01 s stopped the picture at 3.867 and play
+went on with 3.900; a seek to 7 held the last frame under the spinner and drew 7.033 on line 8
+2 s later; a loop's return played through; a paused seek showed its frame at once and played 2 s
+after play. Screenshots: the delayed picture upright, true colours, sharp at 2151×1210.
+Tests: 165 (4 new for `PagePictures`), Release.
+
 ### Next
 
-1. Reload the extension (1.5.3) and try the theater with the buffer: the frosted bar, the panel
+1. Reload the extension (1.8.0) and try the theater with the 2 s buffer: the panel and spinner
+   with no cutout, pause and play (no gap), seeks (spinner, then the new position), the panel
    closing at once, the page in its window after Exit, subtitles on WeTV and YouTube from the
    normal page layout, the tray's theater (window full screen, F11 leaving it).
 2. Ask the user what the 10-13 run looked like: the held frames' smoothness, lip sync at 0.5 s.

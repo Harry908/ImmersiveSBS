@@ -67,24 +67,25 @@ public sealed class PageBoxSource(PageVideo page, Rectangle region, Size model, 
 
 /// <summary>
 /// The theater's video as its player reports it (improvement-plan.md §5): each frame it draws
-/// (its counter, its time in the video, when it is shown, already on the app's clock), and
-/// whether it is paused or seeking. The browser link
-/// writes it as messages arrive, the render thread reads it every frame: frame events come 24–60
-/// times a second and must not wait for the controller's tick. Thread-safe.
+/// (its counter, its time in the video, when it is shown, already on the app's clock), whether it
+/// is paused or seeking, and the frames it sends for the depth model (<see cref="Pictures"/>). The
+/// browser link writes it as messages arrive, the render thread reads it every frame: frame events
+/// come 24–60 times a second and must not wait for the controller's tick. Thread-safe.
 /// </summary>
-public sealed class PageVideo
+public sealed class PageVideo : IDisposable
 {
-    /// <param name="Presented">The page's count of presented frames (requestVideoFrameCallback).</param>
+    /// <param name="Presented">The page's count of frames drawn.</param>
     /// <param name="MediaTime">The frame's time in the video, seconds.</param>
     /// <param name="DisplayTicks">When it was to be shown, Stopwatch ticks of this process.</param>
-    public readonly record struct FrameEvent(long Presented, double MediaTime, long DisplayTicks);
+    /// <param name="Line">The player's count of jumps in the video (seeks, a loop's return), as on its <see cref="Pictures"/>.</param>
+    public readonly record struct FrameEvent(long Presented, double MediaTime, long DisplayTicks, int Line = 0);
 
     private const int Ring = 32;
     private readonly object gate = new();
     private readonly FrameEvent[] frames = new FrameEvent[Ring];
     private int count, head;
     private long lastMessage;
-    private bool paused, seeking;
+    private bool paused, seeking, live, sendsPictures;
     private int seeks;
     private double clockError = double.NaN;
 
@@ -97,6 +98,11 @@ public sealed class PageVideo
     }
 
     public string MediaId { get; }
+
+    /// <summary>The frames the player sends as the video plays, and their depth.</summary>
+    public PagePictures Pictures { get; } = new();
+
+    public void Dispose() => Pictures.Dispose();
 
     /// <summary>Records a frame event; older or repeated ones are ignored.</summary>
     public void AddFrame(FrameEvent e)
@@ -117,15 +123,34 @@ public sealed class PageVideo
     }
 
     /// <summary>Records the playback state.</summary>
-    public void SetState(bool paused, bool seeking, int seeks)
+    /// <param name="live">The video has no end (a live stream).</param>
+    /// <param name="sendsPictures">The player sends its frames for the depth model (<see cref="Pictures"/>).</param>
+    public void SetState(bool paused, bool seeking, int seeks, bool live = false, bool sendsPictures = false)
     {
         lock (gate)
         {
             this.paused = paused;
             this.seeking = seeking;
             this.seeks = seeks;
+            this.live = live;
+            this.sendsPictures = sendsPictures;
             lastMessage = Stopwatch.GetTimestamp();
         }
+    }
+
+    /// <summary>
+    /// The player sends its frames for the depth model and shows each one itself, late with the
+    /// sound: the depth comes from <see cref="Pictures"/>, and the screen is shown as it is.
+    /// </summary>
+    public bool SendsPictures
+    {
+        get { lock (gate) return sendsPictures; }
+    }
+
+    /// <summary>The video has no end (a live stream): it is not buffered.</summary>
+    public bool Live
+    {
+        get { lock (gate) return live; }
     }
 
     /// <summary>The page's clock sync: at most this far off, ms (half the best round trip).</summary>
@@ -167,22 +192,19 @@ public sealed class PageVideo
     }
 
     /// <summary>The player's boxes from <see cref="FromTicks"/> on, screen px of the captured monitor.</summary>
-    /// <param name="Overlays">Everything but the captions (the bar, the panel), held flat.</param>
-    /// <param name="Panels">Of those, the 3D settings panel.</param>
-    public sealed record BoxSet(long FromTicks, IReadOnlyList<Rectangle> Overlays, IReadOnlyList<Rectangle> Captions,
-        IReadOnlyList<Rectangle> Panels);
+    /// <param name="Overlays">Everything but the captions (the bar, the panel, the spinner), drawn flat.</param>
+    public sealed record BoxSet(long FromTicks, IReadOnlyList<Rectangle> Overlays, IReadOnlyList<Rectangle> Captions);
 
     private readonly BoxSet?[] boxSets = new BoxSet?[16];
     private int boxHead, boxCount;
 
     /// <summary>Records the player's boxes as they are from <paramref name="fromTicks"/> on (never before the previous set).</summary>
-    public void AddBoxes(long fromTicks, IReadOnlyList<Rectangle> overlays, IReadOnlyList<Rectangle> captions,
-        IReadOnlyList<Rectangle>? panels = null)
+    public void AddBoxes(long fromTicks, IReadOnlyList<Rectangle> overlays, IReadOnlyList<Rectangle> captions)
     {
         lock (gate)
         {
             if (boxCount > 0) fromTicks = Math.Max(fromTicks, boxSets[(boxHead + boxSets.Length - 1) % boxSets.Length]!.FromTicks);
-            boxSets[boxHead] = new BoxSet(fromTicks, overlays, captions, panels ?? []);
+            boxSets[boxHead] = new BoxSet(fromTicks, overlays, captions);
             boxHead = (boxHead + 1) % boxSets.Length;
             boxCount = Math.Min(boxCount + 1, boxSets.Length);
         }
@@ -211,9 +233,10 @@ public sealed class PageVideo
     /// estimate both fall on the same refresh, give or take one). A capture often arrives before
     /// the report of the frame it shows (the report goes through the browser's worker and the
     /// socket): past the newest report while playing, the frames that followed are counted on at
-    /// the video's cadence, up to <see cref="MaxFramesAhead"/>.
+    /// the video's cadence, up to <see cref="MaxFramesAhead"/>; not with <paramref name="countOn"/>
+    /// false (the player holds a frame while its delayed sound fills, the video playing on).
     /// </summary>
-    public bool TryFrameAt(long captureTicks, long slackTicks, out FrameEvent frame)
+    public bool TryFrameAt(long captureTicks, long slackTicks, out FrameEvent frame, bool countOn = true)
     {
         lock (gate)
         {
@@ -222,7 +245,7 @@ public sealed class PageVideo
                 FrameEvent e = frames[(head + Ring - k) % Ring];
                 if (e.DisplayTicks <= captureTicks + slackTicks)
                 {
-                    frame = k == 1 && !paused ? Extrapolate(e, captureTicks + slackTicks) : e;
+                    frame = k == 1 && !paused && countOn ? Extrapolate(e, captureTicks + slackTicks) : e;
                     return true;
                 }
             }
@@ -243,7 +266,7 @@ public sealed class PageVideo
         if (ahead <= 0) return newest;
         double mediaStep = (newest.MediaTime - oldest.MediaTime) / n;
         return new FrameEvent(newest.Presented + ahead, newest.MediaTime + ahead * mediaStep,
-            newest.DisplayTicks + (long)(ahead * period));
+            newest.DisplayTicks + (long)(ahead * period), newest.Line);
     }
 
     /// <summary>

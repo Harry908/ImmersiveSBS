@@ -27,6 +27,13 @@ public enum DepthTier
 
     /// <summary>Depth Anything 3 Base (Apache-2.0); as <see cref="DA3Small"/>.</summary>
     DA3Base,
+
+    /// <summary>
+    /// Video Depth Anything Small (Apache-2.0), streaming: a Depth Anything V2 Small encoder whose
+    /// head attends over the hidden states of the frames before (<see cref="VideoDepthEstimator"/>).
+    /// Two files: the step and the first frame (<see cref="DepthModel.FirstFilePath"/>).
+    /// </summary>
+    VdaSmall,
 }
 
 /// <summary>Model input size, 16:9, each side a multiple of the ViT patch (14).</summary>
@@ -56,6 +63,9 @@ public sealed record DepthModel(DepthTier Tier, DepthPreset Preset)
     /// <summary>The model outputs depth (larger = farther), not relative inverse depth: the estimator inverts it.</summary>
     public bool OutputIsDepth => Tier is DepthTier.DA3Small or DepthTier.DA3Base;
 
+    /// <summary>The model carries state from frame to frame (<see cref="VideoDepthEstimator"/>).</summary>
+    public bool Temporal => Tier == DepthTier.VdaSmall;
+
     /// <summary>
     /// The model's depth edges step in whole model pixels (Depth Anything V2 and 3; iw3 issue
     /// #406): depth anti-aliasing is on for it by default. Distill-Any-Depth's are already smooth.
@@ -74,18 +84,25 @@ public sealed record DepthModel(DepthTier Tier, DepthPreset Preset)
         DepthTier.Small => "da2-small",
         DepthTier.DA3Small => "da3-small",
         DepthTier.DA3Base => "da3-base",
+        DepthTier.VdaSmall => "vda-small",
         _ => "dad-base",
     };
 
     public string FilePath => Path.Combine(ModelsDirectory, Stem + ".onnx");
 
-    public bool Exists => File.Exists(FilePath);
+    /// <summary>A temporal model's graph for the first frame (no state before it): {family}-first_{H}x{W}.onnx.</summary>
+    public string FirstStem => Family + $"-first_{Height}x{Width}";
+
+    public string FirstFilePath => Path.Combine(ModelsDirectory, FirstStem + ".onnx");
+
+    public bool Exists => File.Exists(FilePath) && (!Temporal || File.Exists(FirstFilePath));
 
     public static string Name(DepthTier tier) => tier switch
     {
         DepthTier.Small => "Depth Anything V2 Small",
         DepthTier.DA3Small => "Depth Anything 3 Small",
         DepthTier.DA3Base => "Depth Anything 3 Base",
+        DepthTier.VdaSmall => "Video Depth Anything Small",
         _ => "Distill-Any-Depth Base",
     };
 

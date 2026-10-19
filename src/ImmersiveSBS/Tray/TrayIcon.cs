@@ -1,7 +1,6 @@
 // Ported from DesktopSbS: DesktopSbS/View/TrayIcon.cs
 using System.Drawing;
 using System.Windows.Forms;
-using ImmersiveSBS.Capture;
 using ImmersiveSBS.Depth;
 using ImmersiveSBS.Theme;
 
@@ -21,20 +20,11 @@ public sealed class TrayIcon : IDisposable
 
     private readonly ToolStripMenuItem statusItem;
     private readonly ToolStripMenuItem pauseItem;
-    private readonly ToolStripMenuItem windowItem;
-    private readonly ToolStripMenuItem captureItem;
     private readonly ToolStripMenuItem aiItem;
-    private readonly ToolStripMenuItem aiOffItem;
-    private readonly ToolStripMenuItem aiScreenItem;
-    private readonly ToolStripMenuItem aiStatusItem;
     private readonly ToolStripMenuItem theaterItem;
-    private readonly ToolStripMenuItem stretchItem;
-    private readonly ToolStripMenuItem bufferItem;
-    private readonly ToolStripMenuItem duplicationItem;
-    private readonly ToolStripMenuItem graphicsCaptureItem;
-    private readonly ToolStripMenuItem tuningItem;
+    private readonly ToolStripMenuItem windowItem;
     private readonly ToolStripMenuItem settingsItem;
-    private readonly ToolStripMenuItem logItem;
+    private readonly ToolStripMenuItem tuningItem;
     private readonly ToolStripMenuItem exitItem;
 
     public TrayIcon(AppController controller)
@@ -46,52 +36,20 @@ public sealed class TrayIcon : IDisposable
         pauseItem = new ToolStripMenuItem("Pause");
         pauseItem.Click += (_, _) => controller.Execute(ShortcutCommand.Pause);
 
-        windowItem = new ToolStripMenuItem("Show in a window");
-        windowItem.Click += (_, _) => controller.ToggleWindow();
+        aiItem = new ToolStripMenuItem("Whole screen in 3D");
+        aiItem.Click += (_, _) => controller.Execute(ShortcutCommand.ToggleAi3D);
 
-        duplicationItem = new ToolStripMenuItem("Desktop Duplication");
-        duplicationItem.Click += (_, _) => controller.SetCaptureMethod(CaptureMethod.DesktopDuplication);
-        graphicsCaptureItem = new ToolStripMenuItem("Windows.Graphics.Capture");
-        graphicsCaptureItem.Click += (_, _) => controller.SetCaptureMethod(CaptureMethod.GraphicsCapture);
-        captureItem = new ToolStripMenuItem("Capture");
-        captureItem.DropDownItems.AddRange([duplicationItem, graphicsCaptureItem]);
-
-        aiStatusItem = new ToolStripMenuItem { Enabled = false };
-        aiOffItem = new ToolStripMenuItem("Off");
-        aiOffItem.Click += (_, _) => controller.SetAi3D(AiTarget.Off);
-        aiScreenItem = new ToolStripMenuItem("Whole screen");
-        aiScreenItem.Click += (_, _) => controller.SetAi3D(AiTarget.WholeScreen);
-        aiItem = new ToolStripMenuItem("AI 3D");
-        aiItem.DropDownItems.AddRange([aiOffItem, aiScreenItem, new ToolStripSeparator(), aiStatusItem]);
-
-        theaterItem = new ToolStripMenuItem("3D theater (the browser video, full screen)");
+        theaterItem = new ToolStripMenuItem("3D theater");
         theaterItem.Click += (_, _) => controller.ToggleTheater();
 
-        stretchItem = new ToolStripMenuItem("Video stretch");
-        foreach ((string text, double factor) in new[] { ("None", 1.0), ("×1.1", 1.1), ("×1.2", 1.2), ("×1.25", 1.25), ("×1.33 (4:3 as 16:9)", 1.3333), ("×1.5", 1.5) })
-        {
-            var item = new ToolStripMenuItem(text) { Tag = factor };
-            item.Click += (_, _) => controller.SetStretch(factor);
-            stretchItem.DropDownItems.Add(item);
-        }
-
-        bufferItem = new ToolStripMenuItem("Video timing");
-        for (int i = 0; i < AppController.TimingChoices.Length; i++)
-        {
-            int index = i;
-            var item = new ToolStripMenuItem(AppController.TimingChoices[i].Label) { Tag = index };
-            item.Click += (_, _) => controller.SetTiming(index);
-            bufferItem.DropDownItems.Add(item);
-        }
-
-        tuningItem = new ToolStripMenuItem("Tuning...");
-        tuningItem.Click += (_, _) => controller.Execute(ShortcutCommand.Tuning);
+        windowItem = new ToolStripMenuItem("Show in a window");
+        windowItem.Click += (_, _) => controller.ToggleWindow();
 
         settingsItem = new ToolStripMenuItem("Settings...");
         settingsItem.Click += (_, _) => controller.Execute(ShortcutCommand.Settings);
 
-        logItem = new ToolStripMenuItem("Open log");
-        logItem.Click += (_, _) => controller.OpenLog();
+        tuningItem = new ToolStripMenuItem("Tuning...");
+        tuningItem.Click += (_, _) => controller.Execute(ShortcutCommand.Tuning);
 
         exitItem = new ToolStripMenuItem("Exit");
         exitItem.Click += (_, _) => controller.Execute(ShortcutCommand.Exit);
@@ -104,14 +62,10 @@ public sealed class TrayIcon : IDisposable
             pauseItem,
             aiItem,
             theaterItem,
-            stretchItem,
-            bufferItem,
             windowItem,
-            captureItem,
             new ToolStripSeparator(),
-            tuningItem,
             settingsItem,
-            logItem,
+            tuningItem,
             new ToolStripSeparator(),
             exitItem,
         ]);
@@ -155,24 +109,9 @@ public sealed class TrayIcon : IDisposable
         statusItem.Text = controller.StatusText;
         pauseItem.Checked = controller.Paused;
         windowItem.Checked = controller.WindowShown;
-        duplicationItem.Checked = controller.Settings.CaptureMethod == CaptureMethod.DesktopDuplication;
-        graphicsCaptureItem.Checked = controller.Settings.CaptureMethod == CaptureMethod.GraphicsCapture;
         theaterItem.Checked = controller.Theater;
-        aiOffItem.Checked = controller.Settings.Ai3D == AiTarget.Off;
-        aiScreenItem.Checked = controller.Settings.Ai3D == AiTarget.WholeScreen;
+        aiItem.Checked = controller.Settings.Ai3D == AiTarget.WholeScreen;
         aiItem.ShortcutKeyDisplayString = controller.ShortcutText(ShortcutCommand.ToggleAi3D);
-        aiStatusItem.Text = controller.ModelStatus;
-        foreach (ToolStripMenuItem item in stretchItem.DropDownItems)
-            item.Checked = Math.Abs((double)item.Tag! - controller.Settings.VideoStretch) < 0.01;
-        int timing = AppController.TimingIndex(controller.Settings);
-        foreach (ToolStripMenuItem item in bufferItem.DropDownItems)
-        {
-            int index = (int)item.Tag!;
-            item.Checked = index == timing;
-            // A buffer needs the browser extension to delay the sound with it.
-            item.Enabled = controller.TimingAvailable(index);
-            item.Text = controller.TimingLabel(index);
-        }
 
         // Shortcuts are user-configurable, so read them each time.
         pauseItem.ShortcutKeyDisplayString = controller.ShortcutText(ShortcutCommand.Pause);

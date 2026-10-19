@@ -35,7 +35,7 @@ public class ModelAgreementTests(ITestOutputHelper output)
         var outputs = new Dictionary<DepthTier, List<float[]>>();
         foreach (DepthTier tier in tiers)
         {
-            using DepthEstimator? estimator = SampleClip.TryLoad(new DepthModel(tier, DepthPreset.Balanced), out string why);
+            using IDepthRunner? estimator = SampleClip.TryLoad(new DepthModel(tier, DepthPreset.Balanced), out string why);
             if (estimator == null)
             {
                 output.WriteLine($"{DepthModel.Name(tier)}: skipped ({why}).");

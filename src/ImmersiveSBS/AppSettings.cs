@@ -139,25 +139,11 @@ public sealed class AppSettings
     /// <summary>The glasses; null picks a display recognised from its EDID.</summary>
     public string? Glasses { get; set; }
 
+    /// <summary>Desktop Duplication; Windows.Graphics.Capture only by editing the file (troubleshooting).</summary>
     public CaptureMethod CaptureMethod { get; set; } = CaptureMethod.DesktopDuplication;
 
     /// <summary>Also show the virtual monitor while the glasses are in 2D mode (1:1).</summary>
     public bool ShowIn2D { get; set; } = true;
-
-    /// <summary>Stop the cursor at the edge of the glasses while they show the virtual monitor.</summary>
-    public bool KeepCursorOffGlasses { get; set; } = true;
-
-    /// <summary>Move windows that land on the glasses to the virtual monitor.</summary>
-    public bool MoveWindowsOffGlasses { get; set; } = true;
-
-    /// <summary>
-    /// While the virtual monitor is not on the glasses (paused, glasses away or in 2D), show it in
-    /// a window on a real monitor, so what is on it stays in reach.
-    /// </summary>
-    public bool ShowInWindowWhenNotOnGlasses { get; set; } = true;
-
-    /// <summary>On exit, move windows from the virtual monitor to a real monitor.</summary>
-    public bool MoveWindowsOffVirtualMonitorOnExit { get; set; } = true;
 
     /// <summary>Shortcut text per command, e.g. "Ctrl+Alt+B"; empty disables one.</summary>
     [JsonConverter(typeof(ShortcutMapConverter))]
@@ -204,9 +190,11 @@ public sealed class AppSettings
 
     /// <summary>
     /// Shows the theater's video this late, with its sound delayed in the page by the same amount,
-    /// for steadier depth (video-3d-plan.md P5); 0 = live. Not for calls.
+    /// for steadier depth (video-3d-plan.md P5); 0 = none (<see cref="Timing"/>). 2 s by default:
+    /// for watching a video the delay costs nothing (a pause holds both, a seek shows a spinner
+    /// while it fills); a live stream is never buffered.
     /// </summary>
-    public double BufferSeconds { get; set; }
+    public double BufferSeconds { get; set; } = 2;
 
     /// <summary>
     /// Live or matched while there is no buffer (improvement-plan.md §6): matched delays the
@@ -217,9 +205,6 @@ public sealed class AppSettings
 
     /// <summary>Lip-sync trim for the delayed sound, ms; positive plays the sound later.</summary>
     public int AudioOffsetMs { get; set; }
-
-    /// <summary>The browser extension shows a "3D theater" button over a video while the glasses are in 3D mode.</summary>
-    public bool OfferTheater { get; set; } = true;
 
     /// <summary>Horizontal stretch of the theater's picture, for content in the wrong aspect ratio; the player draws it.</summary>
     public double VideoStretch { get; set; } = 1;

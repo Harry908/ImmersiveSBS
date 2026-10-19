@@ -102,6 +102,18 @@ public class PageVideoTests
     }
 
     [Fact]
+    public void TheStateSaysWhetherTheVideoIsLiveAndThePlayerSendsItsFrames()
+    {
+        var page = new PageVideo("x");
+        page.SetState(paused: false, seeking: false, seeks: 0);
+        Assert.False(page.Live);
+        Assert.False(page.SendsPictures);
+        page.SetState(paused: false, seeking: false, seeks: 0, live: true, sendsPictures: true);
+        Assert.True(page.Live);
+        Assert.True(page.SendsPictures);
+    }
+
+    [Fact]
     public void EachFrameGetsTheBoxesOnTheScreenWhenItWasCaptured()
     {
         var page = new PageVideo("x");

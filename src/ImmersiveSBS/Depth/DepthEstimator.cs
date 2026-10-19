@@ -58,34 +58,42 @@ public sealed class DepthEstimator : IDepthRunner
     public static DepthEstimator Load(DepthModel model, Action<string>? progress = null)
     {
         if (!model.Exists) throw new FileNotFoundException($"The depth model {model.Stem}.onnx is missing from {DepthModel.ModelsDirectory}.");
+        if (model.Temporal) throw new ArgumentException($"{model} carries state from frame to frame: load it with {nameof(VideoDepthEstimator)}.");
+        return new DepthEstimator(model, Open(model.ToString(), model.Stem, model.FilePath, progress, out _));
+    }
 
+    /// <summary>
+    /// A session for one model file on TensorRT for RTX, from its cached engine, compiling and
+    /// caching that first if needed. <paramref name="stem"/> names the engine; <paramref name="label"/> the status lines.
+    /// </summary>
+    internal static InferenceSession Open(string label, string stem, string path, Action<string>? progress, out OrtEpDevice device)
+    {
         IReadOnlyList<OrtEpDevice> devices = TensorRtRtx.Devices();
-        OrtEpDevice device = devices[0];
+        device = devices[0];
         string gpu = $"{device.HardwareDevice.VendorId:x4}-{device.HardwareDevice.DeviceId:x4}";
         Directory.CreateDirectory(EnginesDirectory);
-        string compiled = Path.Combine(EnginesDirectory, EngineFileName(model, gpu));
+        string compiled = Path.Combine(EnginesDirectory, EngineFileName(stem, path, gpu));
 
         var watch = Stopwatch.StartNew();
         if (!File.Exists(compiled))
         {
-            progress?.Invoke($"Preparing {model} for this GPU (first use, about 20 s)…");
-            if (!TryCompile(model, device, compiled)) compiled = model.FilePath;
+            progress?.Invoke($"Preparing {label} for this GPU (first use, about 20 s)…");
+            if (!TryCompile(label, stem, path, device, compiled)) compiled = path;
         }
 
         try
         {
-            var estimator = new DepthEstimator(model, CreateSession(compiled, device));
-            Log.Write($"Depth: loaded {model} from {Path.GetFileName(compiled)} in {watch.ElapsedMilliseconds} ms.");
-            return estimator;
+            InferenceSession session = CreateSession(compiled, device);
+            Log.Write($"Depth: loaded {label} from {Path.GetFileName(compiled)} in {watch.ElapsedMilliseconds} ms.");
+            return session;
         }
-        catch (OnnxRuntimeException e) when (compiled != model.FilePath)
+        catch (OnnxRuntimeException e) when (compiled != path)
         {
             // A stale engine (driver or provider update): rebuild once.
             Log.Write($"Depth: cached engine failed to load ({e.Message}); rebuilding.");
             File.Delete(compiled);
-            progress?.Invoke($"Rebuilding {model} for this GPU…");
-            string path = TryCompile(model, device, compiled) ? compiled : model.FilePath;
-            return new DepthEstimator(model, CreateSession(path, device));
+            progress?.Invoke($"Rebuilding {label} for this GPU…");
+            return CreateSession(TryCompile(label, stem, path, device, compiled) ? compiled : path, device);
         }
     }
 
@@ -116,17 +124,19 @@ public sealed class DepthEstimator : IDepthRunner
     /// the provider version and the GPU. Without the fingerprint a model file replaced under the
     /// same name (an fp16 conversion of it, say) kept running its old engine.
     /// </summary>
-    public static string EngineFileName(DepthModel model, string gpu)
+    public static string EngineFileName(DepthModel model, string gpu) => EngineFileName(model.Stem, model.FilePath, gpu);
+
+    private static string EngineFileName(string stem, string path, string gpu)
     {
-        var file = new FileInfo(model.FilePath);
+        var file = new FileInfo(path);
         string fingerprint = $"{file.Length:x}-{file.LastWriteTimeUtc.Ticks:x}";
-        return $"{model.Stem}.{fingerprint}.trtrtx-{TensorRtRtx.Version}.{gpu}.ctx.onnx";
+        return $"{stem}.{fingerprint}.trtrtx-{TensorRtRtx.Version}.{gpu}.ctx.onnx";
     }
 
-    /// <summary>Removes this model's engines for other files, providers or GPUs (100–400 MB each).</summary>
-    private static void DeleteOtherEngines(DepthModel model, string keep)
+    /// <summary>Removes this file's engines for other files, providers or GPUs (100–400 MB each).</summary>
+    private static void DeleteOtherEngines(string stem, string keep)
     {
-        foreach (string path in Directory.EnumerateFiles(EnginesDirectory, model.Stem + ".*.ctx.onnx"))
+        foreach (string path in Directory.EnumerateFiles(EnginesDirectory, stem + ".*.ctx.onnx"))
         {
             if (string.Equals(path, keep, StringComparison.OrdinalIgnoreCase)) continue;
             try
@@ -145,7 +155,7 @@ public sealed class DepthEstimator : IDepthRunner
     }
 
     /// <summary>Compiles to an EPContext model with the engine embedded; false keeps the plain model.</summary>
-    private static bool TryCompile(DepthModel model, OrtEpDevice device, string output)
+    private static bool TryCompile(string label, string stem, string path, OrtEpDevice device, string output)
     {
         string temp = output + ".tmp";
         var watch = Stopwatch.StartNew();
@@ -153,18 +163,18 @@ public sealed class DepthEstimator : IDepthRunner
         {
             using OrtSessionOptions options = NewOptions(device);
             using var compile = new OrtModelCompilationOptions(options);
-            compile.SetInputModelPath(model.FilePath);
+            compile.SetInputModelPath(path);
             compile.SetOutputModelPath(temp);
             compile.SetEpContextEmbedMode(true);
             compile.CompileModel();
             File.Move(temp, output, overwrite: true);
-            Log.Write($"Depth: compiled {model} in {watch.Elapsed.TotalSeconds:0.0} s to {Path.GetFileName(output)}.");
-            DeleteOtherEngines(model, output);
+            Log.Write($"Depth: compiled {label} in {watch.Elapsed.TotalSeconds:0.0} s to {Path.GetFileName(output)}.");
+            DeleteOtherEngines(stem, output);
             return true;
         }
         catch (Exception e)
         {
-            Log.Write($"Depth: compiling {model} failed ({e.Message}); the engine will be built at each start.");
+            Log.Write($"Depth: compiling {label} failed ({e.Message}); the engine will be built at each start.");
             try { File.Delete(temp); } catch { }
             return false;
         }

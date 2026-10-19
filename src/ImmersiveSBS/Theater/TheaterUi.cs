@@ -6,7 +6,7 @@ using ImmersiveSBS.Presentation;
 namespace ImmersiveSBS.Theater;
 
 /// <summary>What the theater's 3D settings panel shows, from the session's current settings; sent to the extension, which draws it.</summary>
-public sealed record TheaterPanel(string Model, string Size, double Depth, double Plane, string Timing, bool EdgeSnap, bool Captions);
+public sealed record TheaterPanel(string Model, string Size, double Depth, double Plane, string Timing);
 
 /// <summary>
 /// What the app itself draws over the picture in the glasses, on the render thread: while 3D is

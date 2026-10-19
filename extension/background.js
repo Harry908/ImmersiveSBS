@@ -5,9 +5,10 @@
 // the sound late.
 //
 // Protocol 3 (the extension ships with the app; the app refuses any other): the media report for
-// the sound, the theater's reports (its picture, frames, state, boxes and clock pings, relayed
-// at once), the app's status (glasses in 3D, the button wanted, the 3D panel's values) and the
-// 3D panel's commands.
+// the sound, the theater's reports (its picture, the frames it draws, the frames it sends for the
+// depth model, state, boxes and clock pings, relayed at once), the app's status (glasses in 3D,
+// the button wanted, the 3D panel's values, the depth model's input size) and the 3D panel's
+// commands.
 'use strict';
 
 const APP_URL = 'ws://127.0.0.1:47391/immersivesbs';
@@ -21,6 +22,8 @@ let retryTimer = 0;
 let retryMs = 1000;
 /** What the app asked for, seconds; 0 while it is not connected. */
 let delaySeconds = 0;
+/** How late the theater should show its picture, seconds (the delay without the user's trim). */
+let delayPicture = 0;
 /** The tab whose pages play late (the theater's), or null. */
 let delayTab = null;
 /** Frames with media: key "tab:frame:document" -> { port, tab, frame, media: [] }. */
@@ -102,11 +105,12 @@ function onAppMessage(text) {
       send({ type: 'pong' });
       break;
     case 'delay':
-      setDelay(Number(m.seconds), Number.isInteger(m.tab) ? m.tab : null);
+      setDelay(Number(m.seconds), Number.isInteger(m.tab) ? m.tab : null, Number(m.picture));
       break;
     case 'status':
-      // Whether the glasses show 3D, whether to offer the theater button, and the 3D settings.
-      appStatus = { type: 'status', glasses: m.glasses === true, offer: m.offer === true, settings: m.settings ?? null };
+      // Whether the glasses show 3D (the theater button shows only then), the 3D settings, and
+      // the size the theater sends its frames at for the depth model (null: none).
+      appStatus = { type: 'status', glasses: m.glasses === true, settings: m.settings ?? null, picture: m.picture ?? null };
       for (const entry of frames.values()) entry.port.postMessage(appStatus);
       break;
     case 'theater':
@@ -177,7 +181,7 @@ function showStatus() {
 function tellFrames() {
   for (const entry of frames.values()) {
     entry.port.postMessage({ type: 'app', connected: socket !== null });
-    if (!socket) entry.port.postMessage({ type: 'status', glasses: false, offer: false, settings: null });
+    if (!socket) entry.port.postMessage({ type: 'status', glasses: false, settings: null });
   }
 }
 
@@ -203,23 +207,26 @@ async function windowFullscreen(windowId, on) {
   }
 }
 
-/** Plays the sound of <tab>'s pages <seconds> late and every other tab's live. */
-function setDelay(seconds, tab = null) {
+/** Plays the sound of <tab>'s pages <seconds> late and every other tab's live; its theater shows the picture <picture> late. */
+function setDelay(seconds, tab = null, picture = 0) {
   seconds = Number.isFinite(seconds) ? Math.min(Math.max(seconds, 0), MAX_DELAY_SECONDS) : 0;
+  picture = Number.isFinite(picture) ? Math.min(Math.max(picture, 0), MAX_DELAY_SECONDS) : 0;
   if (seconds === 0 || tab === null) {
-    seconds = 0;
+    seconds = picture = 0;
     tab = null;
   }
-  if (seconds === delaySeconds && tab === delayTab) return;
+  if (seconds === delaySeconds && tab === delayTab && picture === delayPicture) return;
   delaySeconds = seconds;
   delayTab = tab;
-  for (const entry of frames.values()) entry.port.postMessage({ type: 'delay', seconds: frameDelay(entry) });
+  delayPicture = picture;
+  for (const entry of frames.values()) entry.port.postMessage(frameDelay(entry));
   showStatus();
 }
 
-/** The delay for one frame's pages: the asked one in the delayed tab, else none. */
+/** The delay message for one frame's pages: the asked one in the delayed tab, else none. */
 function frameDelay(entry) {
-  return entry.tab === delayTab ? delaySeconds : 0;
+  const delayed = entry.tab === delayTab;
+  return { type: 'delay', seconds: delayed ? delaySeconds : 0, picture: delayed ? delayPicture : 0 };
 }
 
 /** Sends every frame's media to the app, at most ten times a second and only when changed. */
@@ -270,6 +277,7 @@ chrome.runtime.onConnect.addListener(port => {
         onTheater(key, entry, m);
         break;
       case 'frame':
+      case 'picture':
       case 'state':
       case 'overlays':
         // The theater's video: at once, with its full id.
@@ -293,7 +301,7 @@ chrome.runtime.onConnect.addListener(port => {
     if (theater?.key === key) onTheater(key, entry, { id: theater.id.slice(key.length + 1), open: false });
     scheduleReport();
   });
-  port.postMessage({ type: 'delay', seconds: frameDelay(entry) });
+  port.postMessage(frameDelay(entry));
   port.postMessage({ type: 'app', connected: socket !== null });
   if (appStatus) port.postMessage(appStatus);
   connect();

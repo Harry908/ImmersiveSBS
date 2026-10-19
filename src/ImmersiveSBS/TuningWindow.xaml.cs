@@ -1,6 +1,5 @@
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Threading;
 using ImmersiveSBS.Depth;
 
 namespace ImmersiveSBS;
@@ -16,7 +15,6 @@ public partial class TuningWindow : Window
 
     private readonly AppController controller;
     private readonly List<Row> rows = [];
-    private readonly DispatcherTimer statsTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private AppSettings saved;
     private AppSettings working;
     private bool loading;
@@ -47,15 +45,10 @@ public partial class TuningWindow : Window
             v => $"{v:0.00} ({(v < 0.3 ? "steady" : "quick")})");
         AddSlider("Scene-cut threshold", 0.04, 0.3, 0.01, s => s.Tuning.SceneCut, (s, v) => s.Tuning = s.Tuning with { SceneCut = v },
             v => $"{v:0.00}");
-        AddSlider("Video stretch", 1, 1.5, 0.01, s => s.VideoStretch, (s, v) => s.VideoStretch = v, v => $"×{v:0.00}");
         AddSlider("Sound offset", -150, 150, 10, s => s.AudioOffsetMs, (s, v) => s.AudioOffsetMs = (int)v,
             v => v == 0 ? "in step" : $"{Math.Abs(v):0} ms {(v > 0 ? "later" : "earlier")}");
 
         Load(working);
-        controller.StatusChanged += UpdateStatus;
-        statsTimer.Tick += (_, _) => UpdateStatus();
-        statsTimer.Start();
-        UpdateStatus();
     }
 
     /// <summary>Settings changed elsewhere (a hotkey, which saves): show and keep them.</summary>
@@ -64,7 +57,6 @@ public partial class TuningWindow : Window
         saved = controller.Settings.Clone();
         working = controller.Settings.Clone();
         Load(working);
-        UpdateStatus();
     }
 
     private void AddSlider(string label, double min, double max, double step,
@@ -152,7 +144,6 @@ public partial class TuningWindow : Window
         var defaults = new AppSettings();
         working.Ai3DStrength = defaults.Ai3DStrength;
         working.Ai3DConvergence = defaults.Ai3DConvergence;
-        working.VideoStretch = defaults.VideoStretch;
         working.AudioOffsetMs = defaults.AudioOffsetMs;
         working.Tuning = StereoTuning.Default;
         Load(working);
@@ -168,20 +159,8 @@ public partial class TuningWindow : Window
 
     private void OnCancel(object sender, RoutedEventArgs e) => Close();
 
-    private void UpdateStatus()
-    {
-        string status = controller.StatusText;
-        if (controller.AudioStatus is string audio) status += "; " + audio;
-        if (controller.Settings.Ai3D == AiTarget.Off) status += "\nAI 3D is off: Depth and the edge controls take effect once it is on.";
-        if (controller.LastAdjustment is string last) status += "\nLast hotkey change: " + last;
-        StatusText.Text = status;
-        StatsText.Text = controller.Session?.Stats?.ToString() ?? string.Empty;
-    }
-
     protected override void OnClosed(EventArgs e)
     {
-        statsTimer.Stop();
-        controller.StatusChanged -= UpdateStatus;
         // Closing without Save goes back to the saved settings.
         if (!closingSaved) controller.PreviewSettings(saved.Clone());
         base.OnClosed(e);

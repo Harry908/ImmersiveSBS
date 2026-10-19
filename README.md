@@ -22,14 +22,20 @@ picture.
   is when you say so.
 - **3D theater**, in the browser extension ([extension/](extension/), Chrome and Edge), which is
   part of the app: while the glasses are in 3D mode, a "3D theater" button shows over a browser
-  video. It opens the video in a full-screen player in the page, drawn at the video's own
-  resolution and shown in 3D in the glasses. The player has a seek bar, the time, 10 s back and
-  forward, play/pause, mute, full screen and a 3D settings panel. Keys: Space or K play/pause,
-  ←/→ or J/L skip 10 s, M mute, F full screen, Esc leaves; a double click switches full screen.
-  The extension also delays the video's sound inside the page, at full quality, so the picture
-  can be shown later than live with depth for every frame. It sends nothing that says what you
-  watch (no titles, addresses or names).
+  video. It opens that video alone, full screen, drawn at its own resolution and shown in 3D in
+  the glasses, with the page's subtitles. One bar holds a seek bar, the time, 10 s back and
+  forward, play/pause, mute, a 3D settings panel and Exit. Keys: Space or K play/pause, ←/→ or
+  J/L skip 10 s, M mute, Esc leaves. For the buffer, the player shows the video late itself
+  with its sound (at full quality), its controls live on top, and sends the app each frame as
+  it plays, so every frame's depth is ready when it is shown. It sends nothing that says what
+  you watch (no titles, addresses or names).
 - **Timing:** live, matched (the video just late enough for its depth), or a 0.5–2 s buffer.
+
+## Using it
+
+The tray icon has the everyday commands: Pause, Whole screen in 3D, 3D theater, Show in a
+window, Settings and Tuning (the depth controls, live). In the glasses, the theater's 3D panel
+changes the model, resolution, depth, screen plane, timing, stretch and what the video is.
 
 ## Requirements
 
