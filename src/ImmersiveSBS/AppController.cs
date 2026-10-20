@@ -91,7 +91,7 @@ public sealed class AppController : IDisposable
 
     public void Start()
     {
-        Log.Write($"App: start, version {typeof(AppController).Assembly.GetName().Version}, settings {AppSettings.FilePath}.");
+        Log.Write($"App: start, version {Version}, settings {AppSettings.FilePath}.");
         // Measured: unoptimised, the depth post-processing takes 5–7 times as long (55 ms against
         // 8 ms a frame with the edge steps), which no measurement from such a run would show.
         if (System.Reflection.CustomAttributeExtensions.GetCustomAttribute<DebuggableAttribute>(typeof(AppController).Assembly)?.IsJITOptimizerDisabled == true)
@@ -155,6 +155,12 @@ public sealed class AppController : IDisposable
 
     /// <summary>Where the extension is, to load it unpacked: copied next to the app.</summary>
     public static string ExtensionFolder => Path.Combine(AppContext.BaseDirectory, "extension");
+
+    /// <summary>The release number, from the project's Version (without the build's commit suffix).</summary>
+    public static string Version { get; } =
+        (typeof(AppController).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion ?? "?")
+        .Split('+')[0];
 
     public bool BrowserConnected => browserLink is { Connections.Count: > 0 };
 

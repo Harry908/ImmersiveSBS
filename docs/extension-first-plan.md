@@ -7,7 +7,8 @@ only the app can do: capture, depth, the stereo warp, the glasses, the delay buf
 
 Written 2026-10-12, after the theater moved into the page (extension 1.3). Phases 1–3 were done
 the same day with all three decisions as recommended (extension 1.4.0, protocol 3; progress.md
-has the details); phase 4 stays open.
+has the details); phase 4 (how the extension is shipped) is now one of the decisions in
+`docs/packaging.md`. The extension is at 1.8.3, still protocol 3.
 
 ## Decisions to make first
 

@@ -1,7 +1,21 @@
 # Progress
 
 The living record of ImmersiveSBS: what each phase changed, how it was verified, and what is
-still open. Read it with `docs/plan.md` before starting a phase and update it after.
+still open. Read it with `docs/plan.md` before starting a phase and update it after. The newest
+work is at the end, before "Carried over from the DesktopSbS session".
+
+## Where things stand (2026-10-19)
+
+- **Version 1.0.0**, extension 1.8.3 (protocol 3). In daily use on the development setup:
+  the desktop in both eyes, the 3D theater on YouTube and WeTV with the 2 s buffer, captions.
+- **The theater's two layers live in the page**: it delays picture and sound together and
+  sends the frames ahead for depth; the app shows the screen as it is. Pause, play and seek
+  have no gaps; the controls answer at once and are drawn flat.
+- **Models**: Distill-Any-Depth Base (default), Depth Anything V2 Small, Depth Anything 3 Small
+  and Base, Video Depth Anything Small (a trial: steadier, but short of its go/no-go).
+- **Packaging is prepared** (`docs/packaging.md`): a portable self-contained package with the
+  extension, notices and optional models. Shipping it waits on decisions listed there.
+- **Tests**: 167, Release. The code map is `docs/code-map.html`.
 
 ## Development machine (2026-10-07)
 
@@ -1380,19 +1394,62 @@ second presses the same way. Extension 1.8.3: icons replaced only when they chan
 the click's target, the panel built once. In a test browser, press, move 2 px, release on the
 play icon: 0 of 6 toggled before, 6 of 6 after; three quick presses on Depth + all reached the app.
 
+### Packaging prepared, documents polished (2026-10-19, user request: "prepare for packaging and polish all the documents")
+
+- **A package**: `packaging/publish.ps1` publishes a self-contained, ReadyToRun win-x64 folder
+  and zip into `artifacts\ImmersiveSBS-<version>-win-x64` (its own build folder, so a running
+  copy of the app cannot lock it), with the extension, LICENSE, README, THIRD-PARTY-NOTICES and
+  ONNX Runtime's licence files, and with `-Models` the shippable model families (it refuses the
+  non-commercial ones). Measured: the app 247 MB, Distill-Any-Depth Base at three sizes 564 MB,
+  the zip 613 MB. The packaged copy started on this PC, connected to the extension, opened the
+  glasses session and loaded a model.
+- **Models beside the app**: `DepthModel` looks in the app's `models` folder first, then in
+  `%LOCALAPPDATA%\ImmersiveSBS\models`; the "Depth: loaded" log line names the file
+  (`DepthModelTests`).
+- **A version**: `<Version>1.0.0</Version>` in the project, in the log's first line and the
+  Settings window's title (`AppController.Version`).
+- **THIRD-PARTY-NOTICES.md**: every shipped library with its licence and copyright (all MIT),
+  the models' licences and sources, and what is used but not shipped (TensorRT for RTX, the
+  driver).
+- **Documents**: README rewritten for users (requirements, getting started, timing, shortcuts,
+  privacy, troubleshooting); `docs/packaging.md` (how to build a release, what the user's PC
+  needs, where the app keeps things, the decisions left, a release checklist); status lines
+  brought up to date in `docs/plan.md` (per phase), `improvement-plan.md`, `video-3d-plan.md`,
+  `extension-first-plan.md`; the extension's README and CLAUDE.md caught up with the theater.
+
+Tests: 167, Release.
+
+### A one-click installer with the driver (2026-10-20, user request: "the virtual driver bundled inside an installer ... a one click installer, not having to go to places")
+
+`packaging/build-installer.ps1` builds `artifacts\ImmersiveSBS-Setup-1.0.0.exe` (575 MB, about 3
+minutes) with Inno Setup 6.7.3 (a portable copy in `artifacts	ools`, its download signed by the
+maintainers' company). No pages before it installs: Windows' administrator prompt, a progress
+bar, a finish page. It installs the app and Distill-Any-Depth Base in Program Files, and the
+Virtual Display Driver 25.7.23 (downloaded once, checked against its SHA-256, every file's
+signature checked) unless a `Root\MttVDD` device exists: SignPath Foundation into Trusted
+Publishers first (no prompt), then `devcon install`; the driver's settings set to one
+1920×1080 monitor at 60 Hz if it has none (the driver reads `C:\VirtualDisplayDriverdd_settings.xml`).
+The finish page, all ticked: start with Windows, open Edge's extensions page with the extension
+folder, start the app. Uninstalling asks before removing the driver it added. Details and what
+was checked in `docs/packaging.md`: a throwaway setup running only the driver check found the
+driver on this PC (so a real install here skips it); `certutil -verifystore` answers 0 whether a
+certificate is there or not, so the store's registry key is read instead. Not run end to end
+yet: that needs a PC without the driver.
+
 ### Next
 
-1. Reload the extension (1.8.0) and try the theater with the 2 s buffer: the panel and spinner
-   with no cutout, pause and play (no gap), seeks (spinner, then the new position), the panel
-   closing at once, the page in its window after Exit, subtitles on WeTV and YouTube from the
-   normal page layout, the tray's theater (window full screen, F11 leaving it).
-2. Ask the user what the 10-13 run looked like: the held frames' smoothness, lip sync at 0.5 s.
-3. The flicker figure above: compare M4 for the same clip in live, matched and buffer timing.
-4. At 756×420 with the buffer at 2 s: the `post … ms` part (expected under 10 ms) and the
-   buffer's memory cap at 25 fps.
-5. The edge blur: compare Soft edges Auto against 1 and 0, and Warp Splat against Lookup, on
-   the same scene.
-6. DA2 Large stays too heavy at 756×420 on this GPU (capture fell to 8–12 fps): Balanced only.
+1. Run the installer on a PC without the driver (a virtual machine is enough for the install
+   steps), then uninstall with the driver; and on this PC with the user's go-ahead. Then the
+   decisions still open in `docs/packaging.md`: other models, the extension in a store,
+   signing, an update check, TensorRT for RTX on a fresh PC.
+2. Judge Video Depth Anything Small in the glasses against Distill-Any-Depth Base: keep it as a
+   choice or remove it.
+3. Measures worth taking in a run: M4 flicker for one clip in live, matched and buffer timing;
+   the `post … ms` part at 756×420; Soft edges Auto against 1 and 0, Warp Splat against Lookup.
+4. From P1, still open: the glasses' refresh rate in 3D mode, and whether the hardware 3D button
+   works with the glasses removed from the desktop (plan D2 Stage B).
+5. Depth with no delay at all, from the player's own buffered segments (checked feasible on
+   YouTube and WeTV, see "Depth ahead from the player's own buffer"): build only if wanted.
 
 ## Carried over from the DesktopSbS session
 

@@ -84,7 +84,7 @@ public sealed class DepthEstimator : IDepthRunner
         try
         {
             InferenceSession session = CreateSession(compiled, device);
-            Log.Write($"Depth: loaded {label} from {Path.GetFileName(compiled)} in {watch.ElapsedMilliseconds} ms.");
+            Log.Write($"Depth: loaded {label} from {Path.GetFileName(compiled)} in {watch.ElapsedMilliseconds} ms (model file {path}).");
             return session;
         }
         catch (OnnxRuntimeException e) when (compiled != path)

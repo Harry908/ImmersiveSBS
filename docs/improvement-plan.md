@@ -1,5 +1,12 @@
 # AI 3D improvement plan
 
+Status (2026-10-19): in use. Since the status below, §10.2 (Video Depth Anything) was built as a
+trial model and missed its go/no-go (M4 14 % lower through the depth service, against the 30 %
+asked); it stays to be judged in the glasses. The buffer and matched timing (§6, §10) no longer
+delay the picture in the app: the browser page delays picture and sound together and sends the
+frames ahead for depth (`progress.md`, "Two layers"), so `VideoDelayBuffer`, named below, was
+removed. Phase 4 steps 3 and 4, 5.2 and 6.2–6.3 are still not done.
+
 Status (2026-10-10): **Phases 0, 1, 2, 3, E, 4 steps 0–2, 5.1, 6.1 and 6.4 implemented**,
 plus §14's "Use page data", tested (Debug and Release), not yet seen in the glasses;
 `progress.md` has what each does. Step 4's risk is cleared: `nvcuda.dll` exports the D3D11

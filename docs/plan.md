@@ -1,6 +1,10 @@
 # ImmersiveSBS — plan
 
-Status: **P1 and P2 running on the glasses; P4 (AI 3D) and P5 (buffer and delayed sound) built, not yet seen in them** (see `progress.md`). Written 2026-10-07.
+Status (2026-10-19): **P0–P2, P4 and P5 done and in daily use in the glasses; P3 not started; P6
+(packaging) prepared** (`docs/packaging.md`; details in `progress.md`). Written 2026-10-07. Two
+things changed from this plan on the way: sound is delayed only inside the browser page, by the
+extension, never captured by the app (D5 below is superseded), and browser video reaches AI 3D
+only through the extension's 3D theater (`docs/extension-first-plan.md`).
 
 ImmersiveSBS turns a pair of video glasses in hardware 3D mode (RayNeo GT Max: 3840×1080, one
 1920×1080 half per eye) into a full desktop monitor, and can convert 2D video on that desktop
@@ -117,6 +121,10 @@ Depth Anything V2 Small (Apache-2.0, fast), Distill-Any-Depth Base (MIT, default
 
 ### D5. Sound: process loopback, turned-down session, delayed playback
 
+> Superseded on 2026-10-11: the app no longer captures or replays any sound. The browser
+> extension delays the theater video's sound inside the page through Web Audio, and since
+> 2026-10-19 the page delays the picture too (`progress.md`, "Two layers").
+
 Only needed when the video is buffered.
 
 1. Capture the browser's process tree with process loopback
@@ -176,16 +184,24 @@ Throwaway-quality code, but in the repo.
 **Exit:** the user works a full session on the virtual monitor through the glasses and signs
 off on sharpness and latency.
 
+**Status:** done; Desktop Duplication is the default capture. The hardware 3D button test with
+the glasses removed from the desktop (the Stage B question) was never run.
+
 ### P2 — App shell (M)
 
 Tray, settings, shortcuts (ported hook), auto-start when the glasses enter 3D mode (ported
 state evaluator), hot-plug and mode changes, driver missing or disabled, logging. Stray-window
 and cursor handling for Stage A.
 
+**Status:** done (tray, settings, shortcuts, guards, the window on a real monitor when the
+glasses do not show the virtual monitor).
+
 ### P3 — Stage B presentation (M)
 
 `DisplayManager` ownership of the glasses, if P1 showed the 3D button still works. Otherwise
 Stage A stays and this phase hardens it.
+
+**Status:** not started; Stage A works well enough that nothing has asked for it.
 
 ### P4 — AI 3D mode (L)
 
@@ -194,21 +210,35 @@ inference (§0, D4), post-processing (§6), stereo synthesis (§7), native 3D vi
 target is the video area only; whole-frame conversion is an option (text and menus shimmer
 slightly with depth).
 
+**Status:** done, then reworked by `docs/improvement-plan.md`. The video area is no longer
+detected: the extension's theater says where the video is.
+
 ### P5 — Buffered video and sound (M)
 
 Buffer setting 0 / 0.5 / 1 / 2 s (default 1 s for recorded video). Look-ahead temporal
 smoothing, larger model tiers. D5 audio. Exit: lip-sync within ±20 ms over a 2-hour film.
 
+**Status:** done, differently: the browser page delays both picture and sound (default 2 s),
+holds them through a pause and restarts them at a seek; the app shows the screen as it is and
+takes depth from the frames the page sends ahead.
+
 ### P6 — Packaging (S)
 
 Installer (app + driver), README, update check.
 
+**Status:** prepared (2026-10-19): a portable self-contained package (`packaging/publish.ps1`),
+a version number, third-party notices, models shipped beside the app, the README. The
+installer, the driver step, model distribution, signing and the update check wait on
+decisions listed in `docs/packaging.md`.
+
 ## 5. Open questions
 
-1. Desktop Duplication or Windows.Graphics.Capture (P1 measures).
+1. ~~Desktop Duplication or Windows.Graphics.Capture (P1 measures).~~ Desktop Duplication;
+   Graphics Capture stays as a fallback in the settings file.
 2. Glasses refresh rate in 3D mode, and whether the hardware 3D button works with the glasses
-   removed from the desktop (P1).
-3. Whole-frame AI as well as video-only (P4; video-only is the default).
+   removed from the desktop (P1). Still open.
+3. ~~Whole-frame AI as well as video-only (P4; video-only is the default).~~ Both: the theater,
+   and the whole screen as a setting.
 4. ~~Does process loopback really tap before the session mute (P5)?~~ No: after the mute and after
    the session volume (v²); D5 turns the session down instead of muting.
 

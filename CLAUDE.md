@@ -17,6 +17,7 @@ ranks what to adopt; `docs/improvement-plan.md` turns that into phased work with
 the measures each phase is judged by.
 `docs/code-map.html` (open in a browser) draws the components, threads, the main activities and
 one frame's journey, and maps every source file; refresh it when the architecture changes.
+`docs/packaging.md` is how a release is built and what is still to decide about shipping it.
 
 ## Build
 
@@ -24,11 +25,22 @@ one frame's journey, and maps every source file; refresh it when the architectur
 dotnet build ImmersiveSBS.slnx -c Release   # Release for runs in the glasses (see below)
 dotnet test ImmersiveSBS.slnx
 dotnet test ImmersiveSBS.slnx --filter "FullyQualifiedName~TheaterTests"   # one class or test
+.\packaging\publish.ps1 -Models dad-base   # the portable package in artifacts\ (docs/packaging.md)
+.\packaging\build-installer.ps1            # the one-click installer, app + models + the driver
 ```
+
+The installer installs the Virtual Display Driver when there is none: never run it on this PC
+without the user's go-ahead (it installs into Program Files; its driver check skips the driver
+here, which already has it).
+
+The release number is `<Version>` in `src/ImmersiveSBS/ImmersiveSBS.csproj` (`AppController.Version`:
+the log's first line, the Settings window's title, the package's name). `THIRD-PARTY-NOTICES.md`
+lists every shipped library and model with its licence; keep it in step with the packages, and
+never ship a non-commercial model (Depth Anything V2 Base/Large, Video Depth Anything Large).
 
 Tests (`tests/ImmersiveSBS.Tests`, xUnit) cover the pure logic and run the GPU warp on a real
 D3D11 device; `DepthEstimatorTests` runs the TensorRT model and skips itself without an RTX GPU
-or the model files in `%LOCALAPPDATA%\ImmersiveSBS\models`. Verify with tests and the app's log
+or the model files. Verify with tests and the app's log
 (`%LOCALAPPDATA%\ImmersiveSBS\ImmersiveSBS.log`; tests write `ImmersiveSBS.tests.log` beside it)
 rather than throwaway harnesses. The log's `Stats:` line every 10 s (fps, latency, VRAM,
 memory, AI 3D state, then `Measures:` with the improvement plan's M1–M7 and `GPU ms per frame:`)
@@ -77,7 +89,8 @@ per file. Source files mix CRLF and LF line endings; keep each file's own.
   depth filed by line and time in the video, the frame shown found by the player's draw reports),
   or, when it cannot send them (another site's video), the frames it reports drawing; for the
   whole screen each new capture. Models are static-shape files `{stem}_{H}x{W}.onnx`
-  (`DepthModel`). Video Depth Anything Small (`VideoDepthEstimator`, a trial) carries state:
+  (`DepthModel`), looked for in the app's `models` folder (a package ships them there), then in
+  `%LOCALAPPDATA%\ImmersiveSBS\models`; the log's "Depth: loaded" line names the file. Video Depth Anything Small (`VideoDepthEstimator`, a trial) carries state:
   two graphs (first frame, step with 31 past states), the states in a ring of GPU tensors
   through I/O binding, reset at seeks and scene cuts.
 - **Timing** (`StereoSettings.Timing`, `BufferSeconds`): live; matched (`MatchedDelay` sets a
@@ -102,7 +115,8 @@ per file. Source files mix CRLF and LF line endings; keep each file's own.
   (`BrowserLink.SetStatus`, with the 3D panel's values, the stretch and what the video is), a
   "3D theater" button shows over a video the mouse is on; pressed (a real click, so the page may
   go full screen), a player in a closed shadow root covers the page, goes full screen and draws
-  the video at its own size (stretched if set) on a canvas. It stays full screen while open:
+  the video on a WebGL 2 canvas at the picture's size on the screen (stretched if set; a 2D
+  canvas at the video's size for a video it may not read). It stays full screen while open:
   leaving full screen closes it (no windowed theater), and the page is back in its window. Opened
   while the page is in its own full screen, the player goes inside that element and uses it
   instead of going full screen over it: with two levels, YouTube missed the end of its own and

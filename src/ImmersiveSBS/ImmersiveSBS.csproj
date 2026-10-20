@@ -2,6 +2,11 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
+    <!-- The release number: in the log, the settings window's title and the package's name. -->
+    <Version>1.0.0</Version>
+    <Product>ImmersiveSBS</Product>
+    <Description>A Windows desktop in video glasses in hardware 3D mode, with AI 2D-to-3D video.</Description>
+    <Copyright>GPL-3.0</Copyright>
     <!-- 10.0.19041 (Windows 10 2004): Windows.Graphics.Capture. -->
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>

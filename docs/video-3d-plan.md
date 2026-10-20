@@ -3,6 +3,10 @@
 > Carried over from DesktopSbS, where it was written for the overlay design. `plan.md` says
 > which parts still apply (§0 and §4–§7) and which are superseded.
 
+Status (2026-10-19): **historical.** Its model work (§0), pipeline (§4), post-processing (§6) and
+stereo synthesis (§7) were built in ImmersiveSBS P4 and since reworked by `improvement-plan.md`;
+the rest was written for DesktopSbS. The original status follows.
+
 Status: **plan only, nothing implemented.** Written 2026-09-29, revised 2026-10-07 (stronger
 models, TensorRT first, no extension, picture-in-picture), against `feature/win11-rayneo` at
 `163f755`. Milestone 4 in `progress.md` terms; phases are numbered V0–V9 so they do not collide

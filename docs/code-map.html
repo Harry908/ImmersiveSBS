@@ -102,11 +102,11 @@
 <header class="wrap">
   <div class="eyes" aria-hidden="true"><span></span><span></span></div>
   <h1>ImmersiveSBS Code Map</h1>
-  <p class="lede">How the app turns a Windows desktop and a browser video into the two halves of a 3840×1080 side-by-side picture: which parts exist, which thread runs them, what happens each frame, and which file holds what. As of commit <span class="mono">5b83b75</span>.</p>
+  <p class="lede">How the app turns a Windows desktop and a browser video into the two halves of a 3840×1080 side-by-side picture: which parts exist, which thread runs them, what happens each frame, and which file holds what. As of version <span class="mono">1.0.0</span>.</p>
   <div class="stats">
     <span><b>12,894</b> lines of C#</span>
     <span><b>1,863</b> lines of extension JavaScript</span>
-    <span><b>25</b> test files, <b>165</b> tests</span>
+    <span><b>26</b> test files, <b>167</b> tests</span>
     <span><b>4</b> threads that matter</span>
   </div>
 </header>
@@ -394,7 +394,7 @@ sequenceDiagram
 
 </main>
 
-<footer class="wrap">Built from the repository at commit 5b83b75, with CLAUDE.md and each file's own summary comments. The diagrams show the design as the code runs it; the plans in <code>docs/</code> describe how it got here.</footer>
+<footer class="wrap">Built from the repository at version 1.0.0, with CLAUDE.md and each file's own summary comments. The diagrams show the design as the code runs it; the plans in <code>docs/</code> describe how it got here.</footer>
 
 <script>
   // Hot files: the ones most changes go through.
@@ -421,7 +421,7 @@ sequenceDiagram
       ['DepthEstimator.cs', 214, 'One ONNX Runtime session on TensorRT for RTX, with the compiled-engine cache.'],
       ['MatchedDelay.cs', 181, 'How late matched timing shows the picture, from the measured depth age.'],
       ['VideoDepthEstimator.cs', 125, 'Video Depth Anything Small, streaming: two graphs and a ring of past states on the GPU.'],
-      ['DepthModel.cs', 110, 'The model ladder and file names, {stem}_{H}x{W}.onnx.'],
+      ['DepthModel.cs', 124, 'The model ladder and file names, {stem}_{H}x{W}.onnx, looked for beside the app, then in the user's folder.'],
       ['StereoTuning.cs', 92, 'Fine controls: warp mode, soft edges, smoothing, foreground curve.'],
       ['RowBands.cs', 88, 'Runs a post-processing step over bands of rows on up to 8 cores.'],
       ['TensorRtRtx.cs', 71, 'Finds the TensorRT for RTX provider Windows ML installed as a package.'],
@@ -472,6 +472,11 @@ sequenceDiagram
       ['ThemeManager.cs', 299, 'Windows 11 look for the app\'s windows, light and dark.'],
       ['FluentMenuRenderer.cs', 210, 'The tray menu in the Windows 11 style.'],
       ['TrayIcon.cs', 152, 'The tray icon and menu: Pause, Whole screen in 3D, 3D theater, window, Settings, Tuning, Exit.'],
+    ]},
+    { name: 'packaging', about: 'Building a release: the portable package and the installer.', files: [
+      ['publish.ps1', 92, 'The portable package: self-contained publish, extension, licences, chosen models, zip.'],
+      ['build-installer.ps1', 87, 'The one-click installer: the app, models and the driver (downloaded, hash- and signature-checked), compiled by Inno Setup.'],
+      ['ImmersiveSBS.iss', 174, 'The installer script: no pages, the driver only when missing, its publisher trusted, finish-page options, uninstall.'],
     ]},
     { name: 'extension', about: 'The browser half, loaded unpacked from the app\'s folder.', files: [
       ['content.js', 1547, 'In every frame: media report, sound delay, the theater player, the delayed picture (WebGL), captions, frames for the model.'],

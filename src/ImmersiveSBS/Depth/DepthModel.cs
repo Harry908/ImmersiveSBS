@@ -52,13 +52,27 @@ public enum DepthPreset
 /// <summary>
 /// One static-shape fp16 ONNX export (float32 input NCHW with ImageNet normalisation, output
 /// relative inverse depth, larger = nearer). TensorRT for RTX needs static shapes for these
-/// exports, so every tier and size is its own file:
-/// %LOCALAPPDATA%\ImmersiveSBS\models\{stem}_{H}x{W}.onnx.
+/// exports, so every tier and size is its own file, {stem}_{H}x{W}.onnx, looked for in the
+/// app's own models folder (where a package ships them), then in the user's.
 /// </summary>
 public sealed record DepthModel(DepthTier Tier, DepthPreset Preset)
 {
-    public static string ModelsDirectory =>
+    /// <summary>Models shipped with the app: the models folder next to ImmersiveSBS.exe.</summary>
+    public static string AppModelsDirectory => Path.Combine(AppContext.BaseDirectory, "models");
+
+    /// <summary>Models the user adds: %LOCALAPPDATA%\ImmersiveSBS\models.</summary>
+    public static string UserModelsDirectory =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ImmersiveSBS", "models");
+
+    /// <summary>Where model files are looked for, for messages about a missing one.</summary>
+    public static string ModelsDirectory => $"{AppModelsDirectory} or {UserModelsDirectory}";
+
+    /// <summary>A model file: the app's copy if it ships one, else the user's (which may not exist).</summary>
+    private static string Find(string fileName)
+    {
+        string shipped = Path.Combine(AppModelsDirectory, fileName);
+        return File.Exists(shipped) ? shipped : Path.Combine(UserModelsDirectory, fileName);
+    }
 
     /// <summary>The model outputs depth (larger = farther), not relative inverse depth: the estimator inverts it.</summary>
     public bool OutputIsDepth => Tier is DepthTier.DA3Small or DepthTier.DA3Base;
@@ -88,12 +102,12 @@ public sealed record DepthModel(DepthTier Tier, DepthPreset Preset)
         _ => "dad-base",
     };
 
-    public string FilePath => Path.Combine(ModelsDirectory, Stem + ".onnx");
+    public string FilePath => Find(Stem + ".onnx");
 
     /// <summary>A temporal model's graph for the first frame (no state before it): {family}-first_{H}x{W}.onnx.</summary>
     public string FirstStem => Family + $"-first_{Height}x{Width}";
 
-    public string FirstFilePath => Path.Combine(ModelsDirectory, FirstStem + ".onnx");
+    public string FirstFilePath => Find(FirstStem + ".onnx");
 
     public bool Exists => File.Exists(FilePath) && (!Temporal || File.Exists(FirstFilePath));
 

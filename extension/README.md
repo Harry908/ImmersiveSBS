@@ -4,26 +4,29 @@ Part of the ImmersiveSBS app, for Chrome and Edge. It is how browser video reach
 3D:
 
 - **The 3D theater.** While the glasses are in 3D mode, a "3D theater" button shows over a video
-  under the mouse. It opens that video alone, full screen, in a player in the page, drawn at the
-  video's own resolution; the app shows it in 3D in the glasses. The theater is full screen for
-  as long as it is open: leaving full screen (Esc, F11) leaves it, and the page goes back to its
-  window. One frosted bar at the bottom holds a
-  seek bar, the time, 10 s back and forward, play/pause, mute, the 3D settings panel (model,
-  resolution, depth, screen plane, timing, stretch, whether the video is 2D or already 3D) and
-  Exit; it hides while the video plays and the mouse rests. A click
-  on the picture plays or pauses. Keys: Space or K play/pause, ← → or J L skip 10 s, M mute, Esc
-  leaves. The page's subtitles are shown in the picture, whether or not the site's own player
-  was full screen. With the buffer, a pause holds the delayed picture and sound and play goes on
-  from the same moment; opening the theater or seeking shows a spinner while the buffer fills
-  (its length, 2 s by default). A live stream is never buffered.
+  under the mouse. It opens that video alone, full screen, in a player in the page, drawn sharp
+  at the screen's resolution; the app shows it in 3D in the glasses. The theater is full screen
+  for as long as it is open: leaving full screen (Esc, F11) leaves it, and the page goes back to
+  its window.
+- **Its controls** sit together toward the middle of the screen, away from the edges the glasses
+  blur: one frosted bar with the seek bar, the time, 10 s back and forward, play/pause, mute,
+  the 3D settings panel (model, resolution, depth, screen plane, timing, stretch, whether the
+  video is 2D or already 3D) and Exit. The bar hides while the video plays and the mouse rests.
+  A click on the picture plays or pauses. Keys: Space or K play/pause, ← → or J L skip 10 s,
+  M mute, Esc leaves. The page's subtitles are shown in the picture, whether or not the site's
+  own player was full screen.
+- **Pause, play and seek without gaps.** With the buffer, a pause holds the delayed picture and
+  sound, and play goes on from the same moment; opening the theater or seeking shows a spinner
+  while the buffer fills (its length, 2 s by default). A seek while paused shows the new place
+  at once. A live stream is never buffered.
 - **The delay.** For the buffer and matched timing, the player shows the video late itself and
   plays that tab's sound as late, through Web Audio, so it keeps its full quality and its usual
   output; other tabs stay live. Its controls stay live on top, and the app shows the screen as
   it is. Meanwhile it sends the app each frame as it plays, small, so the depth is ready before
   the frame is shown.
 
-The app speaks one version of it (protocol 3). An older copy still loaded in the browser is
-refused, and the app says to reload it.
+The app speaks one version of it (protocol 3; this is extension 1.8.3). An older copy still
+loaded in the browser is refused, and the app says to reload it.
 
 ## Install
 
@@ -80,7 +83,7 @@ Only what places and times the picture, and nothing that says what you watch:
 - For the theater's video: where the player shows it, each frame's count and time in the video,
   play/pause and seeking, the boxes of the player's controls and captions (position and size),
   a clock offset, which button of its 3D panel was pressed, and its frames, small (the depth
-  model's input size, about 50 KB each), which the app turns into depth and does not keep or
+  model's input size, about 55 KB each), which the app turns into depth and does not keep or
   save; the app sees the same picture on the screen anyway.
 
 Never page titles, web addresses, video sources or names, caption text, or anything typed. Some

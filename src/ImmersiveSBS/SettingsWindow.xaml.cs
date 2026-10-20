@@ -48,6 +48,7 @@ public partial class SettingsWindow : Window
     {
         this.controller = controller;
         InitializeComponent();
+        Title = $"ImmersiveSBS {AppController.Version} settings";
 
         AppSettings s = controller.Settings;
         List<DisplayInfo> displays = DisplayConfigurationService.GetDesktopDisplays(retryWhileTargetUnavailable: false);
