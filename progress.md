@@ -4,17 +4,18 @@ The living record of ImmersiveSBS: what each phase changed, how it was verified,
 still open. Read it with `docs/plan.md` before starting a phase and update it after. The newest
 work is at the end, before "Carried over from the DesktopSbS session".
 
-## Where things stand (2026-10-19)
+## Where things stand (2026-10-20)
 
-- **Version 1.0.0**, extension 1.8.3 (protocol 3). In daily use on the development setup:
+- **Version 1.0.0** (2026-10-20), extension 1.8.3 (protocol 3). In daily use on the development setup:
   the desktop in both eyes, the 3D theater on YouTube and WeTV with the 2 s buffer, captions.
 - **The theater's two layers live in the page**: it delays picture and sound together and
   sends the frames ahead for depth; the app shows the screen as it is. Pause, play and seek
   have no gaps; the controls answer at once and are drawn flat.
 - **Models**: Distill-Any-Depth Base (default), Depth Anything V2 Small, Depth Anything 3 Small
   and Base, Video Depth Anything Small (a trial: steadier, but short of its go/no-go).
-- **Packaging is prepared** (`docs/packaging.md`): a portable self-contained package with the
-  extension, notices and optional models. Shipping it waits on decisions listed there.
+- **A one-click installer builds** (`docs/packaging.md`): the app, the default model and the
+  Virtual Display Driver (only when missing), in 575 MB; a portable zip too. Not yet run end to
+  end on a PC without the driver; the other shipping decisions are listed there.
 - **Tests**: 167, Release. The code map is `docs/code-map.html`.
 
 ## Development machine (2026-10-07)

@@ -1,7 +1,8 @@
 # ImmersiveSBS — plan
 
-Status (2026-10-19): **P0–P2, P4 and P5 done and in daily use in the glasses; P3 not started; P6
-(packaging) prepared** (`docs/packaging.md`; details in `progress.md`). Written 2026-10-07. Two
+Status (2026-10-20): **P0–P2, P4 and P5 done and in daily use in the glasses; P3 not started; P6
+(packaging): the one-click installer builds, not yet released** (`docs/packaging.md`; details in
+`progress.md`). Written 2026-10-07. Two
 things changed from this plan on the way: sound is delayed only inside the browser page, by the
 extension, never captured by the app (D5 below is superseded), and browser video reaches AI 3D
 only through the extension's 3D theater (`docs/extension-first-plan.md`).
@@ -226,10 +227,11 @@ takes depth from the frames the page sends ahead.
 
 Installer (app + driver), README, update check.
 
-**Status:** prepared (2026-10-19): a portable self-contained package (`packaging/publish.ps1`),
-a version number, third-party notices, models shipped beside the app, the README. The
-installer, the driver step, model distribution, signing and the update check wait on
-decisions listed in `docs/packaging.md`.
+**Status:** the installer builds (2026-10-20): one click, the app with the default model and
+the Virtual Display Driver when it is missing (`packaging/build-installer.ps1`); a portable
+package too (`packaging/publish.ps1`); a version number, third-party notices, the README. Still
+to do: a run end to end on a PC without the driver, other models' distribution, the extension
+in a store or not, signing and the update check (`docs/packaging.md`).
 
 ## 5. Open questions
 

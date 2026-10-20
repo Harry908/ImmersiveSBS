@@ -9,7 +9,8 @@ ImmersiveSBS renders the desktop on a 1920×1080 virtual monitor and shows it, p
 to each eye. In its 3D theater, a depth model turns a 2D browser video into a true side-by-side
 picture.
 
-**Status:** version 1.0.0, in daily use on the development setup; packaging is prepared
+**Status:** version 1.0.0, in daily use on the development setup. A one-click installer
+builds, with the Virtual Display Driver inside; it is not yet released
 ([docs/packaging.md](docs/packaging.md)). The work so far is recorded in [progress.md](progress.md).
 
 ## What it does

@@ -30,7 +30,10 @@ loaded in the browser is refused, and the app says to reload it.
 
 ## Install
 
-1. Open `chrome://extensions` (or `edge://extensions`).
+The app's installer opens Edge's extensions page and the extension folder on its last page.
+Otherwise:
+
+1. Open `edge://extensions` (or `chrome://extensions`).
 2. Turn on **Developer mode**.
 3. Choose **Load unpacked** and pick the `extension` folder next to `ImmersiveSBS.exe`
    (Settings → **Open extension folder**).
