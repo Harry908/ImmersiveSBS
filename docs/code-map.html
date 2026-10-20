@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- The ImmersiveSBS code map: open this file in a browser. The diagrams are Mermaid, drawn by the script at the end. -->
+<title>ImmersiveSBS Code Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Source+Sans+3:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: one reading column with a sticky section bar; diagrams scroll sideways in their own frames.
+     The two accents are the two eyes of a side-by-side picture: left warm, right cool. */
+  :root {
+    --bg: #f4f6f7;
+    --surface: #ffffff;
+    --fg: #1a2226;
+    --muted: #5b6970;
+    --line: #d9e0e3;
+    --left: #c4553a;
+    --right: #1d8a9a;
+    --chip: #e8eef0;
+    --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+    --body: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+    --mono: "JetBrains Mono", Consolas, "Cascadia Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1517; --surface: #172024; --fg: #e3eaec; --muted: #94a3a9; --line: #2a373c;
+      --left: #e57a5f; --right: #4cc0cf; --chip: #22303a; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1517; --surface: #172024; --fg: #e3eaec; --muted: #94a3a9; --line: #2a373c;
+    --left: #e57a5f; --right: #4cc0cf; --chip: #22303a; color-scheme: dark;
+  }
+  body { background: var(--bg); color: var(--fg); font: 16px/1.55 var(--body); }
+  body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+  .wrap { max-width: 1120px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  header { padding-block: 40px 20px; }
+  .eyes { display: flex; gap: 6px; margin-bottom: 14px; }
+  .eyes span { width: 28px; height: 10px; border-radius: 5px; }
+  .eyes span:first-child { background: var(--left); }
+  .eyes span:last-child { background: var(--right); }
+  h1, h2, h3 { font-family: var(--display); text-wrap: balance; line-height: 1.15; margin: 0; }
+  h1 { font-size: clamp(2rem, 5vw, 3rem); font-weight: 700; letter-spacing: -0.01em; }
+  h2 { font-size: 1.6rem; font-weight: 700; }
+  h3 { font-size: 1.15rem; font-weight: 500; }
+  .lede { max-width: 68ch; color: var(--muted); font-size: 1.08rem; margin: 12px 0 0; }
+  .stats { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 18px; font-size: 0.92rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .stats b { color: var(--fg); font-weight: 600; }
+  nav { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line); }
+  nav .wrap { display: flex; gap: 4px; overflow-x: auto; padding-block: 8px; scrollbar-width: none; }
+  nav a { flex: none; color: var(--muted); text-decoration: none; font-size: 0.92rem; padding: 6px 12px; border-radius: 6px; }
+  nav a:hover, nav a:focus-visible { color: var(--fg); background: var(--chip); outline: none; }
+  section { padding-block: 36px 8px; display: grid; gap: 16px; }
+  section > p, .note { max-width: 70ch; margin: 0; }
+  .note { color: var(--muted); font-size: 0.95rem; }
+  .kicker { font: 500 0.75rem var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--right); }
+  .diagram { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px; overflow-x: auto; }
+  .diagram pre.mermaid { margin: 0; background: none; min-width: 640px; text-align: center; }
+  .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: 16px; }
+  .pair > * { min-width: 0; }
+  code, .mono { font-family: var(--mono); font-size: 0.86em; }
+  code { background: var(--chip); padding: 1px 5px; border-radius: 4px; }
+  .table { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.94rem; }
+  th, td { text-align: left; vertical-align: top; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+  th { font: 600 0.78rem var(--body); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+  tr:last-child td { border-bottom: none; }
+  td:first-child { white-space: nowrap; }
+  .dir { display: inline-block; font: 500 0.72rem var(--mono); padding: 2px 7px; border-radius: 4px; color: var(--surface); }
+  .dir.up { background: var(--right); }
+  .dir.down { background: var(--left); }
+  .tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .tools input { font: inherit; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; width: min(100%, 340px); }
+  .tools input:focus-visible { outline: 2px solid var(--right); outline-offset: 1px; }
+  .folders { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 16px; }
+  .folder { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px 10px; min-width: 0; }
+  .folder h3 { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .folder h3 small { font: 400 0.8rem var(--body); color: var(--muted); }
+  .folder p { margin: 4px 0 8px; color: var(--muted); font-size: 0.9rem; }
+  .file { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .file .name { font: 500 0.86rem var(--mono); overflow-wrap: anywhere; }
+  .file .lines { font: 0.78rem var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .file .role { grid-column: 1 / -1; font-size: 0.88rem; color: var(--muted); }
+  .bar { grid-column: 1 / -1; height: 3px; background: var(--chip); border-radius: 2px; }
+  .bar i { display: block; height: 100%; border-radius: 2px; background: var(--right); }
+  .file.hot .bar i { background: var(--left); }
+  .empty { color: var(--muted); }
+  .look { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 0 28px; }
+  .look div { padding: 10px 0; border-top: 1px solid var(--line); min-width: 0; }
+  .look b { display: block; font-weight: 600; margin-bottom: 2px; }
+  .look span { color: var(--muted); font-size: 0.92rem; }
+  footer { padding-block: 36px 48px; color: var(--muted); font-size: 0.88rem; }
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+<style>body { margin: 0; } img { max-width: 100%; }</style>
+</head>
+<body>
+
+<header class="wrap">
+  <div class="eyes" aria-hidden="true"><span></span><span></span></div>
+  <h1>ImmersiveSBS Code Map</h1>
+  <p class="lede">How the app turns a Windows desktop and a browser video into the two halves of a 3840×1080 side-by-side picture: which parts exist, which thread runs them, what happens each frame, and which file holds what. As of commit <span class="mono">5b83b75</span>.</p>
+  <div class="stats">
+    <span><b>12,894</b> lines of C#</span>
+    <span><b>1,863</b> lines of extension JavaScript</span>
+    <span><b>25</b> test files, <b>165</b> tests</span>
+    <span><b>4</b> threads that matter</span>
+  </div>
+</header>
+
+<nav aria-label="Sections"><div class="wrap">
+  <a href="#components">Components</a>
+  <a href="#threads">Threads</a>
+  <a href="#startup">Activity: glasses on</a>
+  <a href="#render">Activity: each frame</a>
+  <a href="#theater">Activity: the player</a>
+  <a href="#depth">Activity: depth</a>
+  <a href="#journey">One frame's journey</a>
+  <a href="#messages">Messages</a>
+  <a href="#files">File map</a>
+  <a href="#look">Where to look</a>
+</div></nav>
+
+<main class="wrap">
+
+<section id="components">
+  <span class="kicker">Component diagram</span>
+  <h2>The parts and how they talk</h2>
+  <p>Two programs. The <b>browser extension</b> runs the 3D theater inside the page: it plays the video, delays the picture and the sound together, and sends the app small copies of each frame. The <b>app</b> captures the virtual monitor (where the browser is full screen), works out depth, and draws both eyes into the glasses. They talk over one local WebSocket, <code>127.0.0.1:47391</code>.</p>
+  <div class="diagram"><pre class="mermaid">
+flowchart LR
+  subgraph Browser["Browser · Edge or Chrome"]
+    CS["content.js<br/>theater player · delayed picture<br/>captions · frames for the model"]
+    BG["background.js<br/>service worker · relay"]
+    CS <-->|"port"| BG
+  end
+  subgraph App["ImmersiveSBS.exe"]
+    subgraph UI["UI thread"]
+      AC["AppController"]
+      BL["BrowserLink<br/>WebSocket server"]
+      DISP["Displays/<br/>layout · glasses mode"]
+      GUARD["Input/<br/>cursor · window guards · shortcuts"]
+      WIN["Tray · Settings · Tuning"]
+    end
+    subgraph RT["Render thread · Session"]
+      CAP["Capture/<br/>Desktop Duplication"]
+      AI["AiStereo"]
+      SYN["StereoSynth<br/>GPU warp"]
+      REN["Renderer<br/>PresenterWindow"]
+    end
+    subgraph DT["Depth threads · DepthService"]
+      PP["PagePictures<br/>JPEG → model input"]
+      EST["DepthEstimator<br/>VideoDepthEstimator<br/>TensorRT for RTX"]
+      POST["DepthPostProcessor<br/>smooth · edges · captions"]
+    end
+  end
+  VM[("Virtual monitor<br/>1920×1080")]
+  GL[("Glasses<br/>3840×1080")]
+  BG <-->|"WebSocket JSON"| BL
+  BL -->|"picture"| PP
+  BL -->|"PageVideo: frames, state, boxes"| AI
+  AC -->|"session, settings"| RT
+  AC --- DISP
+  AC --- GUARD
+  AC --- WIN
+  VM --> CAP --> AI --> SYN --> REN --> GL
+  PP --> EST --> POST -->|"depth"| AI
+  </pre></div>
+  <p class="note">The page is the source of truth for browser video: where the picture is, which frame is on screen, its controls and captions. The app guesses nothing about pages or players.</p>
+</section>
+
+<section id="threads">
+  <span class="kicker">Threads</span>
+  <h2>Who runs what</h2>
+  <div class="table"><table>
+    <thead><tr><th>Thread</th><th>Runs</th><th>Rhythm</th></tr></thead>
+    <tbody>
+      <tr><td>UI</td><td><code>AppController</code>: display changes, starting and stopping the session, loading the model, the browser link's decisions (delay, status, panel buttons), tray and windows, keyboard shortcuts.</td><td>Events, plus a 250 ms tick for the delay and the page's status</td></tr>
+      <tr><td>Render</td><td><code>Session.Loop</code>: capture, <code>AiStereo.Process</code>, <code>StereoSynth</code>, <code>Renderer</code>, present to the glasses, the 10 s <code>Stats:</code> log line.</td><td>Every new desktop image, new depth or changed setting</td></tr>
+      <tr><td>Depth (model)</td><td><code>DepthService.Run</code>: one model inference at a time on TensorRT for RTX.</td><td>Each frame handed over; a newer one replaces one not yet started</td></tr>
+      <tr><td>Depth post</td><td><code>DepthService.PostLoop</code>: look-ahead hold, normalisation, temporal smoothing, edge filters, caption lock; split over up to 8 cores (<code>RowBands</code>).</td><td>Alongside the next frame's model run</td></tr>
+      <tr><td>Link and decode</td><td><code>BrowserLink</code> socket loop on the thread pool; <code>PagePictures</code> decode task (one, in order).</td><td>As messages arrive</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="startup">
+  <span class="kicker">Activity diagram</span>
+  <h2>Deciding when the glasses show the virtual monitor</h2>
+  <p><code>AppController.Evaluate</code> runs on every display change, settings save, theater open or close, and pause. It never changes the display layout itself; it only reacts to it.</p>
+  <div class="diagram"><pre class="mermaid">
+flowchart TD
+  S(["Display change · settings · theater · pause"]) --> A["Read the layout (CCD API)"]
+  A --> B["Find the virtual monitor and the glasses by their saved identity"]
+  B --> C["GlassesStateEvaluator: 3D (3840×1080), 2D, or off"]
+  C --> D{"Blocked?<br/>paused · not found · glasses off · errors"}
+  D -- "no" --> E["Session: virtual monitor → glasses"]
+  D -- "yes" --> F{"Virtual monitor found?"}
+  F -- "yes" --> G["Session: virtual monitor → window on a real monitor"]
+  F -- "no" --> H["No session"]
+  E --> I["UpdateDepthService: load or swap the model"]
+  G --> I
+  H --> I
+  I --> J{"ReconcileAsync:<br/>same session key?"}
+  J -- "yes" --> K["Keep the running session"]
+  J -- "no" --> L["Stop the old one, start a new Session"]
+  K --> M["ApplyAi: settings and model to the session"]
+  L --> M
+  M --> N["UpdateGuards: cursor and window guards only while the glasses show the virtual monitor"]
+  </pre></div>
+</section>
+
+<section id="render">
+  <span class="kicker">Activity diagram</span>
+  <h2>What the render thread does each frame</h2>
+  <p>Everything in the glasses comes from here. The screen is shown as it is, never late: any delay happens in the page.</p>
+  <div class="diagram"><pre class="mermaid">
+flowchart TD
+  A(["Loop"]) --> B["capture.Acquire: a new desktop image?"]
+  B --> C["HandOverEarly: in live timing, send the frame to the model at once"]
+  C --> D{"Anything changed?<br/>image · depth · settings · badge"}
+  D -- "no" --> A
+  D -- "yes" --> E["Wait for the swap chain"]
+  E --> F["AiStereo.Process"]
+  F --> G{"What to show"}
+  G -- "AI 3D off" --> G1["The desktop, flat in both eyes"]
+  G -- "video already 3D" --> G2["Split side-by-side or top-bottom"]
+  G -- "theater, player sends frames" --> G3["FromPage: depth of the frame on screen,<br/>from PagePictures"]
+  G -- "whole screen, or no player frames" --> G4["Live: newest depth on the newest capture"]
+  G3 --> H["StereoSynth: upsample depth, warp → two eye images"]
+  G4 --> H
+  G1 --> I["TheaterUi: model badge"]
+  G2 --> I
+  H --> I
+  I --> J["Renderer.Render: eyes, player controls drawn flat, cursor"]
+  J --> K["Present to the glasses"]
+  K --> L["CollectReadbacks: hand the model input over"]
+  L --> A
+  </pre></div>
+</section>
+
+<section id="theater">
+  <span class="kicker">Activity diagram</span>
+  <h2>The theater player in the page</h2>
+  <p>The two layers live here. The video is drawn late, in step with the delayed sound; the bar, the 3D panel and the spinner are ordinary page elements on top, always live. So the screen the app captures is always the finished picture.</p>
+  <div class="pair">
+    <div class="diagram"><pre class="mermaid">
+flowchart TD
+  A(["Click 3D theater"]) --> B["openTheater: player in a closed shadow root,<br/>full screen, WebGL canvas"]
+  B --> C[["Each frame the video presents<br/>(requestVideoFrameCallback)"]]
+  C --> D["Read the page's caption"]
+  D --> E["sendPicture: model-size JPEG to the app"]
+  E --> F{"Sound delayed?"}
+  F -- "no" --> G["drawLive: draw it now"]
+  F -- "yes" --> H["keepFrame: store luma + chroma in GPU memory,<br/>stamp the audio clock"]
+  G --> R["Report 'frame' to the app"]
+  H --> I[["Every screen refresh<br/>(requestAnimationFrame)"]]
+  I --> J{"A kept frame whose<br/>sound is heard now?"}
+  J -- "no" --> I
+  J -- "yes" --> K["showKept: draw it with its caption"]
+  K --> R
+    </pre></div>
+    <div class="diagram"><pre class="mermaid">
+flowchart TD
+  P(["Pause"]) --> P1["Suspend the audio context:<br/>sound and kept frames both hold"]
+  Y(["Play"]) --> Y1["Resume: both go on from the same moment"]
+  S(["Seek"]) --> S1["line + 1 (times restart)"]
+  S1 --> S2{"A loop's jump<br/>back to the start?"}
+  S2 -- "yes" --> S3["Play on through the delay"]
+  S2 -- "no" --> S4["New delay line, drop kept frames"]
+  S4 --> S5["Spinner until the new place's first frame"]
+  S4 --> S6{"Paused?"}
+  S6 -- "yes" --> S7["Show the new frame at once"]
+  E(["End of video"]) --> E1["Release: the delayed tail plays out"]
+    </pre></div>
+  </div>
+  <p class="note">Kept frames cost 1.5 bytes a pixel at the size shown (2 s of 1080p at 60 fps is about 373 MB, capped at 640 MB). A video the page may not read (another site's, without CORS) and DRM video play live, with depth from the screen.</p>
+</section>
+
+<section id="depth">
+  <span class="kicker">Activity diagram</span>
+  <h2>A theater frame's depth, lane by lane</h2>
+  <p>The model sees each frame when it plays in the page, about two seconds before the player shows it, so depth is ready with time to spare and can be normalised over the frames that follow.</p>
+  <div class="diagram"><pre class="mermaid">
+flowchart LR
+  subgraph Page["Page · content.js"]
+    p1["Video presents frame"] --> p2["OffscreenCanvas at model size → JPEG"]
+  end
+  subgraph Link["BrowserLink · socket"]
+    l1["Parse 'picture'"] --> l2["PagePictures.Add → queue"]
+  end
+  subgraph Decode["PagePictures · decode task"]
+    d1["JPEG → planar RGB,<br/>ImageNet normalised"] --> d2{"New line?"}
+    d2 -- "yes" --> d3["ResetHistory"]
+    d2 -- "no" --> d4["Submit to the model"]
+    d3 --> d4
+  end
+  subgraph Model["Depth thread"]
+    m1["TensorRT model run"]
+  end
+  subgraph Post["Post thread"]
+    q1["Hold N frames (look-ahead)"] --> q2["Normalise toward the range ahead"] --> q3["Smooth, soft edges,<br/>burned-in captions"]
+  end
+  subgraph Render["Render thread"]
+    r1["TakeDepth: file by line + time"] --> r2["Frame on screen, from the player's report"] --> r3["Nearness: own, interpolated,<br/>or newest before"] --> r4["Page captions held flat"] --> r5["StereoSynth"]
+  end
+  p2 -->|"port → worker → WebSocket"| l1
+  l2 --> d1
+  d4 --> m1
+  m1 --> q1
+  q3 --> r1
+  </pre></div>
+</section>
+
+<section id="journey">
+  <span class="kicker">Sequence diagram</span>
+  <h2>One frame, from the video to the glasses</h2>
+  <p>With the 2 s buffer. The same frame takes two paths: a small copy to the model straight away, and the full picture held in the page until its sound is heard.</p>
+  <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant V as Video element
+  participant P as Player (content.js)
+  participant D as App: PagePictures + DepthService
+  participant R as App: render thread
+  participant G as Glasses
+  V->>P: presents the frame at 12.500 s (t = 0)
+  P->>D: picture: line 3, 12.500, JPEG 518×294
+  P->>P: keep the frame in GPU memory, stamp the audio clock
+  D->>D: model 9–17 ms, look-ahead hold, post about 3 ms
+  D-->>R: depth for (3, 12.500) filed
+  Note over P,R: its sound is still in the page's delay line
+  P->>P: t = 2.0 s: the sound is heard, draw the kept frame
+  P->>R: frame: count n, 12.500, line 3, display time
+  R->>R: the capture shows it: take depth (3, 12.500), warp
+  R->>G: both eyes, the player's controls flat
+  </pre></div>
+</section>
+
+<section id="messages">
+  <span class="kicker">Protocol 3</span>
+  <h2>Messages between the page and the app</h2>
+  <p>JSON over the WebSocket, relayed by <code>background.js</code>. Nothing says what you watch: no titles, addresses or caption text. Defined in <code>BrowserLink.Handle</code> and in <code>content.js</code> / <code>background.js</code>.</p>
+  <div class="table"><table>
+    <thead><tr><th>Message</th><th>Way</th><th>Carries</th></tr></thead>
+    <tbody>
+      <tr><td><code>hello</code></td><td><span class="dir up">page → app</span></td><td>Protocol number, extension version, browser name. Any protocol but 3 is refused with a tray message to reload.</td></tr>
+      <tr><td><code>media</code></td><td><span class="dir up">page → app</span></td><td>Each video or audio element: playing, audible, size, whether its sound can be delayed (or why not), how late it plays now.</td></tr>
+      <tr><td><code>theater</code></td><td><span class="dir up">both</span></td><td>Page: the player opened, moved or closed, its picture in CSS px, px ratio, whether the viewport is the screen. App: open or close it (tray).</td></tr>
+      <tr><td><code>frame</code></td><td><span class="dir up">page → app</span></td><td>Each frame the player draws: count, time in the video, line, when it is shown on the app's clock.</td></tr>
+      <tr><td><code>picture</code></td><td><span class="dir up">page → app</span></td><td>Each frame the video presents, as JPEG at the model's input size, with its line and time.</td></tr>
+      <tr><td><code>state</code></td><td><span class="dir up">page → app</span></td><td>Paused, seeking, seek count, live stream, whether it sends pictures, clock error.</td></tr>
+      <tr><td><code>overlays</code></td><td><span class="dir up">page → app</span></td><td>Boxes of the bar, panel, spinner (drawn flat) and caption (held in front), with when they appeared.</td></tr>
+      <tr><td><code>command</code></td><td><span class="dir up">page → app</span></td><td>A 3D panel button: depth, plane, model, resolution, timing, stretch, video layout.</td></tr>
+      <tr><td><code>clock</code></td><td><span class="dir up">both</span></td><td>NTP-style ping and answer, so frame times are on the app's clock.</td></tr>
+      <tr><td><code>status</code></td><td><span class="dir down">app → page</span></td><td>Glasses in 3D (the button shows only then), the panel's values, the model's input size for pictures.</td></tr>
+      <tr><td><code>delay</code></td><td><span class="dir down">app → page</span></td><td>How late to play the tab's sound, and the picture (without the trim and output latency).</td></tr>
+      <tr><td><code>ping</code></td><td><span class="dir down">app → page</span></td><td>Every 20 s, so the browser keeps the service worker awake.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="files">
+  <span class="kicker">File map</span>
+  <h2>Every source file, by folder</h2>
+  <p>Bars are drawn to scale by line count; the largest file, <code>content.js</code>, fills its bar. Warm bars mark the files most changes go through.</p>
+  <div class="tools">
+    <label for="filter" class="note">Filter</label>
+    <input id="filter" type="search" placeholder="A file, a class or a word, e.g. caption" autocomplete="off">
+    <span id="count" class="note"></span>
+  </div>
+  <div id="folders" class="folders"></div>
+</section>
+
+<section id="look">
+  <span class="kicker">Index</span>
+  <h2>Where to look when…</h2>
+  <div class="look">
+    <div><b>The glasses show nothing, or the wrong display</b><span><code>AppController.Evaluate</code>, <code>Displays/GlassesState.cs</code>, <code>DisplayConfigurationService</code></span></div>
+    <div><b>The 3D theater button does not appear</b><span><code>content.js</code> <code>videoAt</code> and <code>showButton</code>; <code>AppController.UpdateStatus</code> (the glasses flag)</span></div>
+    <div><b>Picture and sound are out of step</b><span><code>content.js</code> <code>showDue</code> and <code>PICTURE_LEAD</code>; <code>AppController.UpdateAudioDelay</code> (trim, output latency)</span></div>
+    <div><b>Depth lags or fits the wrong frame</b><span><code>AiStereo.FromPage</code>, <code>PagePictures.Nearness</code>, <code>DepthService</code> look-ahead</span></div>
+    <div><b>Edges tear, or holes beside objects</b><span><code>StereoSynth</code>, <code>EdgeFilters</code>, <code>StereoTuning</code></span></div>
+    <div><b>Subtitles wobble with the scene</b><span><code>CaptionLock</code>; <code>content.js</code> <code>updateCaption</code> and <code>placeCaption</code></span></div>
+    <div><b>The player's controls bend with depth</b><span><code>AiStereo.LiveControls</code>, <code>Renderer.Render</code> (flat rectangles), <code>content.js</code> <code>reportBoxes</code></span></div>
+    <div><b>The model loads slowly or fails</b><span><code>DepthEstimator</code>, <code>TensorRtRtx</code>, <code>DepthModel</code>; engines in <code>%LOCALAPPDATA%\ImmersiveSBS\engines</code></span></div>
+    <div><b>A setting does not take effect</b><span><code>SettingsWindow.OnSave</code> → <code>AppController.ApplySettings</code> → <code>ApplyAi</code></span></div>
+    <div><b>The numbers in the log</b><span><code>Session.StatsMeter</code> (the <code>Stats:</code> line), <code>AiStereo.TakeMeasures</code> (M1–M7)</span></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="wrap">Built from the repository at commit 5b83b75, with CLAUDE.md and each file's own summary comments. The diagrams show the design as the code runs it; the plans in <code>docs/</code> describe how it got here.</footer>
+
+<script>
+  // Hot files: the ones most changes go through.
+  const HOT = new Set(['AppController.cs', 'AiStereo.cs', 'content.js', 'BrowserLink.cs', 'DepthService.cs', 'StereoSynth.cs', 'Session.cs']);
+  const FOLDERS = [
+    { name: 'src/ImmersiveSBS', about: 'The app shell: the controller, the session, settings and windows.', files: [
+      ['AppController.cs', 1130, 'The brain, on the UI thread: display layout → session, the depth model, the browser link (delay, status, panel buttons), tray, shortcuts.'],
+      ['Session.cs', 545, 'One render thread: capture → AiStereo → TheaterUi → Renderer → present; the 10 s Stats line.'],
+      ['AppSettings.cs', 309, 'settings.json: displays, model and resolution, timing and buffer, tuning, shortcuts.'],
+      ['SettingsWindow.xaml(.cs)', 340, 'Displays, 3D (whole screen, model, resolution, timing), the extension, startup and shortcuts.'],
+      ['TuningWindow.xaml(.cs)', 208, 'Live sliders for depth and edges: preview on the next frame, Save or Cancel.'],
+      ['App.xaml(.cs)', 73, 'WPF entry point: starts the controller.'],
+      ['Log.cs', 61, 'The log file at %LOCALAPPDATA%\\ImmersiveSBS\\ImmersiveSBS.log.'],
+    ]},
+    { name: 'Depth', about: 'AI 3D: frames to the model, depth back, and the two eye images.', files: [
+      ['StereoSynth.cs', 894, 'The GPU half: model input from the screen, guided upsample, slope limit, forward splat or lookup warp into two eyes.'],
+      ['AiStereo.cs', 805, 'Per-frame driver: the region, timing, where depth comes from (player frames or captures), the eye images, the measures.'],
+      ['DepthService.cs', 572, 'Model thread and post thread, look-ahead hold, the queue of results.'],
+      ['EdgeFilters.cs', 497, 'Anti-aliasing and soft depth edges, so the warp opens fewer holes.'],
+      ['DepthPostProcessor.cs', 383, 'Raw model output → steady nearness: normalisation, temporal smoothing, edges, page boxes, captions.'],
+      ['CaptionLock.cs', 301, 'Holds subtitles flat in front of the scene: detected ones, or the page\'s own boxes.'],
+      ['PageVideo.cs', 290, 'The theater video as its player reports it: frames drawn, state, boxes; owns PagePictures.'],
+      ['PagePictures.cs', 267, 'The player\'s frames: JPEG → model input, depth filed by line and time, the shown frame\'s depth.'],
+      ['DepthEstimator.cs', 214, 'One ONNX Runtime session on TensorRT for RTX, with the compiled-engine cache.'],
+      ['MatchedDelay.cs', 181, 'How late matched timing shows the picture, from the measured depth age.'],
+      ['VideoDepthEstimator.cs', 125, 'Video Depth Anything Small, streaming: two graphs and a ring of past states on the GPU.'],
+      ['DepthModel.cs', 110, 'The model ladder and file names, {stem}_{H}x{W}.onnx.'],
+      ['StereoTuning.cs', 92, 'Fine controls: warp mode, soft edges, smoothing, foreground curve.'],
+      ['RowBands.cs', 88, 'Runs a post-processing step over bands of rows on up to 8 cores.'],
+      ['TensorRtRtx.cs', 71, 'Finds the TensorRT for RTX provider Windows ML installed as a package.'],
+      ['ForegroundCurve.cs', 56, 'Gives the near part of the scene more of the depth range.'],
+      ['Selection.cs', 43, 'Percentiles without sorting.'],
+      ['StereoMath.cs', 42, 'Disparity from field of view and comfort budget.'],
+      ['Native3D.cs', 32, 'Video that is already side-by-side or top-bottom 3D.'],
+      ['NearnessBlend.cs', 28, 'SIMD blend of two depth maps, for a frame the model skipped.'],
+    ]},
+    { name: 'Browser', about: 'The app\'s end of the extension.', files: [
+      ['BrowserLink.cs', 592, 'WebSocket server on 127.0.0.1:47391: extension origin only, protocol 3, parses every page message, sends status and delay.'],
+      ['BrowserMedia.cs', 71, 'The page\'s media list and the theater report (CSS px → screen px).'],
+    ]},
+    { name: 'Capture', about: 'Getting the virtual monitor\'s picture onto the GPU.', files: [
+      ['GraphicsCapture.cs', 231, 'Windows.Graphics.Capture, the fallback.'],
+      ['DuplicationCapture.cs', 191, 'DXGI Desktop Duplication of the virtual monitor, the default.'],
+      ['PointerState.cs', 105, 'The cursor as two images the renderer draws.'],
+      ['ICaptureSource.cs', 39, 'The capture interface and what each acquire reports.'],
+    ]},
+    { name: 'Presentation', about: 'Drawing into the glasses or a window.', files: [
+      ['Renderer.cs', 401, 'Draws the desktop once per eye, the 3D picture over it, the player\'s controls flat, the cursor.'],
+      ['GpuTimer.cs', 169, 'GPU time per pass, for the log.'],
+      ['PresenterWindow.cs', 82, 'The borderless, topmost window covering the glasses.'],
+      ['MirrorWindow.cs', 79, 'A normal window on a real monitor while the glasses do not show the virtual monitor.'],
+    ]},
+    { name: 'Displays', about: 'Which display is which, and what mode the glasses are in.', files: [
+      ['DisplayConfigurationService.cs', 417, 'Lists displays with stable identities (CCD API).'],
+      ['DisplayInfo.cs', 265, 'A display\'s identity and how strongly a saved one matches.'],
+      ['DisplayChangeMonitor.cs', 237, 'One debounced event per burst of display changes.'],
+      ['GlassesState.cs', 97, 'GlassesStateEvaluator: 3D, 2D or off, from the glasses\' mode.'],
+      ['KnownGlasses.cs', 57, 'Known glasses: field of view, eye size, EDID keys.'],
+      ['DxgiOutputs.cs', 31, 'Finds the GPU adapter that owns the virtual monitor.'],
+    ]},
+    { name: 'Input', about: 'Keeping the cursor and windows where they belong.', files: [
+      ['StrayWindowGuard.cs', 225, 'Moves windows that land on the glasses onto the virtual monitor.'],
+      ['GlobalKeyboardHook.cs', 189, 'System-wide shortcuts.'],
+      ['CursorGuard.cs', 164, 'Keeps the mouse off the glasses while they show the virtual monitor.'],
+      ['Shortcut.cs', 45, 'A key with modifiers, parsed and printed.'],
+    ]},
+    { name: 'Theater', about: 'What the app itself draws in the glasses.', files: [
+      ['ButtonImages.cs', 152, 'The badge\'s images.'],
+      ['TheaterUi.cs', 101, 'The model badge (loading, ready, failed); the 3D panel\'s values.'],
+      ['TheaterGeometry.cs', 27, 'Rectangles between the virtual monitor and the eye.'],
+    ]},
+    { name: 'Interop · Theme · Tray', about: 'Windows plumbing and looks.', files: [
+      ['DisplayConfig.cs', 360, 'CCD API declarations.'],
+      ['Native.cs', 317, 'Win32 declarations: windows, hooks, processes.'],
+      ['ThemeManager.cs', 299, 'Windows 11 look for the app\'s windows, light and dark.'],
+      ['FluentMenuRenderer.cs', 210, 'The tray menu in the Windows 11 style.'],
+      ['TrayIcon.cs', 152, 'The tray icon and menu: Pause, Whole screen in 3D, 3D theater, window, Settings, Tuning, Exit.'],
+    ]},
+    { name: 'extension', about: 'The browser half, loaded unpacked from the app\'s folder.', files: [
+      ['content.js', 1547, 'In every frame: media report, sound delay, the theater player, the delayed picture (WebGL), captions, frames for the model.'],
+      ['background.js', 316, 'The service worker: WebSocket to the app, relay, delay per tab, toolbar badge, window full screen.'],
+    ]},
+  ];
+
+  const MAX = 1547;
+  const root = document.getElementById('folders');
+  const count = document.getElementById('count');
+  const filter = document.getElementById('filter');
+
+  function render(term) {
+    const q = term.trim().toLowerCase();
+    root.replaceChildren();
+    let shown = 0;
+    for (const folder of FOLDERS) {
+      const files = folder.files.filter(([name, , role]) => !q || name.toLowerCase().includes(q) || role.toLowerCase().includes(q) || folder.name.toLowerCase().includes(q));
+      if (!files.length) continue;
+      const total = folder.files.reduce((sum, f) => sum + f[1], 0);
+      const box = document.createElement('div');
+      box.className = 'folder';
+      const h = document.createElement('h3');
+      h.textContent = folder.name;
+      const small = document.createElement('small');
+      small.textContent = `${folder.files.length} files · ${total.toLocaleString('en-US')} lines`;
+      h.appendChild(small);
+      const p = document.createElement('p');
+      p.textContent = folder.about;
+      box.append(h, p);
+      for (const [name, lines, role] of files) {
+        const row = document.createElement('div');
+        row.className = 'file' + (HOT.has(name) ? ' hot' : '');
+        row.innerHTML = '<span class="name"></span><span class="lines"></span><span class="bar"><i></i></span><span class="role"></span>';
+        row.querySelector('.name').textContent = name;
+        row.querySelector('.lines').textContent = lines.toLocaleString('en-US');
+        row.querySelector('.bar i').style.width = `${Math.max(1, lines / MAX * 100)}%`;
+        row.querySelector('.role').textContent = role;
+        box.appendChild(row);
+        shown++;
+      }
+      root.appendChild(box);
+    }
+    if (!shown) {
+      const none = document.createElement('p');
+      none.className = 'empty';
+      none.textContent = `No file matches “${term}”.`;
+      root.appendChild(none);
+    }
+    count.textContent = q ? `${shown} files` : '';
+  }
+
+  filter.addEventListener('input', () => render(filter.value));
+  render('');
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default' });
+</script>
+</body>
+</html>

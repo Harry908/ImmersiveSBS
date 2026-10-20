@@ -22,6 +22,19 @@ public class PageBoxTests
     }
 
     [Fact]
+    public void FlattenPutsTheControlsAndTheirMarginAtThePlane()
+    {
+        var n = Enumerable.Repeat(0.9f, W * H).ToArray();
+        PageBoxes.Flatten(n, W, H, [new Rectangle(10, 20, 5, 4), new Rectangle(62, 34, 10, 10)], 2, 0.35f);
+        Assert.Equal(0.35f, n[18 * W + 8]);              // the margin's corner
+        Assert.Equal(0.35f, n[25 * W + 16]);             // the margin's far corner
+        Assert.Equal(0.9f, n[17 * W + 8]);               // just outside it
+        Assert.Equal(0.9f, n[26 * W + 16]);
+        Assert.Equal(0.35f, n[35 * W + 63]);             // a box past the edge is cut to the frame
+        Assert.Equal(0.9f, n[0]);
+    }
+
+    [Fact]
     public void OverlayBoxesGoToTheScreenPlaneAndOnlyThey()
     {
         var p = new DepthPostProcessor(W, H) { SceneCutThreshold = 1, StaticNearness = 0.35 };

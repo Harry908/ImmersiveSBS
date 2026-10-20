@@ -1366,6 +1366,20 @@ went on with 3.900; a seek to 7 held the last frame under the spinner and drew 7
 after play. Screenshots: the delayed picture upright, true colours, sharp at 2151×1210.
 Tests: 165 (4 new for `PagePictures`), Release.
 
+First look in the glasses (user: "working great"), one fault: the bar and the panel had a
+shadow, a doubled background. The renderer draws them flat over their boxes, but the depth
+under them was the video's, so the warp moved their pixels in each eye and that copy stood out
+around the flat one (the old path had held their boxes flat in the depth thread; the new one
+kept only the captions). Now the depth under them and 3 model px around is the screen plane
+at render time (`PageBoxes.Flatten`). Extension unchanged.
+
+And "sometimes the play/pause button is not responsive": the player rewrote the play and mute
+icons on every mouse move, so a press on the icon with any movement before the release lost its
+click (the pressed element was gone); the 3D panel was rebuilt on every new value, losing quick
+second presses the same way. Extension 1.8.3: icons replaced only when they change and never
+the click's target, the panel built once. In a test browser, press, move 2 px, release on the
+play icon: 0 of 6 toggled before, 6 of 6 after; three quick presses on Depth + all reached the app.
+
 ### Next
 
 1. Reload the extension (1.8.0) and try the theater with the 2 s buffer: the panel and spinner

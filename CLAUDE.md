@@ -15,6 +15,8 @@ phase and keep them current.
 `docs/2d-to-3d-research.md` compares iw3 (nunif), Depth3D and others with this pipeline and
 ranks what to adopt; `docs/improvement-plan.md` turns that into phased work with the maths and
 the measures each phase is judged by.
+`docs/code-map.html` (open in a browser) draws the components, threads, the main activities and
+one frame's journey, and maps every source file; refresh it when the architecture changes.
 
 ## Build
 
@@ -110,7 +112,8 @@ per file. Source files mix CRLF and LF line endings; keep each file's own.
   caption boxes within 6 ancestors of the video, and text tracks; read only when a
   MutationObserver on the page's player or a `cuechange` says they changed, and once a second
   anyway: a read forces the page's layout). The bar, the panel and the spinner are one box each,
-  which the renderer draws from the capture flat in both eyes (`AiStereo.LiveControls`); the
+  which the renderer draws from the capture flat in both eyes (`AiStereo.LiveControls`), the
+  depth under them (and 3 model px around) set to the screen plane (`PageBoxes.Flatten`); the
   caption is held flat in front of the scene at render time (`CaptionLock.ApplyGiven`). While
   open it reports itself (`theater`: its picture in viewport CSS px, the px ratio, whether the
   viewport is the screen), each frame it draws on the app's clock (with its line), its state,
@@ -164,6 +167,10 @@ per file. Source files mix CRLF and LF line endings; keep each file's own.
   see-through hole that stayed where a panel had been for the length of the delay (the video
   under an old panel is in no capture). Two layers exist only in the page: it delays the
   picture itself, and the app shows the screen as it is.
+- An element replaced between a press and its release gets no click: the player rewrote its
+  play icon on every mouse move (`showControls`), so a press on the icon with the slightest move
+  did nothing (6 of 6 in a test). Icons change only when they differ (`setIcon`), icons take no
+  pointer events, and the 3D panel is built once and only its values change.
 - Python's `http.server` answers no range requests: a page test's video served by it cannot
   seek (every seek lands at 0). Load it as a blob for seek tests.
 - Page reports (frames, boxes) go page → worker → socket and often arrive after the capture of

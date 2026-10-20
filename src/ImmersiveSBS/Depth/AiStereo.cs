@@ -495,10 +495,17 @@ public sealed class AiStereo : IDisposable
             screenCaptions = new CaptionLock(model.Width, model.Height);
             screenCaptionsSize = model;
         }
-        IReadOnlyList<Rectangle> captions = page.BoxesAt(captureTicks) is { Captions.Count: > 0 } boxes
+        PageVideo.BoxSet? boxes = page.BoxesAt(captureTicks);
+        IReadOnlyList<Rectangle> captions = boxes is { Captions.Count: > 0 }
             ? PageBoxes.ToModel([], boxes.Captions, region, model).Captions
             : [];
         screenCaptions.ApplyGiven(smoothed.Nearness, dt, settings.Convergence, captions);
+        // The player's bar, panel and spinner at the screen plane: with the video's depth under
+        // them the warp moved their pixels in each eye, and that copy stood out around the flat
+        // one the renderer draws over their boxes (a shadow, a doubled background).
+        if (boxes is { Overlays.Count: > 0 })
+            PageBoxes.Flatten(smoothed.Nearness, model.Width, model.Height,
+                PageBoxes.ToModel(boxes.Overlays, [], region, model).Overlays, ControlMargin, (float)settings.Convergence);
 
         synth.UploadNearness(smoothed);
         UpdateBandTargets(smoothed.Nearness, smoothed.Width, smoothed.Height, strength, settings.Convergence);
@@ -511,6 +518,9 @@ public sealed class AiStereo : IDisposable
     }
 
     private Size screenCaptionsSize;
+
+    /// <summary>Model px the player's controls are held flat beyond their boxes: the guided upsample reaches about that far.</summary>
+    private const int ControlMargin = 3;
 
     /// <summary>
     /// A frame after the last one handed over. A frame counted on ahead of the page's reports

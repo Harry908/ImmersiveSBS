@@ -34,6 +34,23 @@ public sealed record PageBoxes(IReadOnlyList<Rectangle> Overlays, IReadOnlyList<
         }
         return new PageBoxes(Map(overlays), Map(captions));
     }
+
+    /// <summary>
+    /// Sets <paramref name="nearness"/> (model px, <paramref name="width"/> wide) to
+    /// <paramref name="plane"/> under <paramref name="boxes"/> grown by <paramref name="margin"/>
+    /// px: the screen plane, where the warp moves nothing, so the player's controls stay where
+    /// the flat copy the renderer draws over them is; the margin covers the upsample's reach.
+    /// </summary>
+    public static void Flatten(float[] nearness, int width, int height, IReadOnlyList<Rectangle> boxes, int margin, float plane)
+    {
+        var frame = new Rectangle(0, 0, width, height);
+        foreach (Rectangle b in boxes)
+        {
+            Rectangle r = Rectangle.Intersect(Rectangle.Inflate(b, margin, margin), frame);
+            for (int y = r.Top; y < r.Bottom; y++)
+                Array.Fill(nearness, plane, y * width + r.Left, r.Width);
+        }
+    }
 }
 
 /// <summary>

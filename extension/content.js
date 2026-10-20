@@ -488,7 +488,8 @@
     :host { all: initial; }
     * { box-sizing: border-box; font-family: "Segoe UI", system-ui, sans-serif; }
     [hidden] { display: none !important; }
-    svg { width: 24px; height: 24px; fill: currentColor; display: block; }
+    /* Clicks land on the button, never on its icon: an icon swapped between press and release lost the click. */
+    svg { width: 24px; height: 24px; fill: currentColor; display: block; pointer-events: none; }
     button { all: unset; cursor: pointer; color: #fff; display: inline-flex; align-items: center; justify-content: center;
       gap: 8px; min-width: 44px; height: 44px; padding: 0 12px; border-radius: 22px; background: rgba(28,28,32,.55);
       border: 1px solid rgba(255,255,255,.22); font-size: 15px; white-space: nowrap;
@@ -641,6 +642,7 @@
       captions: [], captionPlayer: null, captionObserver: null, captionsDirty: true, captionsStale: true, tracks: [],
       onCaptionChange: null, onTracks: null, liveCaption: '', shownCaption: '', captionStyle: '',
       liveTime: NaN, drawn: 0, drawnTime: NaN, drawnLine: 0, reported: '', boxes: '', state: '', onMedia: null, onResize: null,
+      panelBuilt: false,
       small: null, smallCtx: null, picturesOut: 0, picturesBlocked: false,
     };
     // Kept frames need WebGL, which refuses a video the page may not read (another site's, without CORS).
@@ -853,8 +855,8 @@
   function showControls() {
     const t = theater;
     if (!t) return;
-    t.play.innerHTML = icon(t.el.paused || t.el.ended ? 'play' : 'pause');
-    t.mute.innerHTML = icon(t.el.muted ? 'muted' : 'volume');
+    setIcon(t.play, t.el.paused || t.el.ended ? 'play' : 'pause');
+    setIcon(t.mute, t.el.muted ? 'muted' : 'volume');
     if (!t.controlsShown) {
       t.controlsShown = true;
       t.bar.hidden = false;
@@ -865,6 +867,17 @@
     showProgress();
     placeCaption(t);
     reportBoxes(t);
+  }
+
+  /**
+   * A button's icon, replaced only when it changes. showControls runs on every mouse move: a
+   * play button rebuilt each time lost the click whenever the mouse moved between press and
+   * release (the pressed element was gone).
+   */
+  function setIcon(button, name) {
+    if (button.dataset.icon === name) return;
+    button.dataset.icon = name;
+    button.innerHTML = icon(name);
   }
 
   /** The spinner while a new delay line fills, and after a seek until its first frame shows (not while paused: the bar says that). */
@@ -1335,23 +1348,39 @@
     const s = appStatus.settings;
     if (!s) {
       t.panel.innerHTML = '<div class="value">The 3D settings come from the ImmersiveSBS app.</div>';
+      t.panelBuilt = false;
     } else {
-      const step = (label, less, more) =>
-        `<div class="line"><button class="round" data-act="cmd" data-command="${less}">−</button>` +
-        `<div class="value">${label}</div><button class="round" data-act="cmd" data-command="${more}">+</button></div>`;
-      const toggle = (label, command) =>
-        `<div class="line"><button class="wide" data-act="cmd" data-command="${command}">${label}</button></div>`;
-      const esc = v => String(v ?? '').replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`);
+      // Built once, then only its values change: rebuilt on every new value, a button pressed
+      // again quickly was gone between press and release, and the click was lost.
+      if (!t.panelBuilt) {
+        const step = (key, less, more) =>
+          `<div class="line"><button class="round" data-act="cmd" data-command="${less}">−</button>` +
+          `<div class="value" data-key="${key}"></div><button class="round" data-act="cmd" data-command="${more}">+</button></div>`;
+        t.panel.innerHTML =
+          step('model', 'modelPrevious', 'modelNext') +
+          step('size', 'sizePrevious', 'sizeNext') +
+          step('depth', 'depthLess', 'depthMore') +
+          step('plane', 'planeBack', 'planeForward') +
+          step('timing', 'timingLess', 'timingMore') +
+          step('stretch', 'stretchLess', 'stretchMore') +
+          '<div class="line"><button class="wide" data-act="cmd" data-command="layoutNext" data-key="layout"></button></div>';
+        t.panelBuilt = true;
+      }
       const plane = Number(s.plane);
       const layout = { sideBySide: 'side-by-side 3D, shown as is', topBottom: 'top-bottom 3D, shown as is' }[s.layout] ?? '2D, converted';
-      t.panel.innerHTML =
-        step(`Model:  ${esc(s.model)}`, 'modelPrevious', 'modelNext') +
-        step(`Resolution:  ${esc(s.size)}`, 'sizePrevious', 'sizeNext') +
-        step(`Depth:  ${Number(s.depth).toFixed(1)}`, 'depthLess', 'depthMore') +
-        step(`Screen plane:  ${plane.toFixed(2)} (${plane < 0.5 ? 'behind' : plane > 0.5 ? 'in front' : 'balanced'})`, 'planeBack', 'planeForward') +
-        step(`Timing:  ${esc(s.timing)}`, 'timingLess', 'timingMore') +
-        step(`Stretch:  ×${Number(s.stretch ?? 1).toFixed(2)}`, 'stretchLess', 'stretchMore') +
-        toggle(`Video:  ${layout}`, 'layoutNext');
+      const values = {
+        model: `Model:  ${s.model ?? ''}`,
+        size: `Resolution:  ${s.size ?? ''}`,
+        depth: `Depth:  ${Number(s.depth).toFixed(1)}`,
+        plane: `Screen plane:  ${plane.toFixed(2)} (${plane < 0.5 ? 'behind' : plane > 0.5 ? 'in front' : 'balanced'})`,
+        timing: `Timing:  ${s.timing ?? ''}`,
+        stretch: `Stretch:  ×${Number(s.stretch ?? 1).toFixed(2)}`,
+        layout: `Video:  ${layout}`,
+      };
+      for (const el of t.panel.querySelectorAll('[data-key]')) {
+        const text = values[el.dataset.key];
+        if (el.textContent !== text) el.textContent = text;
+      }
     }
     // New values can change its size.
     reportBoxes(t);

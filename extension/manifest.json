@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ImmersiveSBS link",
-  "version": "1.8.2",
+  "version": "1.8.3",
   "description": "Opens a video in the ImmersiveSBS 3D theater, finds it exactly for the app on this PC, and delays its sound in step with the 3D picture.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtrP5ARkTd2FkzsGwvWPJE+cwBQBGccVMzKWjrYKLSIWCKwX2us3DRzzNzLiJylOK1JQRhxlgLaD361ZoSqUhV3awlPgjYmOeyQrpEcagG3lHxlQgFub0eWuADAZQJKkLdeewKJKJJezua5cBWN0GMPiHiESyG2MW67Gg5Ad/E4cuLk/l8iWxDkDxgROO7ES1PzUIB84lFlCS6U8sWQJmhYxmOi90RlMLbZSdvFawvu6LRSDJr6RSB/UxY/eWCiqcZSNL147BFxskrQQ/fZVjKjw6HbdNCzxtd5BfCgKIUrIqGH39yRnF9JtqGTrVNVj84j4cDrVZHb3J8HZkMjZl0wIDAQAB",
   "minimum_chrome_version": "116",
