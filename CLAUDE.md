@@ -76,7 +76,7 @@ per file. Source files mix CRLF and LF line endings; keep each file's own.
   "Off" means only the theater. What the video is (2D, or side-by-side or top-bottom 3D shown as
   is, `Native3DMode`) is the user's choice, not detected. `DepthService` runs the model on its own
   thread (`DepthEstimator`: ONNX Runtime with the TensorRT for RTX execution provider, found as
-  an installed Windows package; compiled engines cached per GPU in
+  an installed Windows package, or asked of Windows ML's catalog when missing; compiled engines cached per GPU in
   `%LOCALAPPDATA%\ImmersiveSBS\engines`) and post-processes at model resolution on the CPU
   on a second thread, alongside the next frame's model, each step split over bands of rows on
   up to 8 cores (`RowBands`; the theater's depth by frame needs it on the CPU anyway)

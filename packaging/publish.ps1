@@ -63,15 +63,19 @@ $packages = Join-Path $env:USERPROFILE '.nuget\packages'
 $onnx = Join-Path $packages 'microsoft.ml.onnxruntime\1.30.0'
 Copy-Item (Join-Path $onnx 'LICENSE') (Join-Path $licenses 'onnxruntime-LICENSE.txt')
 Copy-Item (Join-Path $onnx 'ThirdPartyNotices.txt') (Join-Path $licenses 'onnxruntime-ThirdPartyNotices.txt')
+$winml = Join-Path $packages 'microsoft.windows.ai.machinelearning\2.4.89'
+Copy-Item (Join-Path $winml 'license.txt') (Join-Path $licenses 'windowsml-license.txt')
+Copy-Item (Join-Path $winml 'ThirdPartyNotices.txt') (Join-Path $licenses 'windowsml-ThirdPartyNotices.txt')
 
 # Debug symbols stay out of the package.
 Get-ChildItem $out -Filter '*.pdb' | Remove-Item
 
-# The models asked for, every size of each.
+# The models asked for, every size of each the app uses (not 392×224, the removed Fast).
 if ($Models.Count -gt 0) {
     $modelsOut = New-Item -ItemType Directory -Force (Join-Path $out 'models')
     foreach ($m in $Models) {
-        $files = @(Get-ChildItem $ModelSource -File | Where-Object { $_.Name -like "${m}_*.onnx" -or $_.Name -like "${m}-first_*.onnx" })
+        $files = @(Get-ChildItem $ModelSource -File | Where-Object {
+            ($_.Name -like "${m}_*.onnx" -or $_.Name -like "${m}-first_*.onnx") -and $_.Name -notlike '*_224x392.onnx' })
         if ($files.Count -eq 0) { throw "No $m model files in $ModelSource." }
         foreach ($f in $files) {
             Copy-Item $f.FullName $modelsOut

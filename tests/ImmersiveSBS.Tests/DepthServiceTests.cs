@@ -8,7 +8,7 @@ namespace ImmersiveSBS.Tests;
 [Collection("Timing")]
 public class DepthServiceTests
 {
-    private static readonly DepthModel Model = new(DepthTier.Small, DepthPreset.Fast);   // 392×224
+    private static readonly DepthModel Model = new(DepthTier.Small, DepthPreset.Balanced);   // 518×294
 
     /// <summary>A model that takes <paramref name="ms"/> and answers with a ramp scaled by the input's first value.</summary>
     private sealed class FakeRunner(int length, int width, double ms) : IDepthRunner

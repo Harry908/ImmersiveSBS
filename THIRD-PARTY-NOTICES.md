@@ -10,6 +10,7 @@ GPL-3.0. It includes or uses the following software and models, each under its o
 |---|---|---|---|
 | [.NET runtime, WPF and Windows Forms](https://github.com/dotnet/runtime) (self-contained package) | 10.0 | MIT | .NET Foundation and Contributors |
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (`Microsoft.ML.OnnxRuntime`, `.Managed`) | 1.30.0 | MIT | Microsoft Corporation |
+| Windows ML (`Microsoft.Windows.AI.MachineLearning`: its projection and `Microsoft.Windows.AI.MachineLearning.dll` only, to install TensorRT for RTX) | 2.4.89 | Microsoft Software License Terms (Windows ML Runtime; `licenses\windowsml-license.txt`) | Microsoft Corporation |
 | [System.Numerics.Tensors](https://github.com/dotnet/runtime) | 9.0.0 | MIT | Microsoft Corporation |
 | [Vortice.Windows](https://github.com/amerkoleci/Vortice.Windows) (`Vortice.Direct3D11`, `.D3DCompiler`, `.DXGI`, `.DirectX`) | 3.8.3 | MIT | Amer Koleci and Contributors |
 | [Vortice.Mathematics](https://github.com/amerkoleci/Vortice.Mathematics) | 2.1.0 | MIT | Amer Koleci and Contributors |

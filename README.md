@@ -108,6 +108,23 @@ video names or subtitle text, and the app keeps none of it. See
 - After an update, reload the extension (its card in `edge://extensions`) and the tabs that
   play video.
 
+## Known issues
+
+- **AI 3D needs a retail Windows licence.** On first use the app asks Windows ML to install
+  TensorRT for RTX through Windows Update. Windows Update delivers it only when Windows has a
+  retail-channel licence key; with another channel's key the install fails (the log says
+  `0x80073D3B`) and the picture stays flat. Check the channel with `slmgr /dli`. A paused
+  Windows Update, a pending restart or a managed (company) PC can stop it too. After a fix,
+  restart the app: it asks once per run.
+- **Videos from another site** (a player embedded from elsewhere) and protected video cannot be
+  delayed by the page, so the theater plays them live, whatever the timing setting.
+- **The extension is loaded unpacked**, so Edge warns about developer-mode extensions at each
+  start.
+- **The installer is not signed**, so Windows SmartScreen warns when it is downloaded.
+- **Video Depth Anything Small is a trial:** steadier over time, but not yet judged against the
+  default in the glasses.
+- **The whole screen in 3D** gives text and menus depth too, so they shimmer a little.
+
 ## Building from source
 
 ```

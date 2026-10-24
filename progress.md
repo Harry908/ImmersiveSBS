@@ -1437,6 +1437,44 @@ driver on this PC (so a real install here skips it); `certutil -verifystore` ans
 certificate is there or not, so the store's registry key is read instead. Not run end to end
 yet: that needs a PC without the driver.
 
+### TensorRT for RTX on a fresh PC: the app asks Windows ML (2026-10-23, user request: "do 3", after the move to a new PC)
+
+The new desktop (Windows 11 26H2 build 26300, RTX 5060 with driver 32.0.16.2101, Intel UHD 770)
+had no `TRT-RTX` package. Windows ML's catalog lists `NvTensorRTRTXExecutionProvider` as
+NotPresent; `EnsureReadyAsync` fails after ~5 s with 0x80073D3B ("not applicable"), with Windows
+ML 2.1.74, 2.2.12, 2.3.42 and 2.4.89 alike. Windows Update's trace: it finds
+`Windows.Workload.ExecutionProvider.TRT.amd64` (metadata 2.2609.1.0), then
+`GetExtendedUpdateInfo` returns 8024000C after "still missing fragments", and the search ends in
+0x80070057. No pause, restart or policy blocked it, and other scans succeeded, so it looked like
+incomplete metadata on Microsoft's side; it was the licence (below).
+
+`TensorRtRtx` now asks Windows ML itself when no package is found (once per run; the status
+line says it is installing; the log has the result and the error). Only Windows ML's catalog is
+taken from `Microsoft.Windows.AI.MachineLearning` 2.4.89: the package carries ONNX Runtime 1.27
+under the same file names as the app's 1.30, so its assets are excluded and the projection and
+`Microsoft.Windows.AI.MachineLearning.dll` are referenced by hand; that DLL links
+`onnxruntime.dll` and runs on the app's 1.30. Checked on this PC: the catalog loads in the app's
+process, the request is made and its failure logged.
+
+**The cause was the Windows licence key** (found by the user): Windows Update delivers the
+workload only to a retail-channel licence. With the key changed to a retail one it installed
+on 2026-10-24 at 08:32 through that path: "Windows ML installed
+TensorRT for RTX in 16 s", 2.30.49.0, as `Microsoft.WinML.NVIDIA.TRT-RTX.EP.Framework.2` (a
+framework package; the old laptop's was `MicrosoftCorporationII.WinML.NVIDIA.TRT-RTX.EP.2`, so
+the package search now matches `WinML.NVIDIA.TRT-RTX.EP` anywhere in the name). On the RTX 5060
+(`DepthEstimatorTests`, Release; engines compiled in 4–6 s each): Distill-Any-Depth Base
+6.2 ms at 518×294 and 10.8 ms at 756×420; Depth Anything 3 Small 2.7 / 6.0 ms; Depth Anything
+3 Base 5.7 / 11.9 ms. All 169 tests pass with the models run.
+Its licence is Microsoft's own, not MIT (`docs/packaging.md` decision 7).
+
+The models moved with `ImmersiveSBS-models\` (not in git); `%LOCALAPPDATA%\ImmersiveSBS\models` is
+a junction to its `models` folder. Depth Anything V2 (Small, Base, Large) was deleted at the
+user's request; the app keeps its Small tier (the files can come back from the old laptop).
+
+The Fast resolution (392×224) is removed (user: "remove low resolution"): Balanced and Quality
+are left, a saved "Fast" loads as Balanced (`DepthPresetConverter`), and `publish.ps1` no longer
+packages the `_224x392` files.
+
 ### Next
 
 1. Run the installer on a PC without the driver (a virtual machine is enough for the install

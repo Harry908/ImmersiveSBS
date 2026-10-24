@@ -34,6 +34,18 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" />
     <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <!-- Windows ML, only for its catalog: it installs TensorRT for RTX when it is missing
+         (Depth/TensorRtRtx.cs). The package carries its own ONNX Runtime (1.27, same file names
+         as ours), so none of its assets are taken: the projection and the catalog's DLL by hand. -->
+    <PackageReference Include="Microsoft.Windows.AI.MachineLearning" Version="2.4.89" ExcludeAssets="all" GeneratePathProperty="true" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Microsoft.Windows.AI.MachineLearning.Projection">
+      <HintPath>$(PkgMicrosoft_Windows_AI_MachineLearning)\lib\net8.0-windows10.0.17763.0\Microsoft.Windows.AI.MachineLearning.Projection.dll</HintPath>
+    </Reference>
+    <None Include="$(PkgMicrosoft_Windows_AI_MachineLearning)\runtimes\win-x64\native\Microsoft.Windows.AI.MachineLearning.dll"
+          Link="Microsoft.Windows.AI.MachineLearning.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
   </ItemGroup>
 
   <ItemGroup>

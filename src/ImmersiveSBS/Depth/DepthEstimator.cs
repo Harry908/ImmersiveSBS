@@ -68,7 +68,7 @@ public sealed class DepthEstimator : IDepthRunner
     /// </summary>
     internal static InferenceSession Open(string label, string stem, string path, Action<string>? progress, out OrtEpDevice device)
     {
-        IReadOnlyList<OrtEpDevice> devices = TensorRtRtx.Devices();
+        IReadOnlyList<OrtEpDevice> devices = TensorRtRtx.Devices(progress);
         device = devices[0];
         string gpu = $"{device.HardwareDevice.VendorId:x4}-{device.HardwareDevice.DeviceId:x4}";
         Directory.CreateDirectory(EnginesDirectory);

@@ -86,7 +86,6 @@
                         </ComboBox>
                         <TextBlock Text="Model resolution" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
                         <ComboBox x:Name="DepthPresetBox">
-                            <ComboBoxItem Content="Fast (392×224)"/>
                             <ComboBoxItem Content="Balanced (518×294, recommended)"/>
                             <ComboBoxItem Content="Quality (756×420)"/>
                         </ComboBox>

@@ -87,6 +87,17 @@ public class AppSettingsTests
         Assert.Contains($"\"DepthTier\":\"{expected}\"", System.Text.Json.JsonSerializer.Serialize(s, options));
     }
 
+    [Theory]
+    [InlineData("Fast", DepthPreset.Balanced)]
+    [InlineData("Quality", DepthPreset.Quality)]
+    public void ARemovedResolutionInASavedFileLoadsAsTheDefault(string saved, DepthPreset expected)
+    {
+        var options = new System.Text.Json.JsonSerializerOptions { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
+        var s = System.Text.Json.JsonSerializer.Deserialize<AppSettings>($$"""{"DepthPreset":"{{saved}}","Ai3DStrength":0.8}""", options)!;
+        Assert.Equal(expected, s.DepthPreset);
+        Assert.Equal(0.8, s.Ai3DStrength);   // the rest of the file still loads
+    }
+
     [Fact]
     public void WithoutTheExtensionTheBufferChoicesAreSkipped()
     {

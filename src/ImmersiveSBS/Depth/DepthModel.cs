@@ -36,12 +36,12 @@ public enum DepthTier
     VdaSmall,
 }
 
-/// <summary>Model input size, 16:9, each side a multiple of the ViT patch (14).</summary>
+/// <summary>
+/// Model input size, 16:9, each side a multiple of the ViT patch (14). Removed 2026-10-23 as too
+/// coarse: Fast, 392×224; a saved "Fast" loads as <see cref="Balanced"/>.
+/// </summary>
 public enum DepthPreset
 {
-    /// <summary>392×224.</summary>
-    Fast,
-
     /// <summary>518×294, the default.</summary>
     Balanced,
 
@@ -86,9 +86,9 @@ public sealed record DepthModel(DepthTier Tier, DepthPreset Preset)
     /// </summary>
     public bool SteppedEdges => Tier is not DepthTier.Base;
 
-    public int Width => Preset switch { DepthPreset.Fast => 392, DepthPreset.Quality => 756, _ => 518 };
+    public int Width => Preset == DepthPreset.Quality ? 756 : 518;
 
-    public int Height => Preset switch { DepthPreset.Fast => 224, DepthPreset.Quality => 420, _ => 294 };
+    public int Height => Preset == DepthPreset.Quality ? 420 : 294;
 
     /// <summary>File name without extension, also the engine cache key.</summary>
     public string Stem => Family + $"_{Height}x{Width}";

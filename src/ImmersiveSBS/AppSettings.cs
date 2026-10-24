@@ -24,6 +24,19 @@ public sealed class DepthTierConverter : JsonConverter<DepthTier>
         writer.WriteStringValue(value.ToString());
 }
 
+/// <summary>A model resolution by name; the removed Fast (392×224) and anything unknown load as Balanced.</summary>
+public sealed class DepthPresetConverter : JsonConverter<DepthPreset>
+{
+    public override DepthPreset Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        reader.TokenType == JsonTokenType.String && Enum.TryParse(reader.GetString(), ignoreCase: true, out DepthPreset preset)
+        && Enum.IsDefined(preset)
+            ? preset
+            : DepthPreset.Balanced;
+
+    public override void Write(Utf8JsonWriter writer, DepthPreset value, JsonSerializerOptions options) =>
+        writer.WriteStringValue(value.ToString());
+}
+
 /// <summary>
 /// What the video is, by name; the old "Auto" (detected, since removed) and anything unknown load
 /// as 2D rather than failing the whole file.
@@ -186,6 +199,8 @@ public sealed class AppSettings
     [JsonConverter(typeof(DepthTierConverter))]
     public DepthTier DepthTier { get; set; } = DepthTier.Base;
 
+    /// <summary>The model resolution; a removed one in a saved file loads as Balanced (<see cref="DepthPresetConverter"/>).</summary>
+    [JsonConverter(typeof(DepthPresetConverter))]
     public DepthPreset DepthPreset { get; set; } = DepthPreset.Balanced;
 
     /// <summary>

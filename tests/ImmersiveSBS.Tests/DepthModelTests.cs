@@ -9,8 +9,8 @@ public class DepthModelTests
     [Fact]
     public void AModelShippedNextToTheAppIsUsedBeforeTheUsersCopy()
     {
-        // A size no test loads for real (Video Depth Anything has no Fast export).
-        var model = new DepthModel(DepthTier.VdaSmall, DepthPreset.Fast);
+        // The shipped copy goes in the test's own output folder, never among the user's models.
+        var model = new DepthModel(DepthTier.VdaSmall, DepthPreset.Balanced);
         string shipped = Path.Combine(DepthModel.AppModelsDirectory, model.Stem + ".onnx");
         Assert.Equal(Path.Combine(DepthModel.UserModelsDirectory, model.Stem + ".onnx"), model.FilePath);
 
@@ -20,7 +20,7 @@ public class DepthModelTests
             File.WriteAllBytes(shipped, [0]);
             Assert.Equal(shipped, model.FilePath);
             // A temporal model needs its first-frame graph too.
-            Assert.False(model.Exists);
+            Assert.Equal(File.Exists(model.FirstFilePath), model.Exists);
         }
         finally
         {

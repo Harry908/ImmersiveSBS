@@ -67,7 +67,8 @@ first line and in the Settings window's title. The script builds in its own fold
 
 Only models whose licence allows it can be packaged; the script refuses others. The families:
 `dad-base` (the default model, MIT), `da2-small`, `da3-small`, `da3-base` and `vda-small`
-(Apache-2.0). All of them at every size come to about 1.85 GB.
+(Apache-2.0). All of them at the sizes the app uses (518×294 and 756×420; the 392×224 files
+of the removed Fast resolution are left out) come to about 1.35 GB.
 
 ## What the user's PC needs
 
@@ -106,10 +107,19 @@ the log names the file it loaded. Start with Windows is a value under the user's
    open-source projects (which the driver uses).
 6. **An update check** (plan.md P6): not built. The simplest is a look at the newest GitHub
    release at start, offered in the tray.
-7. **TensorRT for RTX on a fresh PC.** The app uses the execution provider Windows ML installs;
-   on this PC it was already there. A fresh Windows 11 PC may not have it until Windows ML
-   fetches it; the app then says so and shows the picture flat. Windows App SDK's execution
-   provider catalog can fetch it on demand; not built.
+7. **TensorRT for RTX on a fresh PC.** The app uses the execution provider Windows ML installs.
+   A fresh Windows 11 PC has none until some app asks for it, so when none is found the app
+   asks Windows ML's catalog (`Microsoft.Windows.AI.MachineLearning`, only its projection and
+   `Microsoft.Windows.AI.MachineLearning.dll`; `Depth/TensorRtRtx.cs`), once per run; if that
+   fails the picture stays flat and the log says why. On the new desktop it failed with
+   0x80073D3B ("not applicable") until Windows had a retail-channel licence key: Windows Update
+   offers the workload only to retail licences. With one it installed in 16 s (progress.md,
+   2026-10-23/24). A user whose Windows has another channel's key sees the same failure; the
+   log line names the error. Still to decide: that DLL is under the
+   Microsoft Software License Terms (Windows ML Runtime), which allow redistribution with
+   conditions (add primary functionality, pass on terms that protect it, no source-disclosing
+   licence over it). Whether shipping it beside GPL-3.0 code is fine is not settled; the
+   alternative is to leave it out of the package and keep the install a manual step.
 
 ## Release checklist
 
