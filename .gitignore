@@ -480,3 +480,6 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Local model files (downloaded or exported, not in the repo)
+ImmersiveSBS-models/
