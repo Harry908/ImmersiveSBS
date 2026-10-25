@@ -90,7 +90,7 @@ public partial class SettingsWindow : Window
 
     private void UpdateStatus()
     {
-        StatusText.Text = controller.StatusText + (controller.AudioStatus is string audio ? "; " + audio : "");
+        StatusText.Text = controller.StatusLine;
         ModelText.Text = controller.ModelStatus;
         ModelSpinner.Visibility = controller.ModelBusy ? Visibility.Visible : Visibility.Collapsed;
         ModelIcon.Visibility = controller.ModelBusy ? Visibility.Collapsed : Visibility.Visible;

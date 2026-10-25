@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 
 namespace ImmersiveSBS.Interop;
 
-/// <summary>The Win32 calls the prototype needs. Physical pixels throughout (per-monitor v2).</summary>
+/// <summary>The Win32 calls the app needs. Physical pixels throughout (per-monitor v2).</summary>
 internal static unsafe partial class Native
 {
     public const uint WS_POPUP = 0x80000000;
@@ -10,11 +10,9 @@ internal static unsafe partial class Native
     public const uint WS_EX_TOOLWINDOW = 0x00000080;
     public const uint WS_EX_NOACTIVATE = 0x08000000;
 
-    public const uint WM_DESTROY = 0x0002;
     public const uint WM_SETCURSOR = 0x0020;
     public const uint WM_MOUSEACTIVATE = 0x0021;
     public const uint WM_DISPLAYCHANGE = 0x007E;
-    public const uint WM_HOTKEY = 0x0312;
     public const int MA_NOACTIVATE = 3;
 
     public const int SW_SHOWNOACTIVATE = 4;
@@ -23,12 +21,6 @@ internal static unsafe partial class Native
     public static readonly IntPtr HWND_TOPMOST = new(-1);
 
     public const uint PM_REMOVE = 0x0001;
-    public const uint WAIT_TIMEOUT = 0x102;
-
-    public const uint MOD_ALT = 0x0001;
-    public const uint MOD_CONTROL = 0x0002;
-    public const uint MOD_NOREPEAT = 0x4000;
-    public const uint VK_F11 = 0x7A;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct WNDCLASSEXW
@@ -58,17 +50,6 @@ internal static unsafe partial class Native
         public int ptX;
         public int ptY;
         public uint lPrivate;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct DISPLAY_DEVICEW
-    {
-        public int cb;
-        public fixed char DeviceName[32];
-        public fixed char DeviceString[128];
-        public uint StateFlags;
-        public fixed char DeviceID[128];
-        public fixed char DeviceKey[128];
     }
 
     [LibraryImport("user32.dll", SetLastError = true)]
@@ -106,18 +87,6 @@ internal static unsafe partial class Native
 
     [LibraryImport("user32.dll")]
     public static partial IntPtr SetCursor(IntPtr cursor);
-
-    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static partial bool EnumDisplayDevicesW(string? device, uint index, ref DISPLAY_DEVICEW dd, uint flags);
-
-    [LibraryImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static partial bool RegisterHotKey(IntPtr hwnd, int id, uint modifiers, uint vk);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static partial bool UnregisterHotKey(IntPtr hwnd, int id);
 
     public const uint WS_OVERLAPPEDWINDOW = 0x00CF0000;
     public const uint WM_SIZE = 0x0005;
@@ -270,12 +239,33 @@ internal static unsafe partial class Native
     [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16)]
     public static partial IntPtr GetModuleHandleW(string? name);
 
-    [LibraryImport("kernel32.dll")]
-    public static partial uint WaitForSingleObjectEx(IntPtr handle, uint milliseconds, [MarshalAs(UnmanagedType.Bool)] bool alertable);
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_MEMORY_COUNTERS_EX
+    {
+        public uint cb;
+        public uint PageFaultCount;
+        public nuint PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage,
+            QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage, PagefileUsage, PeakPagefileUsage, PrivateUsage;
+    }
+
+    [LibraryImport("kernel32.dll", EntryPoint = "K32GetProcessMemoryInfo")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetProcessMemoryInfo(IntPtr process, out PROCESS_MEMORY_COUNTERS_EX counters, uint size);
 
     [LibraryImport("kernel32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static partial bool CloseHandle(IntPtr handle);
+    private static partial IntPtr GetCurrentProcess();
+
+    /// <summary>
+    /// This process's private bytes (its commit charge, as Process.PrivateMemorySize64 gives it),
+    /// without the snapshot of every process on the machine that property takes; 0 if unknown.
+    /// </summary>
+    public static long PrivateBytes() =>
+        GetProcessMemoryInfo(GetCurrentProcess(), out PROCESS_MEMORY_COUNTERS_EX c, (uint)sizeof(PROCESS_MEMORY_COUNTERS_EX))
+            ? (long)c.PrivateUsage
+            : 0;
+
+    [LibraryImport("kernel32.dll")]
+    public static partial uint WaitForSingleObjectEx(IntPtr handle, uint milliseconds, [MarshalAs(UnmanagedType.Bool)] bool alertable);
 
     [LibraryImport("d3d11.dll")]
     public static partial int CreateDirect3D11DeviceFromDXGIDevice(IntPtr dxgiDevice, out IntPtr graphicsDevice);

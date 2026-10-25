@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using ImmersiveSBS.Depth;
 using Xunit.Abstractions;
+using static ImmersiveSBS.Tests.DepthStats;
 
 namespace ImmersiveSBS.Tests;
 
@@ -16,7 +17,6 @@ namespace ImmersiveSBS.Tests;
 public class TemporalDepthTests(ITestOutputHelper output)
 {
     private const int Frames = 150;
-    private const int Stride = 7;
     private const float Still = 1.5f / 255;
 
     [Theory]
@@ -148,37 +148,5 @@ public class TemporalDepthTests(ITestOutputHelper output)
     {
         double[] sorted = [.. values.Order()];
         return sorted[sorted.Length / 2];
-    }
-
-    /// <summary>The app's normalisation: 2nd–98th percentile to 0..1.</summary>
-    private static float[] Normalised(float[] m)
-    {
-        float[] sorted = [.. m.Where((_, i) => i % 4 == 0).Order()];
-        float p2 = sorted[(int)(0.02 * (sorted.Length - 1))], p98 = sorted[(int)(0.98 * (sorted.Length - 1))];
-        float span = Math.Max(p98 - p2, 1e-9f);
-        return [.. m.Select(v => Math.Clamp((v - p2) / span, 0, 1))];
-    }
-
-    private static double Spearman(float[] a, float[] b)
-    {
-        double[] ra = Ranks(a), rb = Ranks(b);
-        double ma = ra.Average(), mb = rb.Average(), sab = 0, saa = 0, sbb = 0;
-        for (int i = 0; i < ra.Length; i++)
-        {
-            sab += (ra[i] - ma) * (rb[i] - mb);
-            saa += (ra[i] - ma) * (ra[i] - ma);
-            sbb += (rb[i] - mb) * (rb[i] - mb);
-        }
-        return sab / Math.Sqrt(saa * sbb);
-    }
-
-    private static double[] Ranks(float[] values)
-    {
-        float[] sampled = [.. values.Where((_, i) => i % Stride == 0)];
-        int[] order = [.. Enumerable.Range(0, sampled.Length)];
-        Array.Sort((float[])sampled.Clone(), order);
-        var ranks = new double[sampled.Length];
-        for (int r = 0; r < order.Length; r++) ranks[order[r]] = r;
-        return ranks;
     }
 }

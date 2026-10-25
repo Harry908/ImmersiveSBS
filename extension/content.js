@@ -157,21 +157,22 @@
     const style = getComputedStyle(el);
     const left = box.left + el.clientLeft + parseFloat(style.paddingLeft);
     const top = box.top + el.clientTop + parseFloat(style.paddingTop);
-    let width = el.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-    let height = el.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
-    let x = left, y = top;
+    const width = el.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const height = el.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
     const vw = el.videoWidth, vh = el.videoHeight;
     const fit = style.objectFit || 'contain';
     if (vw > 0 && vh > 0 && (fit === 'contain' || fit === 'scale-down' || fit === 'none')) {
       // The default for video: the picture letterboxed in the box ("none": at its own size).
       const contain = Math.min(width / vw, height / vh);
-      const scale = fit === 'contain' ? contain : fit === 'none' ? 1 : Math.min(contain, 1);
-      x += (width - vw * scale) / 2;
-      y += (height - vh * scale) / 2;
-      width = vw * scale;
-      height = vh * scale;
+      return centred(left, top, width, height, vw, vh, fit === 'contain' ? contain : fit === 'none' ? 1 : Math.min(contain, 1));
     }
-    return { x, y, width, height };
+    return { x: left, y: top, width, height };
+  }
+
+  /** A <vw>×<vh> picture at <scale>, centred in the box at <x>, <y> of <width>×<height>. */
+  function centred(x, y, width, height, vw, vh, scale) {
+    const w = vw * scale, h = vh * scale;
+    return { x: x + (width - w) / 2, y: y + (height - h) / 2, width: w, height: h };
   }
 
   /** What the app needs to know about an element: for the sound, and which video the theater shows. */
@@ -270,11 +271,7 @@
     const text = JSON.stringify(list);
     if (text === lastSent) return;
     lastSent = text;
-    try {
-      port.postMessage({ type: 'media', media: list });
-    } catch {
-      port = null;
-    }
+    post({ type: 'media', media: list });
   }
 
   function post(message) {
@@ -344,16 +341,20 @@
         state.node.delayTime.setTargetAtTime(want, context.currentTime, 0.05);
       } else {
         // A fresh line is silent for the delay, as the picture holds its first frame.
-        const maxDelay = Math.min(179, want + 1);
-        const node = new DelayNode(context, { maxDelayTime: maxDelay, delayTime: want });
-        node.maxDelay = maxDelay;
-        route(el, state, node);
-        if (theater?.el === el) filling(theater, want);
+        newLine(el, state, Math.min(179, want + 1), want);
       }
       state.applied = want;
     } else if (state.applied !== 0 || state.node) {
       route(el, state, null);
     }
+  }
+
+  /** A new delay line for <el>, silent for <seconds>; the theater's spinner shows while it fills. */
+  function newLine(el, state, maxDelay, seconds) {
+    const node = new DelayNode(context, { maxDelayTime: maxDelay, delayTime: seconds });
+    node.maxDelay = maxDelay;
+    route(el, state, node);
+    if (theater?.el === el) filling(theater, seconds);
   }
 
   /** Sends an element taken into Web Audio through <node> (a DelayNode), or straight out (null). */
@@ -407,10 +408,7 @@
   /** A seek: the delay line starts again, silent for its delay. False when there is none. */
   function restartDelay(el, state) {
     if (!context || !state.node || state.applied <= 0) return false;
-    const node = new DelayNode(context, { maxDelayTime: state.node.maxDelay, delayTime: state.applied });
-    node.maxDelay = state.node.maxDelay;
-    route(el, state, node);
-    filling(theater, state.applied);
+    newLine(el, state, state.node.maxDelay, state.applied);
     return true;
   }
 
@@ -917,7 +915,9 @@
     t.done.style.width = `${fraction * 100}%`;
     t.knob.style.left = `${fraction * 100}%`;
     const now = live ? seen : fraction * el.duration;
-    t.time.textContent = live ? clock(now) : `${clock(now)} / ${clock(el.duration)}`;
+    // Written only when it changes: every frame it replaced the text node for a change once a second.
+    const text = live ? clock(now) : `${clock(now)} / ${clock(el.duration)}`;
+    if (t.time.textContent !== text) t.time.textContent = text;
   }
 
   function clock(seconds) {
@@ -1247,9 +1247,9 @@
     const line = t.line;
     t.picturesOut++;
     t.small.convertToBlob({ type: 'image/jpeg', quality: 0.9 })
-      .then(blob => blob.arrayBuffer())
-      .then(bytes => {
-        if (theater === t) post({ type: 'picture', id: t.id, line, media: mediaTime, width: w, height: h, jpeg: base64(bytes) });
+      .then(base64)
+      .then(jpeg => {
+        if (theater === t) post({ type: 'picture', id: t.id, line, media: mediaTime, width: w, height: h, jpeg });
       })
       .catch(() => {
         // A video the page may not read: the app takes the depth from the screen instead.
@@ -1259,11 +1259,14 @@
       .finally(() => { t.picturesOut--; });
   }
 
-  function base64(buffer) {
-    const bytes = new Uint8Array(buffer);
-    let text = '';
-    for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-    return btoa(text);
+  /** A blob as base64, encoded by the browser (each frame's JPEG went through JS strings twice, and btoa). */
+  function base64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.slice(reader.result.indexOf(',') + 1));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
   }
 
   /** The video's playback state: at once on a change, and twice a second so the app knows it is current. */
@@ -1561,9 +1564,7 @@
     const box = t.canvas.getBoundingClientRect();
     const vw = t.canvas.width, vh = t.canvas.height;
     if (box.width < 2 || box.height < 2 || !vw || !vh) return null;
-    const scale = Math.min(box.width / vw, box.height / vh);
-    const w = vw * scale, h = vh * scale;
-    return { x: box.left + (box.width - w) / 2, y: box.top + (box.height - h) / 2, width: w, height: h };
+    return centred(box.left, box.top, box.width, box.height, vw, vh, Math.min(box.width / vw, box.height / vh));
   }
 
   // ---- Heartbeat -------------------------------------------------------------------------

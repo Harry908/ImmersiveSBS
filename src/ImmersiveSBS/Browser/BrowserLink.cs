@@ -27,7 +27,6 @@ public sealed class BrowserConnection
     private readonly SemaphoreSlim sendGate = new(1, 1);
     private volatile IReadOnlyList<BrowserMedia> media = [];
     private volatile PageVideo? followed;
-    private volatile IReadOnlyList<PageBox> overlays = [];
     private double requestedDelay;
 
     internal BrowserConnection(int number, WebSocket socket)
@@ -61,13 +60,6 @@ public sealed class BrowserConnection
 
     private volatile TheaterReport? theater;
 
-    /// <summary>The boxes over the theater's picture, as last reported.</summary>
-    public IReadOnlyList<PageBox> Overlays
-    {
-        get => overlays;
-        internal set => overlays = value;
-    }
-
     /// <summary>Follows <paramref name="mediaId"/> (null: none); false when it already was.</summary>
     internal bool SetFollowed(string? mediaId)
     {
@@ -75,7 +67,6 @@ public sealed class BrowserConnection
         PageVideo? was = followed;
         followed = mediaId == null ? null : new PageVideo(mediaId);
         was?.Dispose();
-        overlays = [];
         return true;
     }
 
@@ -102,14 +93,9 @@ public sealed class BrowserConnection
         return (Interlocked.Exchange(ref requestedDelay, seconds) != seconds) | changed;
     }
 
-    internal Task SendAsync(object message, CancellationToken cancel) =>
-        SendBytesAsync(JsonSerializer.SerializeToUtf8Bytes(message), cancel);
-
-    internal Task SendTextAsync(string json, CancellationToken cancel) =>
-        SendBytesAsync(Encoding.UTF8.GetBytes(json), cancel);
-
-    private async Task SendBytesAsync(byte[] bytes, CancellationToken cancel)
+    internal async Task SendTextAsync(string json, CancellationToken cancel)
     {
+        byte[] bytes = Encoding.UTF8.GetBytes(json);
         await sendGate.WaitAsync(cancel);
         try
         {
@@ -247,19 +233,20 @@ public sealed class BrowserLink : IDisposable
     /// <summary>This process's clock in ms, as the extension's clock sync and frame times use it.</summary>
     public static double ClockMs(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
 
+    /// <summary>A time on that clock, ms, as Stopwatch ticks.</summary>
+    public static long ClockTicks(double ms) => (long)(ms * Stopwatch.Frequency / 1000);
+
     private void SendText(BrowserConnection connection, string json) =>
         _ = connection.SendTextAsync(json, stop.Token).ContinueWith(
             t => Log.Write($"Browser: sending to {connection} failed: {t.Exception?.GetBaseException().Message}"),
             TaskContinuationOptions.OnlyOnFaulted);
 
-    private void Send(BrowserConnection connection, object message) =>
-        _ = connection.SendAsync(message, stop.Token).ContinueWith(
-            t => Log.Write($"Browser: sending to {connection} failed: {t.Exception?.GetBaseException().Message}"),
-            TaskContinuationOptions.OnlyOnFaulted);
+    private void Send(BrowserConnection connection, object message) => SendText(connection, JsonSerializer.Serialize(message));
 
     private void Broadcast(object message)
     {
-        foreach (BrowserConnection c in Connections) Send(c, message);
+        string json = JsonSerializer.Serialize(message);
+        foreach (BrowserConnection c in Connections) SendText(c, json);
     }
 
     private async Task AcceptLoopAsync()
@@ -423,8 +410,9 @@ public sealed class BrowserLink : IDisposable
             JsonElement root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("type", out JsonElement type)) return;
             // Nothing but the hello counts from an extension that does not speak this protocol.
-            if (!connection.Accepted && type.GetString() != "hello") return;
-            switch (type.GetString())
+            string? kind = type.ValueKind == JsonValueKind.String ? type.GetString() : null;
+            if (!connection.Accepted && kind != "hello") return;
+            switch (kind)
             {
                 case "hello":
                     connection.Browser = Text(root, "browser");
@@ -475,7 +463,7 @@ public sealed class BrowserLink : IDisposable
                         double display = Number(root, "display", double.NaN), mediaTime = Number(root, "media", double.NaN);
                         long presented = (long)Number(root, "presented", -1);
                         if (double.IsFinite(display) && double.IsFinite(mediaTime) && presented >= 0)
-                            page.AddFrame(new PageVideo.FrameEvent(presented, mediaTime, (long)(display * Stopwatch.Frequency / 1000),
+                            page.AddFrame(new PageVideo.FrameEvent(presented, mediaTime, ClockTicks(display),
                                 (int)Number(root, "line", 0)));
                     }
                     break;
@@ -503,14 +491,13 @@ public sealed class BrowserLink : IDisposable
                     if (FollowedBy(connection, root) is { } boxed && root.TryGetProperty("boxes", out JsonElement boxes))
                     {
                         IReadOnlyList<PageBox> parsed = ParseBoxes(boxes);
-                        connection.Overlays = parsed;
                         // For the depth thread straight away, with when they appeared on the screen
                         // (the page's next frame on the app's clock; before its clock is synced, when
                         // they arrived), so each frame gets the boxes it shows.
                         if (connection.Theater is { } shown)
                         {
                             double at = Number(root, "at", double.NaN);
-                            long from = double.IsFinite(at) ? (long)(at * Stopwatch.Frequency / 1000) : received;
+                            long from = double.IsFinite(at) ? ClockTicks(at) : received;
                             boxed.AddBoxes(Math.Min(from, Stopwatch.GetTimestamp()),
                                 parsed.Where(b => !b.IsCaption).Select(b => shown.ToScreen(b.Box)).ToArray(),
                                 parsed.Where(b => b.IsCaption).Select(b => shown.ToScreen(b.Box)).ToArray());
@@ -563,7 +550,8 @@ public sealed class BrowserLink : IDisposable
 
     /// <summary>The theater's video, if the message is about it (others are left over from before a change).</summary>
     private static PageVideo? FollowedBy(BrowserConnection connection, JsonElement root) =>
-        connection.Followed is { } page && page.MediaId == Text(root, "id") ? page : null;
+        connection.Followed is { } page && root.TryGetProperty("id", out JsonElement id)
+        && id.ValueKind == JsonValueKind.String && id.ValueEquals(page.MediaId) ? page : null;
 
     /// <summary>The boxes of an "overlays" message; malformed ones are left out, and at most 64 kept.</summary>
     internal static IReadOnlyList<PageBox> ParseBoxes(JsonElement list)

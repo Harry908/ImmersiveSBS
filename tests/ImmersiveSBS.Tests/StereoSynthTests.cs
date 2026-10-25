@@ -39,20 +39,7 @@ public sealed class StereoSynthTests : IDisposable
                 pixels[i + 2] = (byte)(x * 4);  // R
                 pixels[i + 3] = 255;
             }
-        unsafe
-        {
-            fixed (byte* p = pixels)
-            {
-                return device.CreateTexture2D(new Texture2DDescription
-                {
-                    Width = W, Height = H, MipLevels = 1, ArraySize = 1,
-                    Format = Format.B8G8R8A8_UNorm,
-                    SampleDescription = new SampleDescription(1, 0),
-                    Usage = ResourceUsage.Default,
-                    BindFlags = BindFlags.ShaderResource,
-                }, [new Vortice.DataRectangle((IntPtr)p, W * 4)]);
-            }
-        }
+        return TestDevice.CreateBgra(device, W, H, pixels);
     }
 
     private void Upload(Func<int, int, float> nearness)
@@ -67,23 +54,7 @@ public sealed class StereoSynthTests : IDisposable
     /// <summary>Reads the eyes texture: [eye][y][x] = (r, g, b, a).</summary>
     private byte[] ReadEyes(ID3D11ShaderResourceView view)
     {
-        using ID3D11Resource resource = view.Resource;
-        using ID3D11Texture2D eyes = resource.QueryInterface<ID3D11Texture2D>();
-        var d = eyes.Description;
-        d.Usage = ResourceUsage.Staging;
-        d.BindFlags = BindFlags.None;
-        d.CPUAccessFlags = CpuAccessFlags.Read;
-        using ID3D11Texture2D staging = device.CreateTexture2D(d);
-        device.ImmediateContext.CopyResource(staging, eyes);
-        var m = device.ImmediateContext.Map(staging, 0, MapMode.Read);
-        var result = new byte[2 * W * H * 4];
-        unsafe
-        {
-            for (int y = 0; y < H; y++)
-                new ReadOnlySpan<byte>((byte*)m.DataPointer + y * m.RowPitch, 2 * W * 4).CopyTo(result.AsSpan(y * 2 * W * 4));
-        }
-        device.ImmediateContext.Unmap(staging, 0);
-        return result;
+        return TestDevice.ReadEyes(device, view, W, H);
     }
 
     private static int Red(byte[] eyes, int eye, int x, int y) => eyes[(y * 2 * W + eye * W + x) * 4];

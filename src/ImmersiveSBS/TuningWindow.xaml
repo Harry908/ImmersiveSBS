@@ -27,13 +27,13 @@
                     <ColumnDefinition Width="140"/>
                 </Grid.ColumnDefinitions>
             </Grid>
-            <CheckBox x:Name="FloatingWindowBox" Margin="0 12 0 0" Click="OnFloatingWindow"
+            <CheckBox x:Name="FloatingWindowBox" Margin="0 12 0 0" Click="OnTuningBox"
                       Content="Floating window: black band where something in front touches the side edge"/>
-            <CheckBox x:Name="EdgeSnapBox" Margin="0 8 0 0" Click="OnEdgeSnap"
+            <CheckBox x:Name="EdgeSnapBox" Margin="0 8 0 0" Click="OnTuningBox"
                       Content="Snap depth edges to the picture (sharper outlines and hair)"/>
-            <CheckBox x:Name="CaptionsBox" Margin="0 8 0 0" Click="OnCaptions"
+            <CheckBox x:Name="CaptionsBox" Margin="0 8 0 0" Click="OnTuningBox"
                       Content="Keep subtitles flat, just in front of the scene"/>
-            <CheckBox x:Name="StaticOverlaysBox" Margin="0 8 0 0" Click="OnStaticOverlays"
+            <CheckBox x:Name="StaticOverlaysBox" Margin="0 8 0 0" Click="OnTuningBox"
                       Content="Logos and other still overlays at the screen plane"/>
         </StackPanel>
     </DockPanel>

@@ -24,14 +24,14 @@ public class TheaterTests
     [Fact]
     public void ModelBadgesSpinWhileLoading()
     {
-        UiImage first = ButtonImages.Badge(BadgeKind.Loading, 0);
-        UiImage turned = ButtonImages.Badge(BadgeKind.Loading, 3);
+        UiImage first = BadgeImages.Badge(BadgeKind.Loading, 0);
+        UiImage turned = BadgeImages.Badge(BadgeKind.Loading, 3);
         Assert.Equal(TheaterGeometry.BadgeHeight, first.Height);
         Assert.Equal(first.Width, turned.Width);
         Assert.False(first.Bgra.AsSpan().SequenceEqual(turned.Bgra));
         // Done states have one picture; the longer label gets a wider pill.
-        Assert.Same(ButtonImages.Badge(BadgeKind.Ready, 0), ButtonImages.Badge(BadgeKind.Ready, 5));
-        Assert.True(ButtonImages.Badge(BadgeKind.Preparing, 0).Width > ButtonImages.Badge(BadgeKind.Ready, 0).Width);
-        Assert.InRange(ButtonImages.SpinnerFrame(), 0, ButtonImages.SpinnerFrames - 1);
+        Assert.Same(BadgeImages.Badge(BadgeKind.Ready, 0), BadgeImages.Badge(BadgeKind.Ready, 5));
+        Assert.True(BadgeImages.Badge(BadgeKind.Preparing, 0).Width > BadgeImages.Badge(BadgeKind.Ready, 0).Width);
+        Assert.InRange(BadgeImages.SpinnerFrame(), 0, BadgeImages.SpinnerFrames - 1);
     }
 }

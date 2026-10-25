@@ -113,27 +113,16 @@ public partial class TuningWindow : Window
         loading = false;
     }
 
-    private void OnFloatingWindow(object sender, RoutedEventArgs e)
+    /// <summary>One of the four switches: they are read together, so each shows what <c>working</c> has.</summary>
+    private void OnTuningBox(object sender, RoutedEventArgs e)
     {
-        working.Tuning = working.Tuning with { FloatingWindow = FloatingWindowBox.IsChecked == true };
-        controller.PreviewSettings(working.Clone());
-    }
-
-    private void OnEdgeSnap(object sender, RoutedEventArgs e)
-    {
-        working.Tuning = working.Tuning with { EdgeSnap = EdgeSnapBox.IsChecked == true };
-        controller.PreviewSettings(working.Clone());
-    }
-
-    private void OnCaptions(object sender, RoutedEventArgs e)
-    {
-        working.Tuning = working.Tuning with { Captions = CaptionsBox.IsChecked == true };
-        controller.PreviewSettings(working.Clone());
-    }
-
-    private void OnStaticOverlays(object sender, RoutedEventArgs e)
-    {
-        working.Tuning = working.Tuning with { StaticOverlays = StaticOverlaysBox.IsChecked == true };
+        working.Tuning = working.Tuning with
+        {
+            FloatingWindow = FloatingWindowBox.IsChecked == true,
+            EdgeSnap = EdgeSnapBox.IsChecked == true,
+            Captions = CaptionsBox.IsChecked == true,
+            StaticOverlays = StaticOverlaysBox.IsChecked == true,
+        };
         controller.PreviewSettings(working.Clone());
     }
 

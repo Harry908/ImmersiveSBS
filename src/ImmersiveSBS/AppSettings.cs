@@ -9,49 +9,29 @@ using Microsoft.Win32;
 namespace ImmersiveSBS;
 
 /// <summary>
-/// Reads a model by name, and a model since removed (Distill-Any-Depth Large, Depth Anything V2
-/// Small, Base or Large) as the default, Distill-Any-Depth Base, rather than failing the whole file.
+/// An enum by name; a name no longer defined (a choice since removed) or not a name loads as
+/// <paramref name="fallback"/> rather than failing the whole file.
 /// </summary>
-public sealed class DepthTierConverter : JsonConverter<DepthTier>
+public abstract class NamedEnumConverter<T>(T fallback) : JsonConverter<T> where T : struct, Enum
 {
-    public override DepthTier Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
-        reader.TokenType == JsonTokenType.String && Enum.TryParse(reader.GetString(), ignoreCase: true, out DepthTier tier)
-        && Enum.IsDefined(tier)
-            ? tier
-            : DepthTier.Base;
+    public override T Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        reader.TokenType == JsonTokenType.String && Enum.TryParse(reader.GetString(), ignoreCase: true, out T value)
+        && Enum.IsDefined(value)
+            ? value
+            : fallback;
 
-    public override void Write(Utf8JsonWriter writer, DepthTier value, JsonSerializerOptions options) =>
+    public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options) =>
         writer.WriteStringValue(value.ToString());
 }
 
-/// <summary>A model resolution by name; the removed Fast (392×224) and anything unknown load as Balanced.</summary>
-public sealed class DepthPresetConverter : JsonConverter<DepthPreset>
-{
-    public override DepthPreset Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
-        reader.TokenType == JsonTokenType.String && Enum.TryParse(reader.GetString(), ignoreCase: true, out DepthPreset preset)
-        && Enum.IsDefined(preset)
-            ? preset
-            : DepthPreset.Balanced;
+/// <summary>A model; one since removed (Distill-Any-Depth Large, Depth Anything V2 Small, Base or Large) loads as the default, Distill-Any-Depth Base.</summary>
+public sealed class DepthTierConverter() : NamedEnumConverter<DepthTier>(DepthTier.Base);
 
-    public override void Write(Utf8JsonWriter writer, DepthPreset value, JsonSerializerOptions options) =>
-        writer.WriteStringValue(value.ToString());
-}
+/// <summary>A model resolution; the removed Fast (392×224) loads as Balanced.</summary>
+public sealed class DepthPresetConverter() : NamedEnumConverter<DepthPreset>(DepthPreset.Balanced);
 
-/// <summary>
-/// What the video is, by name; the old "Auto" (detected, since removed) and anything unknown load
-/// as 2D rather than failing the whole file.
-/// </summary>
-public sealed class Native3DModeConverter : JsonConverter<Native3DMode>
-{
-    public override Native3DMode Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
-        reader.TokenType == JsonTokenType.String && Enum.TryParse(reader.GetString(), ignoreCase: true, out Native3DMode mode)
-        && Enum.IsDefined(mode)
-            ? mode
-            : Native3DMode.Off;
-
-    public override void Write(Utf8JsonWriter writer, Native3DMode value, JsonSerializerOptions options) =>
-        writer.WriteStringValue(value.ToString());
-}
+/// <summary>What the video is; the old "Auto" (detected, since removed) loads as 2D.</summary>
+public sealed class Native3DModeConverter() : NamedEnumConverter<Native3DMode>(Native3DMode.Off);
 
 /// <summary>Shortcuts by command name; a command since removed (the pick shortcut) is skipped rather than failing the whole file.</summary>
 public sealed class ShortcutMapConverter : JsonConverter<Dictionary<ShortcutCommand, string>>

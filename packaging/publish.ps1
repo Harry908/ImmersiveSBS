@@ -49,8 +49,9 @@ if (Test-Path $out) { Remove-Item -Recurse -Force $out }
 
 Write-Host "Publishing ImmersiveSBS $version to $out"
 # Its own build folders: a clean build, and one a running copy of the app (bin\Release) cannot lock.
+# Shown, not returned: the script's only output is what it made (at the end).
 dotnet publish $project -c Release -r win-x64 --self-contained true -p:PublishReadyToRun=true `
-    --artifacts-path (Join-Path $root 'artifacts\build') -o $out
+    --artifacts-path (Join-Path $root 'artifacts\build') -o $out | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed ($LASTEXITCODE)." }
 if (-not (Test-Path (Join-Path $out 'extension\manifest.json'))) { throw 'The browser extension is missing from the published folder.' }
 
@@ -60,10 +61,16 @@ Copy-Item (Join-Path $root 'THIRD-PARTY-NOTICES.md') $out
 Copy-Item (Join-Path $root 'README.md') $out
 $licenses = New-Item -ItemType Directory -Force (Join-Path $out 'licenses')
 $packages = Join-Path $env:USERPROFILE '.nuget\packages'
-$onnx = Join-Path $packages 'microsoft.ml.onnxruntime\1.30.0'
+# The licences of the packages the project names, at the versions it names.
+function PackageFolder([string] $id) {
+    $v = @($xml.Project.ItemGroup.PackageReference | Where-Object { $_.Include -eq $id } | ForEach-Object { $_.Version })[0]
+    if (-not $v) { throw "No PackageReference to $id in $project." }
+    Join-Path $packages "$($id.ToLowerInvariant())\$v"
+}
+$onnx = PackageFolder 'Microsoft.ML.OnnxRuntime'
 Copy-Item (Join-Path $onnx 'LICENSE') (Join-Path $licenses 'onnxruntime-LICENSE.txt')
 Copy-Item (Join-Path $onnx 'ThirdPartyNotices.txt') (Join-Path $licenses 'onnxruntime-ThirdPartyNotices.txt')
-$winml = Join-Path $packages 'microsoft.windows.ai.machinelearning\2.4.89'
+$winml = PackageFolder 'Microsoft.Windows.AI.MachineLearning'
 Copy-Item (Join-Path $winml 'license.txt') (Join-Path $licenses 'windowsml-license.txt')
 Copy-Item (Join-Path $winml 'ThirdPartyNotices.txt') (Join-Path $licenses 'windowsml-ThirdPartyNotices.txt')
 
@@ -94,3 +101,6 @@ if (-not $NoZip) {
     [System.IO.Compression.ZipFile]::CreateFromDirectory($out, $zip, [System.IO.Compression.CompressionLevel]::Optimal, $true)
     Write-Host ("Zip: {0} ({1:N0} MB)" -f $zip, ((Get-Item $zip).Length / 1MB))
 }
+
+# For build-installer.ps1.
+[pscustomobject]@{ Folder = $out; Version = $version }

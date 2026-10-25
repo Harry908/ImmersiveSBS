@@ -1507,6 +1507,42 @@ ran, and the uninstall removed both. Then:
   drawn scene its output orders near and far like Distill-Any-Depth Base (ρ 0.92), inverse
   depth as assumed. Not measured here: its flicker against the default (`TemporalDepthTests`
   needs the sample clip, still on the old laptop).
+- **Code cleanup** (user: "verify and clean up the codes in the entire codebase"). The analyzers
+  (unused members, parameters, values, usings) and a scan for declared members named nowhere
+  else in the code, tests, XAML and extension found: Win32 declarations nothing calls
+  (`RegisterHotKey`/`UnregisterHotKey`, `EnumDisplayDevicesW` and its struct, `CloseHandle`,
+  six constants), and five members left by earlier removals (`AiStereo.PresentLatencyTicks`,
+  `DepthPostProcessor.CaptionBox`, `MatchedDelay.PeriodMs`, the readback's `Discard`,
+  `DisplayInfo.FrameShape`); all removed. `ButtonImages` is `BadgeImages` (it draws only the
+  model badges since the app's own buttons went). Kept on purpose: Win32 struct fields (their
+  layout), the constant buffer's `Pad`, the XAML attached property's setter, the members the
+  tests read (`GpuTimer.TakeAverages`, `PageVideo.Latest`), the extension's `pong` (it keeps the
+  service worker alive; the app ignores it). The extension has no unused function or variable,
+  every message type it sends the app handles, and the packaging scripts parse.
+- **Simplified** (user: "simplify my codebase"; four reviews: reuse, simplification,
+  efficiency, altitude). Same behaviour, 169 tests passing:
+  - The theater's timing is a typed `TheaterTiming` (mode and delay), not a text the panel
+    parsed back; `wantedDelaySeconds` (a copy of `DelaySeconds`) is gone; the model input's
+    hand-over, the flat split and the synthesis are one helper each in `AiStereo`.
+  - A second path for the player's boxes, kept only for log counts, is gone (`VideoHint` box
+    lists, `BrowserConnection.Overlays`): the counts come from `PageVideo.BoxesAt`.
+  - One copy each of: the eye fit (`TheaterGeometry.Fit`, for the renderer, the badge and the
+    session), the ImageNet constants (`ImageNet`), the capture texture (`CaptureTexture`), the
+    lenient enum converters (`NamedEnumConverter<T>`), the "on the glasses" test, the status
+    line, the ping-pong GPU pass (`NearPass`), the GPU test helpers (`TestDevice.CreateBgra`,
+    `ReadEyes`) and the depth statistics (`DepthStats`). `PageVideo.TryFrameAt` owns its slack.
+  - Cheaper: the memory figure reads this process only (`GetProcessMemoryInfo`, not a snapshot
+    of every process each second on the render thread); the browser's process name is looked up
+    only for the log line that needs it; the stray-window guard asks a window's class and
+    process only when it is on the glasses; each picture is base64-encoded by the browser
+    (`FileReader`, checked identical in a browser) instead of through JS strings; the theater's
+    time text is written only when it changes; the browser link reads a message's type once.
+  - The packaging scripts read the package versions from the project file, and
+    `publish.ps1` returns its folder and version to `build-installer.ps1`.
+  - Left for a run in the glasses: re-using the theater's eye images when nothing changed
+    (`AiStereo.FromPage`), a dirty rectangle for `CaptionLock`'s mask, filling the model's input
+    buffer without a second copy under the depth service's lock, an asynchronous log writer,
+    one base class for the two input hooks.
 
 ### Next
 

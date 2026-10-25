@@ -58,8 +58,8 @@ public sealed class Session
     private volatile int stereoVersion;
     private double soundDelay;
     private volatile VideoHint? browserVideo;
-    /// <summary>The theater's timing as it runs now (<see cref="AiStereo.TimingNow"/>), for its panel.</summary>
-    private volatile string timingNow = "";
+    /// <summary>The theater's timing as it runs now (<see cref="AiStereo.Timing"/>), for its panel; under <see cref="delayLock"/>.</summary>
+    private TheaterTiming timingNow;
     private readonly TheaterUi theaterUi = new();
     private readonly object delayLock = new();
     private Rectangle delayRegion;
@@ -165,13 +165,14 @@ public sealed class Session
         // The choice, by the name the settings window gives it, and what runs now when that is not
         // simply the choice: Auto's matched delay, or live for a video that cannot be delayed.
         var choice = AppController.TimingChoices[AppController.TimingIndex(stereo.Timing, stereo.BufferSeconds)];
-        string now = timingNow;
-        string timing = now switch
+        TheaterTiming now;
+        lock (delayLock) now = timingNow;
+        string timing = now.Mode switch
         {
-            "" => choice.Short,
-            _ when choice.Buffer > 0 && now.StartsWith("buffer") => choice.Short,
-            _ when choice.Buffer == 0 && choice.Timing == VideoTiming.Live && now == "live" => choice.Short,
-            _ when choice.Buffer == 0 && choice.Timing == VideoTiming.Matched && now.StartsWith("matched ") => $"Matched ({now[8..]})",
+            TimingMode.None => choice.Short,
+            TimingMode.Buffer when choice.Buffer > 0 => choice.Short,
+            TimingMode.Live when choice.Buffer == 0 && choice.Timing == VideoTiming.Live => choice.Short,
+            TimingMode.Matched when choice.Buffer == 0 && choice.Timing == VideoTiming.Matched => $"Matched ({now.DelaySeconds * 1000:0} ms)",
             _ => $"{choice.Short} (now {now})",
         };
         return new TheaterPanel(m == null ? "none" : DepthModel.Name(m.Tier), size, stereo.Strength, stereo.Convergence,
@@ -391,12 +392,12 @@ public sealed class Session
             {
                 var fd = frame.Description;
                 var eye = new Size(renderer.Width / 2, renderer.Height);
-                double scale = Math.Min((double)eye.Width / fd.Width, (double)eye.Height / fd.Height);
+                double scale = TheaterGeometry.Fit(new Size((int)fd.Width, (int)fd.Height), eye).Scale;
                 VideoHint? hint = BrowserVideo;
                 overlay = ai.Process(frame, update.Frame || late.Frame, stereo, Depth, eye, scale, SoundDelay, PageCanDelay, hint, frameQpc);
                 if (overlay != null) live = ai.LiveControls(hint);
                 aiStatus = ai.Status;
-                timingNow = ai.TimingNow;
+                lock (delayLock) timingNow = ai.Timing;
                 ui = theaterUi.Build(overlay, ai.FoundRegion, eye, new Size((int)fd.Width, (int)fd.Height), stereo.Target, Depth?.State);
                 SetDelay(ai.DelayRegion, ai.DelaySeconds);
             }
@@ -426,11 +427,13 @@ public sealed class Session
     private string PageData()
     {
         if (BrowserVideo is not { } hint) return "none (no theater)";
-        if (hint.Page is not { } page || !page.Fresh(Stopwatch.GetTimestamp())) return "the theater's place, no frame reports for over a second";
+        long now = Stopwatch.GetTimestamp();
+        if (hint.Page is not { } page || !page.Fresh(now)) return "the theater's place, no frame reports for over a second";
         double fps = page.FrameRate, error = page.ClockErrorMs;
+        PageVideo.BoxSet? boxes = page.BoxesAt(now);
         return "the theater (" + (fps > 0 ? $"{fps:0.#} fps drawn" : "no frames yet") +
                (double.IsFinite(error) ? $", clock within {error:0.0} ms" : "") +
-               (hint.Captions != null ? $", {hint.Captions.Count} caption boxes" : "") + $", {hint.Overlays.Count} overlay boxes)";
+               $", {boxes?.Captions.Count ?? 0} caption boxes, {boxes?.Overlays.Count ?? 0} overlay boxes)";
     }
 
     /// <summary>Accumulates one second of measurements on the render thread.</summary>
@@ -526,7 +529,7 @@ public sealed class Session
                 displayCount > 0 ? displaySum / displayCount : 0, displayMax,
                 vram, ai,
                 // A steady climb here over minutes is a leak (Windows flagged one once, at a model load).
-                System.Diagnostics.Process.GetCurrentProcess().PrivateMemorySize64 / (1024.0 * 1024.0),
+                Native.PrivateBytes() / (1024.0 * 1024.0),
                 GC.GetTotalMemory(false) / (1024.0 * 1024.0), budget, ai != null ? aiMeasures : null, gpu);
             session.stats = s;
 

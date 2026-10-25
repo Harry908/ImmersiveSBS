@@ -93,7 +93,7 @@ public sealed class TrayIcon : IDisposable
     public void Refresh()
     {
         // NotifyIcon.Text is limited to 127 characters; keep it to a glance.
-        string text = "ImmersiveSBS - " + controller.StatusText + (controller.AudioStatus is string audio ? "; " + audio : "") +
+        string text = "ImmersiveSBS - " + controller.StatusLine +
                       (controller.ModelBusy ? "; loading the 3D model" : controller.ModelState == DepthServiceState.Failed ? "; 3D model failed" : "");
         notifyIcon.Text = text.Length > 120 ? text[..117] + "..." : text;
     }

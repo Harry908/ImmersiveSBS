@@ -27,7 +27,7 @@ public sealed class StereoSynth : IDisposable
             float convergence;  // c: the nearness that stays at the screen plane
             int maxHole;        // hole search radius, px
             int dilateRadius;   // foreground dilation radius, px
-            float rangeSigma;   // luma sigma of the guided upsample
+            float rangeSigma;   // colour sigma of the guided upsample
             int layout;         // native split: 0 the same picture in both eyes, 1 side-by-side, 2 top-bottom
             float bandLeft;     // floating window: black band on the left eye's left edge, px
             float bandRight;    // and on the right eye's right edge
@@ -43,9 +43,6 @@ public sealed class StereoSynth : IDisposable
         Texture2D<float> BlockMax : register(t3);
         SamplerState Linear : register(s0);
 
-        static const float3 LumaWeights = float3(0.299, 0.587, 0.114);
-
-        float LumaAt(float2 sourcePx) { return dot(Source.SampleLevel(Linear, sourcePx / sourceSize, 0).rgb, LumaWeights); }
         float3 ColourAt(float2 sourcePx) { return Source.SampleLevel(Linear, sourcePx / sourceSize, 0).rgb; }
 
         // --- Model input: crop, 4-tap box downsample, ImageNet normalisation, planar NCHW.
@@ -61,7 +58,7 @@ public sealed class StereoSynth : IDisposable
                      + Source.SampleLevel(Linear, (p + float2( q.x, -q.y)) / sourceSize, 0).rgb
                      + Source.SampleLevel(Linear, (p + float2(-q.x,  q.y)) / sourceSize, 0).rgb
                      + Source.SampleLevel(Linear, (p + float2( q.x,  q.y)) / sourceSize, 0).rgb;
-            c = (c * 0.25 - float3(0.485, 0.456, 0.406)) / float3(0.229, 0.224, 0.225);
+            c = (c * 0.25 - float3(0.485, 0.456, 0.406)) / float3(0.229, 0.224, 0.225);   // ImageNet.cs
             uint plane = modelSize.x * modelSize.y;
             uint i = id.y * modelSize.x + id.x;
             Tensor[i] = c.r;
@@ -623,24 +620,8 @@ public sealed class StereoSynth : IDisposable
 
         // Ping-pong: each step reads whichever texture holds the nearness and writes the other.
         Texture near = nearA!;
-        if (EdgeSnap)
-        {
-            context.CSSetShaderResource(2, near.Srv);
-            Dispatch(snap, nearB!.Uav, (region.Width + 63) / 64, region.Height);
-            context.CSSetShaderResource(2, null!);
-            near = nearB;
-            Timer?.Mark("snap");
-        }
-
-        if (DilateRadius > 0)
-        {
-            Texture dilated = near == nearA ? nearB! : nearA;
-            context.CSSetShaderResource(2, near.Srv);
-            Dispatch(dilate, dilated.Uav, (region.Width + 63) / 64, region.Height);
-            context.CSSetShaderResource(2, null!);
-            near = dilated;
-            Timer?.Mark("dilate");
-        }
+        if (EdgeSnap) near = NearPass(near, snap, (region.Width + 63) / 64, region.Height, "snap");
+        if (DilateRadius > 0) near = NearPass(near, dilate, (region.Width + 63) / 64, region.Height, "dilate");
 
         if (holes == null)
         {
@@ -665,15 +646,7 @@ public sealed class StereoSynth : IDisposable
             return eyes.Srv;
         }
 
-        if (LimitSlope && strength > 0)
-        {
-            Texture limited = near == nearA ? nearB! : nearA;
-            context.CSSetShaderResource(2, near.Srv);
-            Dispatch(slopeLimit, limited.Uav, (region.Width + 255) / 256, region.Height);
-            context.CSSetShaderResource(2, null!);
-            near = limited;
-            Timer?.Mark("slope");
-        }
+        if (LimitSlope && strength > 0) near = NearPass(near, slopeLimit, (region.Width + 255) / 256, region.Height, "slope");
 
         context.ClearUnorderedAccessView(keys!.Uav, new Int4(0, 0, 0, 0));
         context.CSSetShaderResource(2, near.Srv);
@@ -744,6 +717,17 @@ public sealed class StereoSynth : IDisposable
         MappedSubresource m = context.Map(constants, MapMode.WriteDiscard);
         *(Params*)m.DataPointer = p;
         context.Unmap(constants, 0);
+    }
+
+    /// <summary>One ping-pong step over the nearness: reads <paramref name="near"/> (t2), writes the other texture, and returns it.</summary>
+    private Texture NearPass(Texture near, ID3D11ComputeShader shader, int x, int y, string mark)
+    {
+        Texture other = near == nearA ? nearB! : nearA!;
+        context.CSSetShaderResource(2, near.Srv);
+        Dispatch(shader, other.Uav, x, y);
+        context.CSSetShaderResource(2, null!);
+        Timer?.Mark(mark);
+        return other;
     }
 
     private void Dispatch(ID3D11ComputeShader shader, ID3D11UnorderedAccessView output, int x, int y)
@@ -837,9 +821,6 @@ public sealed class StereoSynth : IDisposable
             context.CopyResource(staging, buffer);
             Pending = true;
         }
-
-        /// <summary>Forgets the queued copy.</summary>
-        public void Discard() => Pending = false;
 
         /// <summary>Reads the queued copy, waiting for the GPU only if it has not made it yet.</summary>
         public unsafe void ReadQueued(ID3D11DeviceContext context, Span<byte> destination)

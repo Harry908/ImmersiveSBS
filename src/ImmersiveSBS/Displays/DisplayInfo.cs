@@ -201,8 +201,6 @@ public sealed class DisplayMode
 
     public bool Interlaced { get; set; }
 
-    public StereoFrameShape FrameShape => GlassesStateEvaluator.ClassifyFrame(Width, Height);
-
     public override string ToString()
     {
         string s = Width + "×" + Height;

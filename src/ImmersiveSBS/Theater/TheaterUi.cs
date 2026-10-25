@@ -32,7 +32,7 @@ public sealed class TheaterUi
 
     /// <summary>True when the frame must be redrawn for the layer alone: the spinner due to turn, or "3D ready" due to go.</summary>
     public bool NeedsRedraw =>
-        (drawnBadge is BadgeKind.Loading or BadgeKind.Preparing && ButtonImages.SpinnerFrame() != drawnFrame)
+        (drawnBadge is BadgeKind.Loading or BadgeKind.Preparing && BadgeImages.SpinnerFrame() != drawnFrame)
         || (drawnBadge == BadgeKind.Ready && Stopwatch.GetElapsedTime(readySince).TotalSeconds >= ReadySeconds);
 
     /// <param name="overlay">The video's eye images, or null when nothing is drawn over it.</param>
@@ -50,13 +50,7 @@ public sealed class TheaterUi
             return null;
         }
 
-        // The source is fitted into the eye the same way the renderer does it.
-        double scale = Math.Min((double)eye.Width / source.Width, (double)eye.Height / source.Height);
-        var fitted = new Rectangle(
-            (eye.Width - (int)Math.Round(source.Width * scale)) / 2,
-            (eye.Height - (int)Math.Round(source.Height * scale)) / 2,
-            (int)Math.Round(source.Width * scale),
-            (int)Math.Round(source.Height * scale));
+        Rectangle fitted = TheaterGeometry.Fit(source, eye).Fitted;
         Rectangle videoRect = overlay?.Region ?? found;
         // The whole screen has no video to wait for; a video does, and without one there is no place for it.
         if (target != AiTarget.WholeScreen && videoRect.IsEmpty) badge = null;
@@ -93,8 +87,8 @@ public sealed class TheaterUi
         drawnBadge = badge;
         if (badge is not BadgeKind kind) return null;
 
-        drawnFrame = ButtonImages.SpinnerFrame();
-        UiImage image = ButtonImages.Badge(kind, drawnFrame);
+        drawnFrame = BadgeImages.SpinnerFrame();
+        UiImage image = BadgeImages.Badge(kind, drawnFrame);
         var place = new Rectangle(area.Left + TheaterGeometry.Margin, area.Top + TheaterGeometry.Margin, image.Width, image.Height);
         return new UiLayer { Images = [(image, place)] };
     }

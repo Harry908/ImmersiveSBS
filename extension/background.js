@@ -155,26 +155,27 @@ function showStatus() {
   const connected = socket !== null;
   const title = connected ? 'ImmersiveSBS link: connected to the app' : 'ImmersiveSBS link: the app is not running';
   const tab = connected && theater ? theater.tab : null;
+  const color = connected ? '#5f6368' : '#b3261e';
   try {
-    chrome.action.setBadgeText({ text: connected ? 'on' : 'off' });
-    chrome.action.setBadgeBackgroundColor({ color: connected ? '#5f6368' : '#b3261e' });
-    chrome.action.setTitle({ title });
-    if (badgeTab !== null && badgeTab !== tab) {
-      // Back to the global badge.
-      chrome.action.setBadgeText({ tabId: badgeTab, text: null }).catch(() => {});
-      chrome.action.setBadgeBackgroundColor({ tabId: badgeTab, color: connected ? '#5f6368' : '#b3261e' }).catch(() => {});
-      chrome.action.setTitle({ tabId: badgeTab, title }).catch(() => {});
-    }
+    badge(null, connected ? 'on' : 'off', color, title);
+    // Back to the global badge.
+    if (badgeTab !== null && badgeTab !== tab) badge(badgeTab, null, color, title);
     badgeTab = tab;
     if (tab !== null) {
       const sound = delaySeconds > 0 ? `; its sound plays ${Math.round(delaySeconds * 1000)} ms late` : '';
-      chrome.action.setBadgeText({ tabId: tab, text: '3D' }).catch(() => {});
-      chrome.action.setBadgeBackgroundColor({ tabId: tab, color: '#188038' }).catch(() => {});
-      chrome.action.setTitle({ tabId: tab, title: `ImmersiveSBS link: this tab's video is in the 3D theater${sound}` }).catch(() => {});
+      badge(tab, '3D', '#188038', `ImmersiveSBS link: this tab's video is in the 3D theater${sound}`);
     }
   } catch {
     // An older browser without the action API: no badge.
   }
+}
+
+/** The toolbar badge: for one tab, or for all (<tabId> null); text null shows the global one again. */
+function badge(tabId, text, color, title) {
+  const tab = tabId === null ? {} : { tabId };
+  chrome.action.setBadgeText({ ...tab, text }).catch(() => {});
+  chrome.action.setBadgeBackgroundColor({ ...tab, color }).catch(() => {});
+  chrome.action.setTitle({ ...tab, title }).catch(() => {});
 }
 
 /** Frames measure and report their media only while the app is there to use it. */

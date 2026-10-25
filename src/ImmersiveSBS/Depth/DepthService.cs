@@ -350,7 +350,7 @@ public sealed class DepthService : IDisposable
         long windowStart = Stopwatch.GetTimestamp();
         while (true)
         {
-            PostJob? job = null;
+            PostJob? job;
             try
             {
                 // While frames are held, wait only so long: a paused video sends no more.
@@ -376,25 +376,26 @@ public sealed class DepthService : IDisposable
                     post!.Reset();
                     lastTime = double.NaN;
                 }
+                int ahead = LookAheadFrames;
                 if (job != null)
                 {
                     (job.P2, job.P98) = post!.MeasureRange(job.Output);
                     // Only looking ahead needs to know where the cuts are before it gets there.
-                    job.CutBefore = LookAheadFrames > 0 && lastHeldLuma.Length == job.Luma.Length
-                                    && MeanChange(lastHeldLuma, job.Luma) > Tuning.SceneCut;
-                    if (LookAheadFrames > 0)
+                    if (ahead > 0)
                     {
+                        job.CutBefore = lastHeldLuma.Length == job.Luma.Length && MeanChange(lastHeldLuma, job.Luma) > Tuning.SceneCut;
                         if (lastHeldLuma.Length != job.Luma.Length) lastHeldLuma = new float[job.Luma.Length];
                         job.Luma.CopyTo(lastHeldLuma, 0);
                     }
                     else
                     {
+                        job.CutBefore = false;
                         lastHeldLuma = [];
                     }
                     job.HeldAt = Stopwatch.GetTimestamp();
                     held.Add(job);
                 }
-                int keep = job == null ? 0 : LookAheadFrames;
+                int keep = job == null ? 0 : ahead;
                 while (held.Count > keep)
                 {
                     // The range over this frame and those after it, up to the next scene cut.
@@ -537,8 +538,8 @@ public sealed class DepthService : IDisposable
     /// </summary>
     public static void Luma(float[] input, float[] luma, int plane)
     {
-        const float r = 0.299f * 0.229f, g = 0.587f * 0.224f, b = 0.114f * 0.225f;
-        const float offset = 0.299f * 0.485f + 0.587f * 0.456f + 0.114f * 0.406f;
+        const float r = 0.299f * ImageNet.StdR, g = 0.587f * ImageNet.StdG, b = 0.114f * ImageNet.StdB;
+        const float offset = 0.299f * ImageNet.MeanR + 0.587f * ImageNet.MeanG + 0.114f * ImageNet.MeanB;
         int v = System.Numerics.Vector<float>.Count;
         RowBands.ForRange(plane, (_, from, to) =>
         {

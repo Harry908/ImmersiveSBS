@@ -47,10 +47,9 @@ if (-not $Iscc) {
 if (-not $Iscc) { throw 'Inno Setup 6 (ISCC.exe) not found; see this script''s help.' }
 
 # 1. The app.
-& (Join-Path $PSScriptRoot 'publish.ps1') -Models $Models -NoZip
-[xml] $xml = Get-Content (Join-Path $root 'src\ImmersiveSBS\ImmersiveSBS.csproj')
-$version = @($xml.Project.PropertyGroup | ForEach-Object { $_.Version } | Where-Object { $_ })[0]
-$appDir = Join-Path $artifacts "ImmersiveSBS-$version-win-x64"
+$published = & (Join-Path $PSScriptRoot 'publish.ps1') -Models $Models -NoZip
+$version = $published.Version
+$appDir = $published.Folder
 
 # 2. The driver.
 $cache = New-Item -ItemType Directory -Force (Join-Path $artifacts 'cache')

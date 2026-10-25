@@ -131,27 +131,8 @@ public sealed class GraphicsCapture : ICaptureSource
         }
     }
 
-    private void EnsureTexture(uint width, uint height)
-    {
-        if (texture != null)
-        {
-            var d = texture.Description;
-            if (d.Width == width && d.Height == height) return;
-            texture.Dispose();
-        }
-
-        texture = device.CreateTexture2D(new Texture2DDescription
-        {
-            Width = width,
-            Height = height,
-            MipLevels = 1,
-            ArraySize = 1,
-            Format = Format.B8G8R8A8_UNorm,
-            SampleDescription = new SampleDescription(1, 0),
-            Usage = ResourceUsage.Default,
-            BindFlags = BindFlags.ShaderResource,
-        });
-    }
+    private void EnsureTexture(uint width, uint height) =>
+        CaptureTexture.Ensure(device, ref texture, width, height, Format.B8G8R8A8_UNorm);
 
     private static IDirect3DDevice CreateWinRTDevice(ID3D11Device device)
     {

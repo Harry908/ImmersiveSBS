@@ -119,8 +119,8 @@ public sealed class PagePictures : IDisposable
         try
         {
             float[] into = input;
-            const float r0 = 0.485f * 255, g0 = 0.456f * 255, b0 = 0.406f * 255;
-            const float rs = 1 / (0.229f * 255), gs = 1 / (0.224f * 255), bs = 1 / (0.225f * 255);
+            const float r0 = ImageNet.MeanR * 255, g0 = ImageNet.MeanG * 255, b0 = ImageNet.MeanB * 255;
+            const float rs = 1 / (ImageNet.StdR * 255), gs = 1 / (ImageNet.StdG * 255), bs = 1 / (ImageNet.StdB * 255);
             byte* scan0 = (byte*)data.Scan0;
             int stride = data.Stride;
             for (int y = 0; y < height; y++)

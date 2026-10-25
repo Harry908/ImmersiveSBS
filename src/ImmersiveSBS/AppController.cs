@@ -145,6 +145,9 @@ public sealed class AppController : IDisposable
         ? $"sound {Seconds(browserDelaying.RequestedDelay - browserTrim)} behind (in the browser)"
         : null;
 
+    /// <summary><see cref="StatusText"/>, with <see cref="AudioStatus"/> while the sound is delayed: the line the tray and Settings show.</summary>
+    public string StatusLine => StatusText + (AudioStatus is string audio ? "; " + audio : "");
+
     /// <summary>What the page's delay differs by from the picture's: the user's trim less the Web Audio output latency, seconds.</summary>
     private double browserTrim;
 
@@ -214,7 +217,7 @@ public sealed class AppController : IDisposable
         bool canDelay = video != null && !shuttingDown && BrowserCanDelay(video);
         if (s != null) s.PageCanDelay = canDelay;
 
-        bool on = s is { Windowed: false } && VirtualMonitor != null && !shuttingDown;
+        bool on = OnGlasses;
         double wanted = on ? s!.DelaySeconds : 0;
         Rectangle region = on ? s!.DelayRegion : Rectangle.Empty;
         long now = Environment.TickCount64;
@@ -313,18 +316,8 @@ public sealed class AppController : IDisposable
         }
 
         PageVideo? page = found.Connection.Followed;
-        Rectangle local = found.Theater.ToScreen(picture);
-        var overlays = new List<Rectangle>();
-        var captions = new List<Rectangle>();
-        foreach (PageBox box in found.Connection.Overlays)
-            (box.IsCaption ? captions : overlays).Add(found.Theater.ToScreen(box.Box));
-        s.BrowserVideo = new VideoHint(local, page?.Paused != true)
-        {
-            Page = page,
-            Overlays = overlays,
-            Captions = captions,
-        };
-        LogFollowed(found, page, overlays.Count, captions.Count);
+        s.BrowserVideo = new VideoHint(found.Theater.ToScreen(picture), page);
+        LogFollowed(found, page);
     }
 
     /// <summary>Whether a window fills <paramref name="monitor"/> (the browser, full screen there), not this app's.</summary>
@@ -337,20 +330,24 @@ public sealed class AppController : IDisposable
             found = "no window at its centre";
             return false;
         }
-        found = $"{Native.ProcessName(window)} at ({r.Left}, {r.Top}) to ({r.Right}, {r.Bottom}) at its centre";
-        return r.Left <= monitor.Left && r.Top <= monitor.Top && r.Right >= monitor.Right && r.Bottom >= monitor.Bottom;
+        bool covers = r.Left <= monitor.Left && r.Top <= monitor.Top && r.Right >= monitor.Right && r.Bottom >= monitor.Bottom;
+        // Only the log line when it does not cover needs the program's name (a process lookup, 4 times a second).
+        found = covers ? "" : $"{Native.ProcessName(window)} at ({r.Left}, {r.Top}) to ({r.Right}, {r.Bottom}) at its centre";
+        return covers;
     }
 
     /// <summary>Every 10 s while the theater is open: what the page tells (the evidence from a run).</summary>
-    private void LogFollowed(BrowserVideo video, PageVideo? page, int overlays, int captions)
+    private void LogFollowed(BrowserVideo video, PageVideo? page)
     {
         long now = Environment.TickCount64;
         if (page == null || now - followLogAt < 10000) return;
         followLogAt = now;
-        bool fresh = page.Fresh(Stopwatch.GetTimestamp());
+        long ticks = Stopwatch.GetTimestamp();
+        bool fresh = page.Fresh(ticks);
+        PageVideo.BoxSet? boxes = page.BoxesAt(ticks);
         Log.Write($"Browser: the theater in {video.Connection}: " + (fresh
             ? $"{(page.Paused ? "paused" : "playing")}, {page.FrameRate:0.##} fps, clock within {page.ClockErrorMs:0.0#} ms, " +
-              $"{overlays} boxes over it and {captions} captions."
+              $"{boxes?.Overlays.Count ?? 0} boxes over it and {boxes?.Captions.Count ?? 0} captions."
             : "no frame or state messages for over a second."));
     }
 
@@ -643,7 +640,7 @@ public sealed class AppController : IDisposable
     private void UpdateStatus()
     {
         if (browserLink == null) return;
-        bool glasses = session is { Windowed: false } && VirtualMonitor != null && !shuttingDown;
+        bool glasses = OnGlasses;
         TheaterPanel? panel = session?.Panel();
         System.Drawing.Size? picture = glasses && Settings.Native3D == Native3DMode.Off
                                        && session?.Depth is { State: DepthServiceState.Ready, Model: var model }
@@ -710,19 +707,9 @@ public sealed class AppController : IDisposable
     /// <summary>Tray: close the virtual monitor window, or bring it back.</summary>
     public void ToggleWindow()
     {
-        if (WindowShown)
-        {
-            windowDismissed = true;
-        }
-        else
-        {
-            windowDismissed = false;
-        }
+        windowDismissed = WindowShown;
         Evaluate("window toggled", force: true);
     }
-
-    /// <summary>Saves new settings and applies them at once.</summary>
-    public void ApplySettings(AppSettings settings) => ApplySettings(settings, save: true);
 
     /// <summary>
     /// Applies settings live without saving them (the tuning panel while sliders move); the saved
@@ -737,10 +724,11 @@ public sealed class AppController : IDisposable
         Notify();
     }
 
-    private void ApplySettings(AppSettings settings, bool save)
+    /// <summary>Saves new settings and applies them at once.</summary>
+    public void ApplySettings(AppSettings settings)
     {
         Settings = settings;
-        if (save) Settings.Save();
+        Settings.Save();
         BuildShortcuts();
         failures = 0;
         lastFailure = null;
@@ -1016,30 +1004,24 @@ public sealed class AppController : IDisposable
         Notify();
     }
 
+    /// <summary>A session shows the virtual monitor on the glasses (not in a window), and the app is not shutting down.</summary>
+    private bool OnGlasses => session is { Windowed: false } && VirtualMonitor != null && !shuttingDown;
+
     /// <summary>The Stage A guards run exactly while a session shows the virtual monitor on the glasses.</summary>
     private void UpdateGuards()
     {
-        bool active = session is { Windowed: false } && Glasses != null && VirtualMonitor != null && !shuttingDown;
-
-        if (active)
+        if (OnGlasses && Glasses is { } glasses)
         {
-            if (cursorGuard == null) cursorGuard = new CursorGuard(Glasses!.Bounds);
-            else cursorGuard.Blocked = Glasses!.Bounds;
+            if (cursorGuard == null) cursorGuard = new CursorGuard(glasses.Bounds);
+            else cursorGuard.Blocked = glasses.Bounds;
+            if (windowGuard == null) windowGuard = new StrayWindowGuard(glasses.Bounds, VirtualMonitor!.WorkingArea);
+            else windowGuard.Update(glasses.Bounds, VirtualMonitor!.WorkingArea);
         }
-        else if (cursorGuard != null)
+        else
         {
-            cursorGuard.Dispose();
+            cursorGuard?.Dispose();
             cursorGuard = null;
-        }
-
-        if (active)
-        {
-            if (windowGuard == null) windowGuard = new StrayWindowGuard(Glasses!.Bounds, VirtualMonitor!.WorkingArea);
-            else windowGuard.Update(Glasses!.Bounds, VirtualMonitor!.WorkingArea);
-        }
-        else if (windowGuard != null)
-        {
-            windowGuard.Dispose();
+            windowGuard?.Dispose();
             windowGuard = null;
         }
     }

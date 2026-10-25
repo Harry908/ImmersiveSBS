@@ -68,12 +68,12 @@ public class PageVideoTests
         long f = Stopwatch.Frequency;
         for (int i = 0; i < 10; i++) page.AddFrame(new PageVideo.FrameEvent(100 + i, 5 + i / 25.0, 1000 * f + i * f / 25));
 
-        Assert.True(page.TryFrameAt(1000 * f + 3 * f / 25 + f / 100, f / 120, out PageVideo.FrameEvent e));
+        Assert.True(page.TryFrameAt(1000 * f + 3 * f / 25 + f / 100, out PageVideo.FrameEvent e));
         Assert.Equal(103, e.Presented);
         // Just before frame 4's display time, within the slack: frame 4.
-        Assert.True(page.TryFrameAt(1000 * f + 4 * f / 25 - f / 200, f / 120, out e));
+        Assert.True(page.TryFrameAt(1000 * f + 4 * f / 25 - f / 200, out e));
         Assert.Equal(104, e.Presented);
-        Assert.False(page.TryFrameAt(999 * f, f / 120, out _));
+        Assert.False(page.TryFrameAt(999 * f, out _));
         Assert.Equal(25, page.FrameRate, 3);
     }
 
@@ -87,17 +87,17 @@ public class PageVideoTests
         for (int i = 0; i < 10; i++) page.AddFrame(new PageVideo.FrameEvent(100 + i, 5 + i / 25.0, 1000 * f + i * period));
         long newest = 1000 * f + 9 * period;
 
-        Assert.True(page.TryFrameAt(newest + period + period / 2, f / 120, out PageVideo.FrameEvent e));
+        Assert.True(page.TryFrameAt(newest + period + period / 2, out PageVideo.FrameEvent e));
         Assert.Equal(110, e.Presented);
         Assert.Equal(5 + 10 / 25.0, e.MediaTime, 6);
-        Assert.True(page.TryFrameAt(newest + period / 2, f / 120, out e));
+        Assert.True(page.TryFrameAt(newest + period / 2, out e));
         Assert.Equal(109, e.Presented);
         // Far past the reports, the page has stalled: no more than a few frames on.
-        Assert.True(page.TryFrameAt(newest + 20 * period, f / 120, out e));
+        Assert.True(page.TryFrameAt(newest + 20 * period, out e));
         Assert.Equal(109 + PageVideo.MaxFramesAhead, e.Presented);
         // Paused, nothing is counted on.
         page.SetState(paused: true, seeking: false, seeks: 0);
-        Assert.True(page.TryFrameAt(newest + 2 * period, f / 120, out e));
+        Assert.True(page.TryFrameAt(newest + 2 * period, out e));
         Assert.Equal(109, e.Presented);
     }
 

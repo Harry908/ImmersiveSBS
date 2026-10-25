@@ -401,8 +401,8 @@ sequenceDiagram
   const HOT = new Set(['AppController.cs', 'AiStereo.cs', 'content.js', 'BrowserLink.cs', 'DepthService.cs', 'StereoSynth.cs', 'Session.cs']);
   const FOLDERS = [
     { name: 'src/ImmersiveSBS', about: 'The app shell: the controller, the session, settings and windows.', files: [
-      ['AppController.cs', 1130, 'The brain, on the UI thread: display layout → session, the depth model, the browser link (delay, status, panel buttons), tray, shortcuts.'],
-      ['Session.cs', 545, 'One render thread: capture → AiStereo → TheaterUi → Renderer → present; the 10 s Stats line.'],
+      ['AppController.cs', 1102, 'The brain, on the UI thread: display layout → session, the depth model, the browser link (delay, status, panel buttons), tray, shortcuts.'],
+      ['Session.cs', 548, 'One render thread: capture → AiStereo → TheaterUi → Renderer → present; the 10 s Stats line.'],
       ['AppSettings.cs', 309, 'settings.json: displays, model and resolution, timing and buffer, tuning, shortcuts.'],
       ['SettingsWindow.xaml(.cs)', 340, 'Displays, 3D (whole screen, model, resolution; timing is the theater panel\'s), the extension, startup and shortcuts.'],
       ['TuningWindow.xaml(.cs)', 208, 'Live sliders for depth and edges: preview on the next frame, Save or Cancel.'],
@@ -410,17 +410,18 @@ sequenceDiagram
       ['Log.cs', 61, 'The log file at %LOCALAPPDATA%\\ImmersiveSBS\\ImmersiveSBS.log.'],
     ]},
     { name: 'Depth', about: 'AI 3D: frames to the model, depth back, and the two eye images.', files: [
-      ['StereoSynth.cs', 894, 'The GPU half: model input from the screen, guided upsample, slope limit, forward splat or lookup warp into two eyes.'],
-      ['AiStereo.cs', 805, 'Per-frame driver: the region, timing, where depth comes from (player frames or captures), the eye images, the measures.'],
+      ['StereoSynth.cs', 875, 'The GPU half: model input from the screen, guided upsample, slope limit, forward splat or lookup warp into two eyes.'],
+      ['AiStereo.cs', 813, 'Per-frame driver: the region, timing, where depth comes from (player frames or captures), the eye images, the measures.'],
       ['DepthService.cs', 572, 'Model thread and post thread, look-ahead hold, the queue of results.'],
       ['EdgeFilters.cs', 497, 'Anti-aliasing and soft depth edges, so the warp opens fewer holes.'],
       ['DepthPostProcessor.cs', 383, 'Raw model output → steady nearness: normalisation, temporal smoothing, edges, page boxes, captions.'],
       ['CaptionLock.cs', 301, 'Holds subtitles flat in front of the scene: detected ones, or the page\'s own boxes.'],
-      ['PageVideo.cs', 290, 'The theater video as its player reports it: frames drawn, state, boxes; owns PagePictures.'],
+      ['PageVideo.cs', 310, 'The theater video as its player reports it: frames drawn, state, boxes; owns PagePictures.'],
       ['PagePictures.cs', 267, 'The player\'s frames: JPEG → model input, depth filed by line and time, the shown frame\'s depth.'],
       ['DepthEstimator.cs', 214, 'One ONNX Runtime session on TensorRT for RTX, with the compiled-engine cache.'],
       ['MatchedDelay.cs', 181, 'How late matched timing shows the picture, from the measured depth age.'],
       ['VideoDepthEstimator.cs', 154, 'Video Depth Anything Small, streaming: two graphs and a ring of past states on the GPU; StateWindow, the authors\' window over them.'],
+      ['ImageNet.cs', 11, 'The ImageNet normalisation of the models' input, for the CPU paths (the GPU shader writes the same numbers).'],
       ['DepthModel.cs', 124, 'The model ladder and file names, {stem}_{H}x{W}.onnx, looked for beside the app, then in the user's folder.'],
       ['StereoTuning.cs', 92, 'Fine controls: warp mode, soft edges, smoothing, foreground curve.'],
       ['RowBands.cs', 88, 'Runs a post-processing step over bands of rows on up to 8 cores.'],
@@ -432,12 +433,13 @@ sequenceDiagram
       ['NearnessBlend.cs', 28, 'SIMD blend of two depth maps, for a frame the model skipped.'],
     ]},
     { name: 'Browser', about: 'The app\'s end of the extension.', files: [
-      ['BrowserLink.cs', 592, 'WebSocket server on 127.0.0.1:47391: extension origin only, protocol 3, parses every page message, sends status and delay.'],
+      ['BrowserLink.cs', 580, 'WebSocket server on 127.0.0.1:47391: extension origin only, protocol 3, parses every page message, sends status and delay.'],
       ['BrowserMedia.cs', 71, 'The page\'s media list and the theater report (CSS px → screen px).'],
     ]},
     { name: 'Capture', about: 'Getting the virtual monitor\'s picture onto the GPU.', files: [
-      ['GraphicsCapture.cs', 231, 'Windows.Graphics.Capture, the fallback.'],
-      ['DuplicationCapture.cs', 191, 'DXGI Desktop Duplication of the virtual monitor, the default.'],
+      ['GraphicsCapture.cs', 212, 'Windows.Graphics.Capture, the fallback.'],
+      ['DuplicationCapture.cs', 174, 'DXGI Desktop Duplication of the virtual monitor, the default.'],
+      ['CaptureTexture.cs', 32, 'The texture both captures copy each frame into.'],
       ['PointerState.cs', 105, 'The cursor as two images the renderer draws.'],
       ['ICaptureSource.cs', 39, 'The capture interface and what each acquire reports.'],
     ]},
@@ -462,7 +464,7 @@ sequenceDiagram
       ['Shortcut.cs', 45, 'A key with modifiers, parsed and printed.'],
     ]},
     { name: 'Theater', about: 'What the app itself draws in the glasses.', files: [
-      ['ButtonImages.cs', 152, 'The badge\'s images.'],
+      ['BadgeImages.cs', 152, 'The badge\'s images.'],
       ['TheaterUi.cs', 101, 'The model badge (loading, ready, failed); the 3D panel\'s values.'],
       ['TheaterGeometry.cs', 27, 'Rectangles between the virtual monitor and the eye.'],
     ]},

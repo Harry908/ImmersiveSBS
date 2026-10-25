@@ -218,7 +218,7 @@ public sealed class BrowserLinkTests : IDisposable
               {"x":"bad"},{"x":1,"y":1,"width":-5,"height":3}],
              "at":{{now - 5}}}
             """.Replace("{{now - 5}}", (now - 5).ToString(System.Globalization.CultureInfo.InvariantCulture)));
-        while (c.Overlays.Count == 0)
+        while (page.BoxesAt(long.MaxValue) == null)
         {
             timeout.Token.ThrowIfCancellationRequested();
             await Task.Delay(10);
@@ -230,9 +230,6 @@ public sealed class BrowserLinkTests : IDisposable
         Assert.Equal(0.4, page.ClockErrorMs);
         Assert.True(page.Live);
         Assert.True(page.SendsPictures);
-        Assert.Equal(3, c.Overlays.Count);
-        Assert.True(c.Overlays[1].IsCaption);
-        Assert.Equal("panel", c.Overlays[2].Kind);
         // For the depth thread: in screen px, from when the page says they appeared.
         long at = (long)((now - 5) * System.Diagnostics.Stopwatch.Frequency / 1000);
         Assert.Null(page.BoxesAt(at - System.Diagnostics.Stopwatch.Frequency / 100));
@@ -262,7 +259,6 @@ public sealed class BrowserLinkTests : IDisposable
             await Task.Delay(10);
         }
         Assert.Null(c.Followed);
-        Assert.Empty(c.Overlays);
     }
 
     [Fact]

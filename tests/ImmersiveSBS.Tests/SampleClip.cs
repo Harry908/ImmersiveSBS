@@ -46,9 +46,9 @@ public static class SampleClip
         var input = new float[3 * plane];
         for (int i = 0; i < plane; i++)
         {
-            input[i] = (bgra[4 * i + 2] / 255f - 0.485f) / 0.229f;
-            input[plane + i] = (bgra[4 * i + 1] / 255f - 0.456f) / 0.224f;
-            input[2 * plane + i] = (bgra[4 * i] / 255f - 0.406f) / 0.225f;
+            input[i] = (bgra[4 * i + 2] / 255f - ImageNet.MeanR) / ImageNet.StdR;
+            input[plane + i] = (bgra[4 * i + 1] / 255f - ImageNet.MeanG) / ImageNet.StdG;
+            input[2 * plane + i] = (bgra[4 * i] / 255f - ImageNet.MeanB) / ImageNet.StdB;
         }
         return input;
     }

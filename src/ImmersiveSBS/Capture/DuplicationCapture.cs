@@ -113,25 +113,8 @@ public sealed class DuplicationCapture : ICaptureSource
 
     private void EnsureTexture(Texture2DDescription source)
     {
-        if (texture != null)
-        {
-            var d = texture.Description;
-            if (d.Width == source.Width && d.Height == source.Height && d.Format == source.Format) return;
-            texture.Dispose();
-        }
-
-        texture = device.CreateTexture2D(new Texture2DDescription
-        {
-            Width = source.Width,
-            Height = source.Height,
-            MipLevels = 1,
-            ArraySize = 1,
-            Format = source.Format,
-            SampleDescription = new SampleDescription(1, 0),
-            Usage = ResourceUsage.Default,
-            BindFlags = BindFlags.ShaderResource,
-        });
-        Log.Write($"Duplication: desktop texture {source.Width}×{source.Height} {source.Format}.");
+        if (CaptureTexture.Ensure(device, ref texture, source.Width, source.Height, source.Format))
+            Log.Write($"Duplication: desktop texture {source.Width}×{source.Height} {source.Format}.");
     }
 
     private bool TryOpen()

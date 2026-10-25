@@ -31,7 +31,7 @@ public enum BadgeKind
 /// The model badges' pictures: a dark rounded pill with a spinner (<see cref="SpinnerFrames"/>
 /// pre-drawn turns) or a Segoe Fluent icon, and a label. Drawn once with System.Drawing.
 /// </summary>
-public static class ButtonImages
+public static class BadgeImages
 {
     /// <summary>Spinner pictures per turn; one turn a second.</summary>
     public const int SpinnerFrames = 12;

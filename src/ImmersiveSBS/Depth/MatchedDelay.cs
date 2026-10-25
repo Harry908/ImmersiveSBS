@@ -76,9 +76,6 @@ public sealed class MatchedDelay
         }
     }
 
-    /// <summary>The smoothed time between the frames depth is computed for, ms; NaN before two.</summary>
-    public double PeriodMs => period;
-
     /// <summary>The delay in use, ms; NaN until the first depth frame.</summary>
     public double DelayMs { get; private set; } = double.NaN;
 

@@ -177,13 +177,12 @@ public sealed class Renderer : IDisposable
         int eyes = SideBySide ? 2 : 1;
         int eyeW = Width / eyes;
 
-        // Fit the source into each eye; integer offsets keep a 1:1 picture sharp.
-        double scale = Math.Min((double)eyeW / srcW, (double)Height / srcH);
-        int vw = (int)Math.Round(srcW * scale), vh = (int)Math.Round(srcH * scale);
-        bool oneToOne = vw == srcW && vh == srcH;
+        Rectangle fitted = TheaterGeometry.Fit(new System.Drawing.Size(srcW, srcH), new System.Drawing.Size(eyeW, Height)).Fitted;
+        bool oneToOne = fitted.Width == srcW && fitted.Height == srcH;
         ID3D11SamplerState sampler = oneToOne ? pointSampler : linearSampler;
 
-        bool haveCursor = pointer is { Visible: true, Width: > 0 } && UpdateCursor(pointer);
+        bool haveCursor = pointer is { Visible: true, Width: > 0 };
+        if (haveCursor) UpdateCursor(pointer!);
 
         context.OMSetRenderTargets(target!);
         context.IASetPrimitiveTopology(PrimitiveTopology.TriangleStrip);
@@ -197,7 +196,7 @@ public sealed class Renderer : IDisposable
             var eyeHalf = new Vector4(eye * 0.5f, 0, eye * 0.5f + 0.5f, 1);
 
             {
-                context.RSSetViewport(eyeX + (eyeW - vw) / 2, (Height - vh) / 2, vw, vh);
+                context.RSSetViewport(eyeX + fitted.X, fitted.Y, fitted.Width, fitted.Height);
                 context.PSSetSampler(0, sampler);
 
                 context.OMSetBlendState(null);
@@ -319,17 +318,14 @@ public sealed class Renderer : IDisposable
         swapChain.GetFrameStatistics(out stats).Success;
 
     /// <summary>Uploads the cursor's images when its shape changed.</summary>
-    private bool UpdateCursor(PointerState pointer)
+    private void UpdateCursor(PointerState pointer)
     {
-        if (pointer.ShapeVersion != cursorVersion)
-        {
-            cursorColor?.Dispose();
-            cursorXor?.Dispose();
-            cursorColor = CreateImage(pointer.Color, pointer.Width, pointer.Height);
-            cursorXor = CreateImage(pointer.Xor, pointer.Width, pointer.Height);
-            cursorVersion = pointer.ShapeVersion;
-        }
-        return true;
+        if (pointer.ShapeVersion == cursorVersion) return;
+        cursorColor?.Dispose();
+        cursorXor?.Dispose();
+        cursorColor = CreateImage(pointer.Color, pointer.Width, pointer.Height);
+        cursorXor = CreateImage(pointer.Xor, pointer.Width, pointer.Height);
+        cursorVersion = pointer.ShapeVersion;
     }
 
     /// <summary>Writes a quad: where to draw (NDC of the current viewport) and which part of the texture.</summary>

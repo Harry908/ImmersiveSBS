@@ -14,25 +14,24 @@ public sealed record PageBoxes(IReadOnlyList<Rectangle> Overlays, IReadOnlyList<
     /// <paramref name="overlays"/> and <paramref name="captions"/> (source px) as model px of a
     /// model input made from <paramref name="region"/>; boxes outside it are left out.
     /// </summary>
-    public static PageBoxes ToModel(IEnumerable<Rectangle> overlays, IEnumerable<Rectangle> captions, Rectangle region, Size model)
+    public static PageBoxes ToModel(IEnumerable<Rectangle> overlays, IEnumerable<Rectangle> captions, Rectangle region, Size model) =>
+        new(ToModel(overlays, region, model), ToModel(captions, region, model));
+
+    /// <summary><paramref name="boxes"/> (source px) as model px, every model pixel each touches; boxes outside <paramref name="region"/> are left out.</summary>
+    public static List<Rectangle> ToModel(IEnumerable<Rectangle> boxes, Rectangle region, Size model)
     {
-        List<Rectangle> Map(IEnumerable<Rectangle> boxes)
+        var result = new List<Rectangle>();
+        if (region.Width <= 0 || region.Height <= 0) return result;
+        double sx = (double)model.Width / region.Width, sy = (double)model.Height / region.Height;
+        foreach (Rectangle b in boxes)
         {
-            var result = new List<Rectangle>();
-            if (region.Width <= 0 || region.Height <= 0) return result;
-            double sx = (double)model.Width / region.Width, sy = (double)model.Height / region.Height;
-            foreach (Rectangle b in boxes)
-            {
-                Rectangle r = Rectangle.Intersect(b, region);
-                if (r.Width <= 0 || r.Height <= 0) continue;
-                // Every model pixel the box touches.
-                int x0 = (int)Math.Floor((r.Left - region.Left) * sx), y0 = (int)Math.Floor((r.Top - region.Top) * sy);
-                int x1 = (int)Math.Ceiling((r.Right - region.Left) * sx), y1 = (int)Math.Ceiling((r.Bottom - region.Top) * sy);
-                result.Add(Rectangle.Intersect(Rectangle.FromLTRB(x0, y0, x1, y1), new Rectangle(Point.Empty, model)));
-            }
-            return result;
+            Rectangle r = Rectangle.Intersect(b, region);
+            if (r.Width <= 0 || r.Height <= 0) continue;
+            int x0 = (int)Math.Floor((r.Left - region.Left) * sx), y0 = (int)Math.Floor((r.Top - region.Top) * sy);
+            int x1 = (int)Math.Ceiling((r.Right - region.Left) * sx), y1 = (int)Math.Ceiling((r.Bottom - region.Top) * sy);
+            result.Add(Rectangle.Intersect(Rectangle.FromLTRB(x0, y0, x1, y1), new Rectangle(Point.Empty, model)));
         }
-        return new PageBoxes(Map(overlays), Map(captions));
+        return result;
     }
 
     /// <summary>
@@ -244,17 +243,21 @@ public sealed class PageVideo : IDisposable
     /// <summary>Frames a capture may be ahead of the newest report: further, the page has stalled.</summary>
     public const int MaxFramesAhead = 3;
 
+    /// <summary>How far a frame's display time may be past a capture's and still be on it: half a 60 Hz refresh, ticks.</summary>
+    public static readonly long SameRefresh = Stopwatch.Frequency / 120;
+
     /// <summary>
     /// The frame a capture made at <paramref name="captureTicks"/> shows: the newest whose display
-    /// time is no later than that plus <paramref name="slackTicks"/> (the capture and the page's
+    /// time is no later than that plus <see cref="SameRefresh"/> (the capture and the page's
     /// estimate both fall on the same refresh, give or take one). A capture often arrives before
     /// the report of the frame it shows (the report goes through the browser's worker and the
     /// socket): past the newest report while playing, the frames that followed are counted on at
     /// the video's cadence, up to <see cref="MaxFramesAhead"/>; not with <paramref name="countOn"/>
     /// false (the player holds a frame while its delayed sound fills, the video playing on).
     /// </summary>
-    public bool TryFrameAt(long captureTicks, long slackTicks, out FrameEvent frame, bool countOn = true)
+    public bool TryFrameAt(long captureTicks, out FrameEvent frame, bool countOn = true)
     {
+        long slackTicks = SameRefresh;
         lock (gate)
         {
             for (int k = 1; k <= count; k++)

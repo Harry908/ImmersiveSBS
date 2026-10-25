@@ -14,6 +14,17 @@ public static class TheaterGeometry
     /// <summary>Space from the video's edge to the badge, eye px.</summary>
     public const int Margin = 16;
 
+    /// <summary>
+    /// <paramref name="source"/> fitted into one eye as the renderer draws it: eye px per source px,
+    /// and the picture's place in the eye, centred on whole px (which keeps a 1:1 picture sharp).
+    /// </summary>
+    public static (double Scale, Rectangle Fitted) Fit(Size source, Size eye)
+    {
+        double scale = Math.Min((double)eye.Width / source.Width, (double)eye.Height / source.Height);
+        int w = (int)Math.Round(source.Width * scale), h = (int)Math.Round(source.Height * scale);
+        return (scale, new Rectangle((eye.Width - w) / 2, (eye.Height - h) / 2, w, h));
+    }
+
     /// <summary>Maps <paramref name="p"/> from <paramref name="from"/>'s space linearly into <paramref name="to"/>'s.</summary>
     public static Point Map(Point p, Rectangle from, Rectangle to) => new(
         to.Left + (int)Math.Round((double)(p.X - from.Left) * to.Width / Math.Max(1, from.Width)),

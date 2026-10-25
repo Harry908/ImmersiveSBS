@@ -83,9 +83,6 @@ public sealed class DepthPostProcessor
     /// <summary>Subtitles kept flat just in front of the scene (<see cref="CaptionLock"/>).</summary>
     public bool Captions { get; set; }
 
-    /// <summary>The caption box found in the last frame (model px), if any.</summary>
-    public System.Drawing.Rectangle? CaptionBox => Captions ? captions.Found : null;
-
     /// <summary>The nearness static overlays are pulled to, and below which captions never go: the convergence c.</summary>
     public double StaticNearness { get; set; } = 0.35;
 
@@ -299,8 +296,7 @@ public sealed class DepthPostProcessor
         foreach (System.Drawing.Rectangle b in boxes)
         {
             System.Drawing.Rectangle r = System.Drawing.Rectangle.Intersect(b, frame);
-            for (int y = r.Top; y < r.Bottom; y++)
-                for (int x = r.Left; x < r.Right; x++) inPageBox[y * Width + x] = true;
+            for (int y = r.Top; y < r.Bottom; y++) Array.Fill(inPageBox, true, y * Width + r.Left, r.Width);
         }
         float rise = (float)(1 - Math.Exp(-dt / 0.1)), fall = (float)(1 - Math.Exp(-dt / 0.4));
         float plane = (float)StaticNearness;

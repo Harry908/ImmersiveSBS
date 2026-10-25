@@ -134,11 +134,13 @@ public sealed class StrayWindowGuard : IDisposable
 
     private void Check(IntPtr hwnd)
     {
-        if (!IsCandidate(hwnd) || !Native.GetWindowRect(hwnd, out Native.RECT r)) return;
-
+        // Where it is first: almost no window is on the glasses, and the candidate test asks the
+        // window's class, DWM and its process.
+        if (!Native.GetWindowRect(hwnd, out Native.RECT r)) return;
         var rect = Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom);
         if (rect.Width <= 0 || rect.Height <= 0) return;
         if (!glasses.Contains(rect.Left + rect.Width / 2, rect.Top + rect.Height / 2)) return;
+        if (!IsCandidate(hwnd)) return;
 
         long now = Stopwatch.GetTimestamp();
         if (moves.TryGetValue(hwnd, out var m) && now - m.Since < 60 * Stopwatch.Frequency)
