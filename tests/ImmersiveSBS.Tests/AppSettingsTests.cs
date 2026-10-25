@@ -77,7 +77,7 @@ public class AppSettingsTests
     [InlineData("Large", DepthTier.Base)]
     [InlineData("V2Base", DepthTier.Base)]
     [InlineData("DA3Small", DepthTier.DA3Small)]
-    [InlineData("Small", DepthTier.Small)]
+    [InlineData("Small", DepthTier.Base)]
     public void ARemovedModelInASavedFileLoadsAsTheDefault(string saved, DepthTier expected)
     {
         var options = new System.Text.Json.JsonSerializerOptions { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
@@ -99,20 +99,19 @@ public class AppSettingsTests
     }
 
     [Fact]
-    public void WithoutTheExtensionTheBufferChoicesAreSkipped()
+    public void EveryTimingChoiceIsReachableStepByStep()
     {
-        // Live, Auto, Matched, then the buffers: stepping up from Matched stays there without the
-        // extension, and goes on to the first buffer with it.
+        // Live, Auto, Matched, then the buffers: the theater panel's + goes through all of them
+        // (no browser check: the panel is the extension's), and stops at either end.
         var s = new AppSettings();
-        AppController.SetTiming(s, 2);
-        Assert.Equal(2, AppController.NextTiming(s, +1, bufferAvailable: false));
-        Assert.Equal(3, AppController.NextTiming(s, +1, bufferAvailable: true));
-        Assert.Equal(1, AppController.NextTiming(s, -1, bufferAvailable: false));
-        Assert.False(AppController.TimingAvailable(4, bufferAvailable: false));
-        Assert.True(AppController.TimingAvailable(1, bufferAvailable: false));
-        // A buffer saved while the extension was there is kept; stepping down leaves it.
-        AppController.SetTiming(s, 5);
-        Assert.Equal(2, AppController.NextTiming(s, -1, bufferAvailable: false));
+        AppController.SetTiming(s, 0);
+        Assert.Equal(0, AppController.NextTiming(s, -1));
+        for (int i = 1; i < AppController.TimingChoices.Length; i++)
+        {
+            AppController.SetTiming(s, AppController.NextTiming(s, +1));
+            Assert.Equal(i, AppController.TimingIndex(s));
+        }
+        Assert.Equal(AppController.TimingChoices.Length - 1, AppController.NextTiming(s, +1));
     }
 
     [Fact]

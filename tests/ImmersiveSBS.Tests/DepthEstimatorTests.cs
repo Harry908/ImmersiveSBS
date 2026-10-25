@@ -15,9 +15,7 @@ namespace ImmersiveSBS.Tests;
 public class DepthEstimatorTests(ITestOutputHelper output)
 {
     [Theory]
-    [InlineData(DepthTier.Small, DepthPreset.Balanced)]
     [InlineData(DepthTier.Base, DepthPreset.Balanced)]
-    [InlineData(DepthTier.Small, DepthPreset.Quality)]
     [InlineData(DepthTier.Base, DepthPreset.Quality)]
     [InlineData(DepthTier.DA3Small, DepthPreset.Balanced)]
     [InlineData(DepthTier.DA3Small, DepthPreset.Quality)]

@@ -62,9 +62,6 @@ public partial class SettingsWindow : Window
         WholeScreenBox.IsChecked = s.Ai3D == AiTarget.WholeScreen;
         DepthTierBox.SelectedIndex = (int)s.DepthTier;
         DepthPresetBox.SelectedIndex = (int)s.DepthPreset;
-        for (int i = 0; i < AppController.TimingChoices.Length; i++) TimingBox.Items.Add(new ComboBoxItem());
-        UpdateTimingChoices();
-        TimingBox.SelectedIndex = AppController.TimingIndex(s);
         shown = Shown(s);
 
         controller.StatusChanged += UpdateStatus;
@@ -103,15 +100,14 @@ public partial class SettingsWindow : Window
         MainDisplayWarning.Visibility = controller.VirtualMonitor is { IsPrimary: true } ? Visibility.Visible : Visibility.Collapsed;
         BrowserText.Text = controller.BrowserStatus;
         BrowserHelp.Visibility = controller.BrowserConnected ? Visibility.Collapsed : Visibility.Visible;
-        UpdateTimingChoices();
         FollowSettings();
     }
 
     /// <summary>The 3D values this window last took from the settings.</summary>
-    private (bool WholeScreen, int Model, int Size, int Timing) shown;
+    private (bool WholeScreen, int Model, int Size) shown;
 
-    private static (bool, int, int, int) Shown(AppSettings s) =>
-        (s.Ai3D == AiTarget.WholeScreen, (int)s.DepthTier, (int)s.DepthPreset, AppController.TimingIndex(s));
+    private static (bool, int, int) Shown(AppSettings s) =>
+        (s.Ai3D == AiTarget.WholeScreen, (int)s.DepthTier, (int)s.DepthPreset);
 
     /// <summary>
     /// Values changed elsewhere while the window is open (the theater's 3D panel, the tray): a box
@@ -125,20 +121,9 @@ public partial class SettingsWindow : Window
         if (WholeScreenBox.IsChecked == shown.WholeScreen) WholeScreenBox.IsChecked = now.Item1;
         if (DepthTierBox.SelectedIndex == shown.Model) DepthTierBox.SelectedIndex = now.Item2;
         if (DepthPresetBox.SelectedIndex == shown.Size) DepthPresetBox.SelectedIndex = now.Item3;
-        if (TimingBox.SelectedIndex == shown.Timing) TimingBox.SelectedIndex = now.Item4;
         shown = now;
     }
 
-    /// <summary>The buffer choices are unavailable (greyed, saying why) while no browser extension is connected.</summary>
-    private void UpdateTimingChoices()
-    {
-        for (int i = 0; i < TimingBox.Items.Count; i++)
-        {
-            var item = (ComboBoxItem)TimingBox.Items[i];
-            item.Content = controller.TimingLabel(i);
-            item.IsEnabled = controller.TimingAvailable(i);
-        }
-    }
 
     private void OnOpenExtensionFolder(object sender, RoutedEventArgs e)
     {
@@ -183,7 +168,6 @@ public partial class SettingsWindow : Window
         settings.Ai3D = WholeScreenBox.IsChecked == true ? AiTarget.WholeScreen : AiTarget.Off;
         settings.DepthTier = (DepthTier)Math.Max(0, DepthTierBox.SelectedIndex);
         settings.DepthPreset = (DepthPreset)Math.Max(0, DepthPresetBox.SelectedIndex);
-        if (TimingBox.SelectedIndex >= 0) AppController.SetTiming(settings, TimingBox.SelectedIndex);
 
         try
         {

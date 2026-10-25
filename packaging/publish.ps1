@@ -12,8 +12,8 @@
     The version is the project's <Version>.
 
 .PARAMETER Models
-    Model families to ship, all their sizes: dad-base (the default model), da2-small, da3-small,
-    da3-base, vda-small. None by default: the user then adds models themselves.
+    Model families to ship, all their sizes: dad-base (the default model), da3-small, da3-base,
+    vda-small. None by default: the user then adds models themselves.
 
 .PARAMETER ModelSource
     Where the model files are taken from. Default: %LOCALAPPDATA%\ImmersiveSBS\models.
@@ -35,7 +35,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $root 'src\ImmersiveSBS\ImmersiveSBS.csproj'
 
 # Only models whose licence allows shipping (THIRD-PARTY-NOTICES.md).
-$shippable = @('dad-base', 'da2-small', 'da3-small', 'da3-base', 'vda-small')
+$shippable = @('dad-base', 'da3-small', 'da3-base', 'vda-small')
 foreach ($m in $Models) {
     if ($shippable -notcontains $m) { throw "Model '$m' is not one to ship. Ship any of: $($shippable -join ', ')." }
 }

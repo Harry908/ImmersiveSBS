@@ -1,17 +1,19 @@
 # Packaging
 
 Status (2026-10-20): **a one-click installer builds; not released.** It installs the app with
-the default model and the Virtual Display Driver (user request: "the virtual driver bundled
+its depth models and the Virtual Display Driver (user request: "the virtual driver bundled
 inside an installer ... a one click installer, not having to go to places"). The portable
 folder and zip still build too. This is plan.md's P6.
 
 ## The installer
 
 ```
-.\packaging\build-installer.ps1             # artifacts\ImmersiveSBS-Setup-<version>.exe (575 MB)
+.\packaging\build-installer.ps1             # artifacts\ImmersiveSBS-Setup-<version>.exe (1,030 MB)
 ```
 
-It publishes the app with Distill-Any-Depth Base (`-Models` to change), downloads the Virtual
+It publishes the app with every model it offers (Distill-Any-Depth Base, Depth Anything 3 Small
+and Base, Video Depth Anything Small, at 518×294 and 756×420: 1,184 MB; `-Models` to change),
+downloads the Virtual
 Display Driver 25.7.23 package once into `artifacts\cache` and checks its SHA-256, stages the
 64-bit driver files, `devcon.exe` and the certificate of the driver's publisher (taken from its
 signed catalog; every file's signature must be valid), and compiles `packaging\ImmersiveSBS.iss`
@@ -62,13 +64,12 @@ first line and in the Settings window's title. The script builds in its own fold
 | The app | Self-contained .NET 10 for win-x64 (no .NET needed on the user's PC), ReadyToRun, no debug symbols | 247 MB |
 | `extension\` | The browser extension, loaded unpacked from here | under 0.1 MB |
 | `LICENSE`, `README.md`, `THIRD-PARTY-NOTICES.md`, `licenses\` | GPL-3.0, how to use it, every component's licence; ONNX Runtime's own licence and notices | under 1 MB |
-| `models\` (optional) | `-Models` picks families; Distill-Any-Depth Base at all sizes | 564 MB |
-| The zip, with `dad-base` | | 613 MB |
+| `models\` (optional) | `-Models` picks families; Distill-Any-Depth Base at its two sizes | 376 MB |
 
 Only models whose licence allows it can be packaged; the script refuses others. The families:
-`dad-base` (the default model, MIT), `da2-small`, `da3-small`, `da3-base` and `vda-small`
-(Apache-2.0). All of them at the sizes the app uses (518×294 and 756×420; the 392×224 files
-of the removed Fast resolution are left out) come to about 1.35 GB.
+`dad-base` (the default model, MIT), `da3-small`, `da3-base` and `vda-small` (Apache-2.0). All
+of them at the sizes the app uses (518×294 and 756×420; the 392×224 files of the removed Fast
+resolution are left out) come to 1,184 MB, the installer's models.
 
 ## What the user's PC needs
 
@@ -92,10 +93,10 @@ the log names the file it loaded. Start with Windows is a value under the user's
 ## Decisions to make
 
 1. ~~**How it installs.**~~ Settled (2026-10-20): the one-click Inno Setup installer above.
-2. **Which models ship, and how the rest arrive.** The installer ships Distill-Any-Depth Base.
-   The others: downloaded by the app on first use (needs a host, such as GitHub release
-   assets, and a download step in the app), or copied by the user into
-   `%LOCALAPPDATA%\ImmersiveSBS\models`.
+2. ~~**Which models ship.**~~ Settled (2026-10-25, user: "I want DA3 and DAD and VDA, no da
+   v2"): the installer ships all four families the app offers, which makes it about 1 GB.
+   Downloading them on first use instead (a host such as GitHub release assets, and a download
+   step in the app) would shrink it, if that matters later.
 3. ~~**The virtual display driver.**~~ Settled: bundled and installed by the installer. The
    app itself never installs or removes it.
 4. **The browser extension.** The last step a user does by hand. Unpacked (Edge warns about

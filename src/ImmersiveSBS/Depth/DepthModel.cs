@@ -7,14 +7,12 @@ namespace ImmersiveSBS.Depth;
 /// (Apache-2.0 or MIT). Removed 2026-10-11 after the glasses runs: Distill-Any-Depth Large (one
 /// 518×518 size that squeezes 16:9, 41 ms a frame), Depth Anything V2 Base (non-commercial, no
 /// better than Distill-Any-Depth Base at the same cost) and V2 Large (non-commercial; at
-/// 756×420 it kept the GPU 96–99 % busy and capture fell to 8–12 fps). Settings naming them
-/// load as <see cref="Base"/>.
+/// 756×420 it kept the GPU 96–99 % busy and capture fell to 8–12 fps); removed 2026-10-25 (user:
+/// "DA3 and DAD and VDA, no da v2"), Depth Anything V2 Small (smoother, lost thin structure).
+/// Settings naming them load as <see cref="Base"/>.
 /// </summary>
 public enum DepthTier
 {
-    /// <summary>Depth Anything V2 Small (Apache-2.0): fastest, smoother, loses thin structure.</summary>
-    Small,
-
     /// <summary>Distill-Any-Depth Base (MIT): the default; smooth edges at little cost.</summary>
     Base,
 
@@ -95,7 +93,6 @@ public sealed record DepthModel(DepthTier Tier, DepthPreset Preset)
 
     private string Family => Tier switch
     {
-        DepthTier.Small => "da2-small",
         DepthTier.DA3Small => "da3-small",
         DepthTier.DA3Base => "da3-base",
         DepthTier.VdaSmall => "vda-small",
@@ -113,7 +110,6 @@ public sealed record DepthModel(DepthTier Tier, DepthPreset Preset)
 
     public static string Name(DepthTier tier) => tier switch
     {
-        DepthTier.Small => "Depth Anything V2 Small",
         DepthTier.DA3Small => "Depth Anything 3 Small",
         DepthTier.DA3Base => "Depth Anything 3 Base",
         DepthTier.VdaSmall => "Video Depth Anything Small",

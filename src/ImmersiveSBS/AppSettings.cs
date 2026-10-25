@@ -10,7 +10,7 @@ namespace ImmersiveSBS;
 
 /// <summary>
 /// Reads a model by name, and a model since removed (Distill-Any-Depth Large, Depth Anything V2
-/// Base or Large) as the default, Distill-Any-Depth Base, rather than failing the whole file.
+/// Small, Base or Large) as the default, Distill-Any-Depth Base, rather than failing the whole file.
 /// </summary>
 public sealed class DepthTierConverter : JsonConverter<DepthTier>
 {

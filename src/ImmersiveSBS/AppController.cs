@@ -515,33 +515,17 @@ public sealed class AppController : IDisposable
     ];
 
     /// <summary>
-    /// The buffer delays the picture by seconds, so it needs the sound delayed with it: only the
-    /// browser extension does that. Without a connected browser its choices are unavailable.
+    /// Choice <paramref name="index"/>'s label. Every choice can always be chosen: timing applies
+    /// only to the theater, which is the extension's, so whenever it matters the page is there to
+    /// delay the sound (and a video it cannot delay plays live, <c>BrowserCanDelay</c>). Until
+    /// 2026-10-25 the buffer was greyed while no browser was connected, so Settings opened before
+    /// the browser could not choose it.
     /// </summary>
-    public bool BufferAvailable => BrowserConnected;
+    public static string TimingLabel(int index) => TimingChoices[index].Label;
 
-    /// <summary>Whether choice <paramref name="index"/> can be used now (a buffer needs the extension).</summary>
-    public bool TimingAvailable(int index) => TimingAvailable(index, BufferAvailable);
-
-    public static bool TimingAvailable(int index, bool bufferAvailable) => TimingChoices[index].Buffer == 0 || bufferAvailable;
-
-    /// <summary>Choice <paramref name="index"/>'s label, saying why when it cannot be used now.</summary>
-    public string TimingLabel(int index) =>
-        TimingChoices[index].Label + (TimingAvailable(index) ? "" : " (needs the browser extension)");
-
-    /// <summary>
-    /// The next choice from the settings' one in direction <paramref name="step"/> that can be used
-    /// now, or the same one at the end (the theater panel's − and +).
-    /// </summary>
-    public int NextTiming(AppSettings s, int step) => NextTiming(s, step, BufferAvailable);
-
-    public static int NextTiming(AppSettings s, int step, bool bufferAvailable)
-    {
-        int i = TimingIndex(s);
-        for (int k = i + step; k >= 0 && k < TimingChoices.Length; k += step)
-            if (TimingAvailable(k, bufferAvailable)) return k;
-        return i;
-    }
+    /// <summary>The next choice from the settings' one in direction <paramref name="step"/>, or the same one at the end (the theater panel's − and +).</summary>
+    public static int NextTiming(AppSettings s, int step) =>
+        Math.Clamp(TimingIndex(s) + step, 0, TimingChoices.Length - 1);
 
     /// <summary>Which of <see cref="TimingChoices"/> the settings make.</summary>
     public static int TimingIndex(AppSettings s) => TimingIndex(s.Timing, s.BufferSeconds);

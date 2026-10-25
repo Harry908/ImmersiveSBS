@@ -33,7 +33,6 @@ weights, under the authors' licence.
 | Model | File family | Licence | Source |
 |---|---|---|---|
 | Distill-Any-Depth Base | `dad-base_*.onnx` | MIT | [Westlake-AGI-Lab/Distill-Any-Depth](https://github.com/Westlake-AGI-Lab/Distill-Any-Depth) |
-| Depth Anything V2 Small | `da2-small_*.onnx` | Apache-2.0 | [DepthAnything/Depth-Anything-V2](https://github.com/DepthAnything/Depth-Anything-V2) (Small only; Base and Large are CC-BY-NC-4.0 and not used) |
 | Depth Anything 3 Small and Base | `da3-small_*.onnx`, `da3-base_*.onnx` | Apache-2.0 | [ByteDance-Seed/Depth-Anything-3](https://github.com/ByteDance-Seed/Depth-Anything-3), ONNX exports from `onnx-community` |
 | Video Depth Anything Small | `vda-small_*.onnx`, `vda-small-first_*.onnx` | Apache-2.0 | [DepthAnything/Video-Depth-Anything](https://github.com/DepthAnything/Video-Depth-Anything) (Small only; Large is CC-BY-NC-4.0 and not used) |
 

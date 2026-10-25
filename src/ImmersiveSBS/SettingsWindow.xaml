@@ -78,7 +78,6 @@
                                    Text="Browser video always converts in the 3D theater: the button over a video while the glasses are in 3D mode."/>
                         <TextBlock Text="Depth model" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
                         <ComboBox x:Name="DepthTierBox">
-                            <ComboBoxItem Content="Depth Anything V2 Small (fastest)"/>
                             <ComboBoxItem Content="Distill-Any-Depth Base (recommended)"/>
                             <ComboBoxItem Content="Depth Anything 3 Small"/>
                             <ComboBoxItem Content="Depth Anything 3 Base"/>
@@ -89,10 +88,8 @@
                             <ComboBoxItem Content="Balanced (518×294, recommended)"/>
                             <ComboBoxItem Content="Quality (756×420)"/>
                         </ComboBox>
-                        <TextBlock Text="Timing" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
-                        <ComboBox x:Name="TimingBox"/>
-                        <TextBlock Style="{StaticResource CaptionText}" Margin="0 4 0 0"
-                                   Text="Matched and the buffer show the video a little late so every frame has its own depth; the extension delays the sound with it."/>
+                        <TextBlock Style="{StaticResource CaptionText}" Margin="0 8 0 0"
+                                   Text="Timing (live, matched or a buffer) is set in the 3D theater's panel."/>
                     </StackPanel>
                 </Border>
 

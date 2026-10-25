@@ -23,6 +23,13 @@ public interface IDepthRunner : IDisposable
     void Run(float[] input, float[] output);
 }
 
+/// <summary>A model that carries state from frame to frame (<see cref="VideoDepthEstimator"/>, or a stand-in in tests).</summary>
+public interface ITemporalDepthRunner : IDepthRunner
+{
+    /// <summary>Forgets the frames before: the next one starts over, as a stream's first.</summary>
+    void Reset();
+}
+
 /// <summary>A post-processed nearness map at model resolution, 1 = nearest.</summary>
 public sealed class DepthFrame(int width, int height)
 {
@@ -66,13 +73,22 @@ public sealed class DepthService : IDisposable
     private Thread? postThread;
     private volatile bool stopping;
     private volatile bool resetRequested;
-    private volatile bool modelResetRequested;
+    /// <summary>
+    /// <see cref="ResetHistory"/> calls so far. Each submitted frame carries the count at its
+    /// submission, and a temporal model starts over at the first frame with a new count: a frame
+    /// submitted before a seek but run after it is still the old place's, and with a flag read at
+    /// the next run it became the first frame, which the model keeps for good, of the new window.
+    /// </summary>
+    private int historyGeneration;
+    /// <summary>Worker: the count the temporal model's frames carry now.</summary>
+    private int modelGeneration;
     /// <summary>The luma of the last frame a temporal model saw, for its scene cuts.</summary>
     private float[] modelLuma = [];
 
     private float[]? pending;          // submitted, not yet taken by the worker
     private long pendingId;
     private double pendingTime;
+    private int pendingGeneration;
     private float[]? spare;            // a free input buffer
     private readonly Queue<DepthFrame> ready = new();          // results not yet taken, oldest first
     private readonly Stack<DepthFrame> spareFrames = new();    // results the caller gave back
@@ -221,6 +237,7 @@ public sealed class DepthService : IDisposable
             pending = buffer;
             pendingId = frameId;
             pendingTime = timeSeconds;
+            pendingGeneration = Volatile.Read(ref historyGeneration);
         }
         try
         {
@@ -283,11 +300,13 @@ public sealed class DepthService : IDisposable
             float[]? input;
             long id;
             double time;
+            int generation;
             lock (gate)
             {
                 input = pending;
                 id = pendingId;
                 time = pendingTime;
+                generation = pendingGeneration;
                 pending = null;
             }
             if (input == null) continue;
@@ -297,7 +316,7 @@ public sealed class DepthService : IDisposable
             {
                 if (!freeJobs.TryTake(out PostJob? job)) job = new PostJob(estimator.OutputLength);
                 Luma(input, job.Luma, Model.Width * Model.Height);
-                if (estimator is VideoDepthEstimator video) StartOverAtCut(video, job.Luma);
+                if (estimator is ITemporalDepthRunner temporal) StartOverAtCut(temporal, job.Luma, generation);
                 long t0 = Stopwatch.GetTimestamp();
                 estimator.Run(input, job.Output);
                 job.InferenceMs = Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
@@ -407,16 +426,17 @@ public sealed class DepthService : IDisposable
     }
 
     /// <summary>
-    /// A temporal model starts over, as at the stream's first frame, after a seek or a new region
-    /// (<see cref="ResetHistory"/>) and at a scene cut: the frames before belong to another shot.
+    /// A temporal model starts over, as at the stream's first frame, at the first frame submitted
+    /// after a seek or a new region (<see cref="ResetHistory"/>) and at a scene cut: the frames
+    /// before belong to another shot.
     /// </summary>
-    private void StartOverAtCut(VideoDepthEstimator video, float[] luma)
+    private void StartOverAtCut(ITemporalDepthRunner model, float[] luma, int generation)
     {
         bool cut = modelLuma.Length == luma.Length && MeanChange(modelLuma, luma) > Tuning.SceneCut;
-        if (cut || modelResetRequested)
+        if (cut || generation != modelGeneration)
         {
-            modelResetRequested = false;
-            video.Reset();
+            modelGeneration = generation;
+            model.Reset();
         }
         if (modelLuma.Length != luma.Length) modelLuma = new float[luma.Length];
         Array.Copy(luma, modelLuma, luma.Length);
@@ -536,7 +556,11 @@ public sealed class DepthService : IDisposable
     }
 
     /// <summary>Forgets temporal history, e.g. when the video region changed; any thread.</summary>
-    public void ResetHistory() => resetRequested = modelResetRequested = true;
+    public void ResetHistory()
+    {
+        resetRequested = true;
+        Interlocked.Increment(ref historyGeneration);
+    }
 
     private void SetStatus(DepthServiceState state, string status)
     {

@@ -1469,18 +1469,49 @@ Its licence is Microsoft's own, not MIT (`docs/packaging.md` decision 7).
 
 The models moved with `ImmersiveSBS-models\` (not in git); `%LOCALAPPDATA%\ImmersiveSBS\models` is
 a junction to its `models` folder. Depth Anything V2 (Small, Base, Large) was deleted at the
-user's request; the app keeps its Small tier (the files can come back from the old laptop).
+user's request.
 
 The Fast resolution (392×224) is removed (user: "remove low resolution"): Balanced and Quality
 are left, a saved "Fast" loads as Balanced (`DepthPresetConverter`), and `publish.ps1` no longer
 packages the `_224x392` files.
 
+### The installer on the new desktop; models and timing choices (2026-10-25, user: "the install and uninstall is perfect")
+
+The installer was rebuilt here (Inno Setup 6.7.3 portable again, from its GitHub release, signed
+by Pyrsys B.V.) and the user ran it and its uninstall on this PC: the driver installed, the app
+ran, and the uninstall removed both. Then:
+
+- **Models: Distill-Any-Depth, Depth Anything 3, Video Depth Anything; no Depth Anything V2**
+  (user: "I want DA3 and DAD and VDA, no da v2"). The Small tier is gone (a saved "Small" loads
+  as Distill-Any-Depth Base; the model-agreement test compares with Distill-Any-Depth Base now),
+  and the installer ships all four families at both sizes by default: 1,184 MB of models, an
+  installer of 1,030 MB (405 MB with Distill-Any-Depth Base only).
+- **Every timing choice can be chosen.** The buffer choices were greyed in Settings while no
+  browser was connected, so Settings opened before the browser could not pick them (user: "cant
+  choose buffer time because of the extension"). The check gained nothing: timing applies only
+  to the theater, which is the extension's, and a video the page cannot delay plays live anyway
+  (`BrowserCanDelay`). Removed, with the theater panel's stepping (`NextTiming` now just moves
+  one choice). Then the Timing box left Settings altogether (user: "remove the timing setting in
+  the app keep the theater pannel only"): Settings says it is in the panel, and Save keeps what
+  the panel chose.
+- **Video Depth Anything checked** (user: "check the logic for video depth anything again").
+  The window was compared step by step with the authors' `infer_video_depth_one`
+  (`video_depth_stream.py`): 32 copies of the first frame's state, each step reading entries
+  `[0:2] + [-29:]`, the entry after the first deleted from the 11th frame (`id + 32 > 42`); it
+  matches, and is now `StateWindow`, tested against those list operations over 150 frames, a
+  reset and 60 more (`StateWindowTests`). One fault fixed: a reset was a flag read when the
+  depth thread started its next frame, so a frame submitted before a seek but run after it
+  became the first frame of the new window, which the model keeps for good. Each frame now
+  carries the count of resets at its submission, and the model starts over at the first frame
+  with a new count (`AModelWithMemoryStartsOverAtTheFirstFrameSubmittedAfterAReset`). On a
+  drawn scene its output orders near and far like Distill-Any-Depth Base (ρ 0.92), inverse
+  depth as assumed. Not measured here: its flicker against the default (`TemporalDepthTests`
+  needs the sample clip, still on the old laptop).
+
 ### Next
 
-1. Run the installer on a PC without the driver (a virtual machine is enough for the install
-   steps), then uninstall with the driver; and on this PC with the user's go-ahead. Then the
-   decisions still open in `docs/packaging.md`: other models, the extension in a store,
-   signing, an update check, TensorRT for RTX on a fresh PC.
+1. The decisions still open in `docs/packaging.md`: the extension in a store, signing, an
+   update check, shipping Windows ML's DLL beside GPL-3.0 code.
 2. Judge Video Depth Anything Small in the glasses against Distill-Any-Depth Base: keep it as a
    choice or remove it.
 3. Measures worth taking in a run: M4 flicker for one clip in live, matched and buffer timing;

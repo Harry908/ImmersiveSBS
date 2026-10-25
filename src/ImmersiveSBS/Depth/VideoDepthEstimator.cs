@@ -19,25 +19,16 @@ namespace ImmersiveSBS.Depth;
 /// <see cref="Reset"/> starts it over at the next frame (a seek, a scene cut). Not thread-safe:
 /// one caller.
 /// </summary>
-public sealed class VideoDepthEstimator : IDepthRunner
+public sealed class VideoDepthEstimator : ITemporalDepthRunner
 {
-    private const int Past = 31;        // states each step reads
-    private const int Window = 32;      // the authors' INFER_LEN
-    private const int Kept = 42;        // first frame + 41 newest
-    private const int Slots = Kept + 1; // and the one being written
-
     private readonly InferenceSession first;
     private readonly InferenceSession step;
     private readonly OrtAllocator allocator;
-    private readonly OrtValue[] ring = new OrtValue[Slots];
+    private readonly OrtValue[] ring = new OrtValue[StateWindow.Slots];
     private readonly RunOptions runOptions = new();
     private readonly long[] inputShape, outputShape;
-    private readonly string[] pastNames = [.. Enumerable.Range(0, Past).Select(k => $"past{k}")];
-
-    /// <summary>The ring slot of each entry of the window, oldest first; empty before the first frame.</summary>
-    private readonly List<int> window = [];
-    private readonly bool[] used = new bool[Slots];
-    private int frames;
+    private readonly string[] pastNames = [.. Enumerable.Range(0, StateWindow.Past).Select(k => $"past{k}")];
+    private readonly StateWindow window = new();
 
     private VideoDepthEstimator(DepthModel model, InferenceSession first, InferenceSession step, OrtEpDevice device)
     {
@@ -49,7 +40,7 @@ public sealed class VideoDepthEstimator : IDepthRunner
         long stateLength = step.InputMetadata["past0"].Dimensions[0];
         StateBytes = stateLength * sizeof(float);
         allocator = new OrtAllocator(step, device.GetMemoryInfo(OrtDeviceMemoryType.DEFAULT));
-        for (int i = 0; i < Slots; i++) ring[i] = OrtValue.CreateAllocatedTensorValue(allocator, TensorElementType.Float, [stateLength]);
+        for (int i = 0; i < StateWindow.Slots; i++) ring[i] = OrtValue.CreateAllocatedTensorValue(allocator, TensorElementType.Float, [stateLength]);
     }
 
     public DepthModel Model { get; }
@@ -71,20 +62,15 @@ public sealed class VideoDepthEstimator : IDepthRunner
     }
 
     /// <summary>Forgets the frames before: the next one starts a new window, as the stream's first.</summary>
-    public void Reset()
-    {
-        window.Clear();
-        Array.Clear(used);
-        frames = 0;
-    }
+    public void Reset() => window.Reset();
 
     public void Run(float[] input, float[] output)
     {
         if (input.Length != InputLength || output.Length != OutputLength)
             throw new ArgumentException("Buffer sizes do not match the model.");
 
-        int slot = Array.IndexOf(used, false);
-        bool start = window.Count == 0;
+        int slot = window.FreeSlot;
+        bool start = window.IsEmpty;
         InferenceSession session = start ? first : step;
         using OrtValue image = OrtValue.CreateTensorValueFromMemory(input, inputShape);
         using OrtValue depth = OrtValue.CreateTensorValueFromMemory(output, outputShape);
@@ -92,26 +78,14 @@ public sealed class VideoDepthEstimator : IDepthRunner
         binding.BindInput("image", image);
         if (!start)
         {
-            for (int k = 0; k < Past; k++)
-                binding.BindInput(pastNames[k], ring[window[k < 2 ? k : window.Count - (Past - k)]]);
+            for (int k = 0; k < StateWindow.Past; k++)
+                binding.BindInput(pastNames[k], ring[window.Read(k)]);
         }
         binding.BindOutput("depth", depth);
         binding.BindOutput("state", ring[slot]);
         session.RunWithBinding(runOptions, binding);
         binding.SynchronizeBoundOutputs();
-
-        used[slot] = true;
-        if (start)
-            for (int i = 0; i < Window; i++) window.Add(slot);
-        else
-            window.Add(slot);
-        // From the 11th frame on the window is full: the oldest after the first frame goes.
-        if (frames++ + Window > Kept)
-        {
-            int gone = window[1];
-            window.RemoveAt(1);
-            if (!window.Contains(gone)) used[gone] = false;
-        }
+        window.Add(slot);
     }
 
     public void Dispose()
@@ -121,5 +95,60 @@ public sealed class VideoDepthEstimator : IDepthRunner
         runOptions.Dispose();
         step.Dispose();
         first.Dispose();
+    }
+}
+
+/// <summary>
+/// Which ring slots a streaming step reads, as the authors' infer_video_depth_one keeps its
+/// frame_cache_list: 32 copies of the first frame's state, then each new state appended and,
+/// from the 11th frame (id + INFER_LEN &gt; gap + 1, gap 41), the entry after the first deleted;
+/// each step reads entries [0:2] + [-29:]. A slot is free again once no entry holds it.
+/// </summary>
+public sealed class StateWindow
+{
+    /// <summary>States each step reads (the authors' INFER_LEN − 1).</summary>
+    public const int Past = 31;
+
+    private const int Window = 32;      // the authors' INFER_LEN
+    private const int Kept = 42;        // first frame + 41 newest (their gap + 1)
+
+    /// <summary>Ring slots: the most kept, and the one being written.</summary>
+    public const int Slots = Kept + 1;
+
+    /// <summary>The ring slot of each entry, oldest first; empty before the first frame.</summary>
+    private readonly List<int> entries = [];
+    private readonly bool[] used = new bool[Slots];
+    private int frames;
+
+    public bool IsEmpty => entries.Count == 0;
+
+    /// <summary>A slot no entry holds, for the next state.</summary>
+    public int FreeSlot => Array.IndexOf(used, false);
+
+    /// <summary>The slot of the <paramref name="k"/>-th state a step reads (0 ≤ k &lt; <see cref="Past"/>).</summary>
+    public int Read(int k) => entries[k < 2 ? k : entries.Count - (Past - k)];
+
+    /// <summary>The frame's state, written to <paramref name="slot"/>, joins the window.</summary>
+    public void Add(int slot)
+    {
+        used[slot] = true;
+        if (entries.Count == 0)
+            for (int i = 0; i < Window; i++) entries.Add(slot);
+        else
+            entries.Add(slot);
+        if (frames++ + Window > Kept)
+        {
+            int gone = entries[1];
+            entries.RemoveAt(1);
+            if (!entries.Contains(gone)) used[gone] = false;
+        }
+    }
+
+    /// <summary>Forgets every frame: the next one is the first.</summary>
+    public void Reset()
+    {
+        entries.Clear();
+        Array.Clear(used);
+        frames = 0;
     }
 }

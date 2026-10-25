@@ -25,7 +25,7 @@ public class ModelAgreementTests(ITestOutputHelper output)
     public async Task EveryModelComesOutAsTheSameKindOfDepth()
     {
         DepthTier[] tiers = Enum.GetValues<DepthTier>();
-        var probe = new DepthModel(DepthTier.Small, DepthPreset.Balanced);
+        var probe = new DepthModel(DepthTier.Base, DepthPreset.Balanced);
         int w = probe.Width, h = probe.Height, plane = w * h;
         // Frames 2/3 s apart over most of the clip: different shots, not one.
         List<byte[]> pictures = await SampleClip.Frames(Frames, w, h, step: 20);
@@ -48,28 +48,27 @@ public class ModelAgreementTests(ITestOutputHelper output)
                 return o;
             })];
         }
-        if (!outputs.ContainsKey(DepthTier.Small))
+        if (!outputs.TryGetValue(DepthTier.Base, out List<float[]>? reference))
         {
-            output.WriteLine("Skipped: Depth Anything V2 Small, the reference, does not run here.");
+            output.WriteLine("Skipped: Distill-Any-Depth Base, the reference, does not run here.");
             return;
         }
 
-        output.WriteLine("model                     output (p2..p98)                 rank corr. with DA2 S / DAD B   mean |Δn| to DA2 S");
+        output.WriteLine("model                     output (p2..p98)                 rank corr. with DAD B   mean |Δn| to DAD B");
         foreach ((DepthTier tier, List<float[]> maps) in outputs)
         {
             var model = new DepthModel(tier, DepthPreset.Balanced);
-            double withSmall = Mean(maps, outputs[DepthTier.Small], Spearman);
-            double withBase = outputs.TryGetValue(DepthTier.Base, out List<float[]>? b) ? Mean(maps, b, Spearman) : double.NaN;
-            double difference = Mean(maps, outputs[DepthTier.Small], MeanAbsoluteDifference);
+            double withBase = Mean(maps, reference, Spearman);
+            double difference = Mean(maps, reference, MeanAbsoluteDifference);
             (float p2, float p98) = Percentiles(maps[0]);
             string range = model.OutputIsDepth
                 ? $"depth {1 / p98:0.###}..{1 / p2:0.###}, inverted"
                 : $"inverse depth {p2:0.###}..{p98:0.###}";
-            output.WriteLine($"{DepthModel.Name(tier),-25} {range,-32} {withSmall,6:0.00} / {withBase,4:0.00}" +
-                             $"                {difference,6:0.000}");
+            output.WriteLine($"{DepthModel.Name(tier),-25} {range,-32} {withBase,6:0.00}" +
+                             $"                  {difference,6:0.000}");
 
             // Same near-and-far order as the reference: a model read the wrong way round would be strongly negative.
-            Assert.True(withSmall > 0.5, $"{DepthModel.Name(tier)} orders depth unlike DA2 Small (ρ = {withSmall:0.00})");
+            Assert.True(withBase > 0.5, $"{DepthModel.Name(tier)} orders depth unlike Distill-Any-Depth Base (ρ = {withBase:0.00})");
 
             if (model.OutputIsDepth)
             {

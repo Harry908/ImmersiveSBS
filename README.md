@@ -21,8 +21,7 @@ builds, with the Virtual Display Driver inside; it is not yet released
   screen instead, so nothing on it is ever out of reach.
 - **The 3D theater.** A "3D theater" button appears over a browser video. It opens the video
   alone, full screen, and shows it in 3D with depth from an AI model (Distill-Any-Depth Base by
-  default; Depth Anything V2 Small, Depth Anything 3 Small and Base, and Video Depth Anything
-  Small as a trial). The page's subtitles come along and are kept flat and readable.
+  default; Depth Anything 3 Small and Base, and Video Depth Anything Small as a trial). The page's subtitles come along and are kept flat and readable.
 - **No delay you can see, no gaps.** For the best depth the theater can play a video up to two
   seconds late, picture and sound together, while the model works ahead. Pause, play and seek
   keep picture and sound in step; the controls always answer at once.
@@ -43,7 +42,7 @@ builds, with the Virtual Display Driver inside; it is not yet released
 ## Getting started
 
 1. Run `ImmersiveSBS-Setup-<version>.exe` and allow it to make changes. It installs the app, the
-   default depth model and the Virtual Display Driver (with its monitor set to 1920×1080, if the
+   depth models and the Virtual Display Driver (with its monitor set to 1920×1080, if the
    driver is not installed already), and starts the app. Its icon sits in the notification area.
 2. On the last page it opens Edge's extensions page and the extension's folder: turn on
    **Developer mode**, choose **Load unpacked** and pick that folder (later: Settings → **Open

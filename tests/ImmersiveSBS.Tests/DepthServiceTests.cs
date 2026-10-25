@@ -8,7 +8,7 @@ namespace ImmersiveSBS.Tests;
 [Collection("Timing")]
 public class DepthServiceTests
 {
-    private static readonly DepthModel Model = new(DepthTier.Small, DepthPreset.Balanced);   // 518×294
+    private static readonly DepthModel Model = new(DepthTier.Base, DepthPreset.Balanced);   // 518×294
 
     /// <summary>A model that takes <paramref name="ms"/> and answers with a ramp scaled by the input's first value.</summary>
     private sealed class FakeRunner(int length, int width, double ms) : IDepthRunner
@@ -147,6 +147,60 @@ public class DepthServiceTests
             if (frame.FrameId == 20) Assert.InRange(frame.HeldMs, 150, 1000);
         }
         Assert.Equal(Enumerable.Range(1, 20).Select(i => (long)i), seen);
+    }
+
+    /// <summary>A model with memory that logs its runs (by the input's first value) and resets, and can hold a run.</summary>
+    private sealed class TemporalFake(int length, int width) : ITemporalDepthRunner
+    {
+        public readonly ManualResetEventSlim Release = new(true);
+        public readonly ManualResetEventSlim Started = new(false);
+        public readonly List<string> Log = [];
+
+        public int OutputLength => length;
+
+        public void Run(float[] input, float[] output)
+        {
+            lock (Log) Log.Add($"run {input[0]}");
+            Started.Set();
+            Release.Wait();
+            for (int i = 0; i < length; i++) output[i] = i % width;
+        }
+
+        public void Reset()
+        {
+            lock (Log) Log.Add("reset");
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+
+    [Fact]
+    public void AModelWithMemoryStartsOverAtTheFirstFrameSubmittedAfterAReset()
+    {
+        // Frame 2 is submitted before a seek and run after it: it belongs to the old place, and
+        // must not become the first frame of the new window (the streaming model keeps that one).
+        var fake = new TemporalFake(Model.Width * Model.Height, Model.Width);
+        using var service = new DepthService(Model, (_, _) => fake);
+        var clock = Stopwatch.StartNew();
+        while (service.State != DepthServiceState.Ready && clock.Elapsed < TimeSpan.FromSeconds(5)) Thread.Sleep(5);
+        var input = new float[3 * Model.Width * Model.Height];
+
+        fake.Release.Reset();
+        input[0] = 1;
+        service.Submit(input, 1, 0.00);
+        Assert.True(fake.Started.Wait(2000));
+        input[0] = 2;
+        service.Submit(input, 2, 0.04);
+        service.ResetHistory();
+        fake.Release.Set();
+        Assert.True(SpinWait.SpinUntil(() => { lock (fake.Log) return fake.Log.Contains("run 2"); }, 2000));
+        input[0] = 3;
+        service.Submit(input, 3, 0.08);
+        Assert.True(SpinWait.SpinUntil(() => { lock (fake.Log) return fake.Log.Contains("run 3"); }, 2000));
+
+        lock (fake.Log) Assert.Equal(["run 1", "run 2", "reset", "run 3"], fake.Log);
     }
 
     [Fact]

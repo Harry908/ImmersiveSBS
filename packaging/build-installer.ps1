@@ -14,7 +14,8 @@
     with -Iscc.
 
 .PARAMETER Models
-    Model families to ship; Distill-Any-Depth Base (the default model) by default.
+    Model families to ship; by default every model the app offers: Distill-Any-Depth Base (the
+    default model), Depth Anything 3 Small and Base, Video Depth Anything Small.
 
 .PARAMETER Iscc
     The path of ISCC.exe, if not in one of the usual places.
@@ -23,7 +24,7 @@
     .\packaging\build-installer.ps1
 #>
 param(
-    [string[]] $Models = @('dad-base'),
+    [string[]] $Models = @('dad-base', 'da3-small', 'da3-base', 'vda-small'),
     [string] $Iscc
 )
 
