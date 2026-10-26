@@ -6,9 +6,9 @@ using static ImmersiveSBS.Tests.DepthStats;
 namespace ImmersiveSBS.Tests;
 
 /// <summary>
-/// Video Depth Anything Small's streaming mode against Distill-Any-Depth Base, the default, on
-/// consecutive frames of the sample clip (improvement-plan.md §10.2, its go/no-go: M4 at least
-/// 30 % lower). Flicker on still pixels (M4: mean |nₜ − nₜ₋₁| where the luma moved less than
+/// Every offered model against Distill-Any-Depth Base, the default, on consecutive frames of the
+/// sample clip: above all Video Depth Anything Small's streaming mode (improvement-plan.md §10.2,
+/// its go/no-go: M4 at least 30 % lower). Flicker on still pixels (M4: mean |nₜ − nₜ₋₁| where the luma moved less than
 /// 1.5/255) of the model's own output, normalised as the app does, and of what the depth service
 /// makes of it, as the app runs it; time per frame; and whether the two order near and far
 /// alike. Reports; asserts only that the streaming model's output is sane.
@@ -31,6 +31,8 @@ public class TemporalDepthTests(ITestOutputHelper output)
             output.WriteLine("Skipped: needs the sample clip and both models.");
             return;
         }
+        DepthModel[] models = [reference, .. new[] { DepthTier.DA3Small, DepthTier.DA3Base }
+            .Select(t => new DepthModel(t, preset)).Where(m => m.Exists), streaming];
         int w = reference.Width, h = reference.Height, plane = w * h;
         // Sampled every 1/30 s, a frame shown longer comes twice; the app hands the model new
         // pictures only, and a model without memory gives a repeat no flicker at all.
@@ -51,7 +53,7 @@ public class TemporalDepthTests(ITestOutputHelper output)
         var raw = new Dictionary<DepthTier, List<float[]>>();
         var served = new Dictionary<DepthTier, List<float[]>>();
         var speed = new Dictionary<DepthTier, double>();
-        foreach (DepthModel model in new[] { reference, streaming })
+        foreach (DepthModel model in models)
         {
             IDepthRunner runner;
             try
@@ -82,7 +84,7 @@ public class TemporalDepthTests(ITestOutputHelper output)
         }
 
         output.WriteLine("model                          ms/frame   M4 model alone   M4 through the service");
-        foreach (DepthModel model in new[] { reference, streaming })
+        foreach (DepthModel model in models)
         {
             double alone = Flicker([.. raw[model.Tier].Select(Normalised)], lumas);
             double service = Flicker(served[model.Tier], lumas);

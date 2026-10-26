@@ -185,11 +185,14 @@ public sealed class AppSettings
 
     /// <summary>
     /// Shows the theater's video this late, with its sound delayed in the page by the same amount,
-    /// for steadier depth (video-3d-plan.md P5); 0 = none (<see cref="Timing"/>). 2 s by default:
-    /// for watching a video the delay costs nothing (a pause holds both, a seek shows a spinner
-    /// while it fills); a live stream is never buffered.
+    /// for steadier depth (video-3d-plan.md P5); 0 = none (<see cref="Timing"/>), else 2–4 s, 2 by
+    /// default: for watching a video the delay costs nothing (a pause holds both, a seek shows a
+    /// spinner while it fills); a live stream is never buffered.
     /// </summary>
-    public double BufferSeconds { get; set; } = 2;
+    public double BufferSeconds { get; set; } = MinBufferSeconds;
+
+    /// <summary>The buffer's shortest and longest (the theater panel's choices: 2, 3 and 4 s).</summary>
+    public const double MinBufferSeconds = 2, MaxBufferSeconds = 4;
 
     /// <summary>
     /// Live or matched while there is no buffer (improvement-plan.md §6): matched delays the
@@ -279,12 +282,14 @@ public sealed class AppSettings
 
     /// <summary>
     /// "The browser video only" went (browser video is converted in the theater): a saved one is
-    /// Off, and the AI 3D shortcut switches to the whole screen.
+    /// Off, and the AI 3D shortcut switches to the whole screen. A buffer of 0.5 or 1 s (removed
+    /// 2026-10-26) is the shortest now, 2 s.
     /// </summary>
     public void ForgetRemovedChoices()
     {
         if (Ai3D == AiTarget.Video) Ai3D = AiTarget.Off;
         Ai3DLastTarget = AiTarget.WholeScreen;
+        if (BufferSeconds > 0) BufferSeconds = Math.Clamp(BufferSeconds, MinBufferSeconds, MaxBufferSeconds);
     }
 
     public AppSettings Clone() => JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(this, JsonOptions), JsonOptions)!;

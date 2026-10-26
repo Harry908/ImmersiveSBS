@@ -3,8 +3,9 @@ namespace ImmersiveSBS.Depth;
 /// <summary>
 /// Turns the model's relative inverse depth into a steady nearness map (video-3d-plan.md
 /// §6.1–6.2), at model resolution on the CPU. The model's scale and offset change every frame,
-/// so raw output "breathes"; this normalizes by smoothed percentiles and filters per pixel,
-/// following quickly where the picture moves and settling where it is still. A scene cut resets
+/// so raw output "breathes"; this normalizes by smoothed percentiles and filters per pixel
+/// along the picture's motion (<see cref="FollowMotion"/>), following quickly where the picture
+/// does not match what was there and settling where it does. A scene cut resets
 /// everything. Then, on the output only (the temporal state keeps the model's own values, so
 /// switching any of them off restores its depth at once): the foreground curve, depth
 /// anti-aliasing and soft edges (improvement-plan.md §11, §7), then static overlays and subtitles at the screen plane, so text
@@ -14,8 +15,14 @@ namespace ImmersiveSBS.Depth;
 public sealed class DepthPostProcessor
 {
     private readonly int count;
-    private readonly float[] previousNearness;
+    private float[] previousNearness;
+    private float[] nextNearness;
+    private readonly MotionField motion;
     private readonly float[] previousLuma;
+    private readonly float[] stirred, stirredRows;
+
+    /// <summary>How far around a pixel a change of the picture counts as the picture moving there, px.</summary>
+    private const int StirRadius = 4;
     private readonly float[] sample;
     private readonly float[] staticTime;
     private readonly float[] staticWeight;
@@ -36,7 +43,11 @@ public sealed class DepthPostProcessor
         Height = height;
         count = width * height;
         previousNearness = new float[count];
+        nextNearness = new float[count];
+        motion = new MotionField(width, height);
         previousLuma = new float[count];
+        stirred = new float[count];
+        stirredRows = new float[count];
         sample = new float[(count + SampleStride - 1) / SampleStride];
         staticTime = new float[count];
         staticWeight = new float[count];
@@ -64,6 +75,26 @@ public sealed class DepthPostProcessor
 
     /// <summary>Per-pixel blend toward the new value where nothing moves, per frame at 30 fps.</summary>
     public double AlphaMin { get; set; } = 0.2;
+
+    /// <summary>
+    /// Each pixel's history is the smoothed depth where its part of the picture was in the frame
+    /// before (<see cref="MotionField"/>), not what was at its place: a moving thing is smoothed
+    /// as much as a still one, and leaves no trail. Off: at its place, as before (for comparing).
+    /// </summary>
+    public bool FollowMotion { get; set; } = true;
+
+    /// <summary>
+    /// Where the picture moves around a pixel (it changed within <see cref="StirRadius"/> px), a
+    /// depth this far from the pixel's history (nearness, 0..1) starts to be taken as it is,
+    /// fully from <see cref="DepthJumpTo"/>: a jump far beyond the model's flicker there is what a
+    /// moving thing uncovered, whose picture may look like what covered it, so the luma at the
+    /// pixel alone missed it and the thing's depth trailed behind it. Where the picture is still,
+    /// its depth still eases into a change. With <see cref="FollowMotion"/> only.
+    /// </summary>
+    public double DepthJumpFrom { get; set; } = 0.1;
+
+    /// <inheritdoc cref="DepthJumpFrom"/>
+    public double DepthJumpTo { get; set; } = 0.25;
 
     /// <summary>Gain from luma change (0..1) to full update.</summary>
     public double MotionGain { get; set; } = 10;
@@ -171,6 +202,8 @@ public sealed class DepthPostProcessor
             cut = meanChange > SceneCutThreshold;
         }
         bool reset = !hasHistory || cut;
+        if (reset || !FollowMotion) motion.Reset();
+        bool follow = FollowMotion && motion.Update(luma) && !reset;
 
         // §6.5 needs to know whether the picture as a whole is moving (a paused video is not).
         globalChange = reset ? 0 : globalChange + (meanChange - globalChange) * (1 - Math.Exp(-dt / StaticSeconds));
@@ -199,25 +232,46 @@ public sealed class DepthPostProcessor
         // §6.2: AlphaMin is per 30 fps frame; the same settling time at any frame rate.
         double alphaMin = 1 - Math.Pow(1 - AlphaMin, dt * 30);
         double lowNow = low, gamma = Gamma, motionGain = MotionGain;
+        double jumpFrom = DepthJumpFrom, jumpSpan = Math.Max(DepthJumpTo - DepthJumpFrom, 1e-6);
         bool staticOverlays = StaticOverlays;
         double staticEpsilon = StaticEpsilon, staticSeconds = StaticSeconds, staticEdge = StaticEdge;
         ForegroundCurve curveNow = curve;
+        int w = Width, h = Height;
+        // Read from one, written to the other: a pixel's history may be a neighbour's.
+        float[] history = previousNearness, next = nextNearness, dx = motion.Dx, dy = motion.Dy;
+        if (follow) Stir(luma);
 
         RowBands.For(Height, (_, from, to) =>
         {
-            for (int i = from * Width; i < to * Width; i++)
+            for (int y = from; y < to; y++)
+            for (int x = 0; x < w; x++)
             {
+                int i = y * w + x;
                 double n = Math.Clamp((raw[i] - lowNow) / span, 0, 1);
                 if (gamma != 1.0) n = Math.Pow(n, gamma);
 
                 if (!reset)
                 {
-                    double motion = Math.Clamp(motionGain * Math.Abs(luma[i] - previousLuma[i]), 0, 1);
-                    double alpha = alphaMin + (1 - alphaMin) * motion;
-                    n = previousNearness[i] + (n - previousNearness[i]) * alpha;
+                    // What this part of the picture was a frame ago, and how unlike it it looks
+                    // now (uncovered, a wrong motion, a change of light) or how far its depth
+                    // jumped: then the new depth.
+                    float before = history[i], beforeLuma = previousLuma[i];
+                    double change = 0;
+                    if (follow)
+                    {
+                        float sx = x - dx[i], sy = y - dy[i];
+                        before = MotionField.Bilinear(history, w, h, sx, sy);
+                        beforeLuma = MotionField.Bilinear(previousLuma, w, h, sx, sy);
+                        // The picture moving around it: a jump is what was uncovered.
+                        double moving = Math.Clamp(motionGain * stirred[i], 0, 1);
+                        change = moving * Math.Clamp((Math.Abs(n - before) - jumpFrom) / jumpSpan, 0, 1);
+                    }
+                    change = Math.Max(change, Math.Clamp(motionGain * Math.Abs(luma[i] - beforeLuma), 0, 1));
+                    double alpha = alphaMin + (1 - alphaMin) * change;
+                    n = before + (n - before) * alpha;
                 }
 
-                previousNearness[i] = (float)n;
+                next[i] = (float)n;
                 nearness[i] = (float)n;
 
                 // §6.5: a pixel that has not changed for StaticSeconds while the picture moves, on a
@@ -229,7 +283,6 @@ public sealed class DepthPostProcessor
 
                     if (pictureMoving)
                     {
-                        int x = i % Width;
                         double edge = Math.Max(
                             x > 0 ? Math.Abs(luma[i] - luma[i - 1]) : 0,
                             i >= Width ? Math.Abs(luma[i] - luma[i - Width]) : 0);
@@ -241,6 +294,7 @@ public sealed class DepthPostProcessor
             // §11 item 4 on the output (point by point, so here).
             curveNow.Apply(nearness.AsSpan(from * Width, (to - from) * Width));
         });
+        (previousNearness, nextNearness) = (nextNearness, previousNearness);
 
         // §7: anti-alias first, then soften (soft edges hide much of the stair-stepping too).
         if (AntiAlias) antiAlias.Apply(nearness);
@@ -281,6 +335,34 @@ public sealed class DepthPostProcessor
 
         hasHistory = true;
         return cut;
+    }
+
+    /// <summary>The most the picture changed since the frame before within <see cref="StirRadius"/> px of each pixel (a square), into <see cref="stirred"/>.</summary>
+    private void Stir(float[] luma)
+    {
+        int w = Width, h = Height;
+        RowBands.For(h, (_, from, to) =>
+        {
+            for (int y = from; y < to; y++)
+                for (int x = 0; x < w; x++)
+                {
+                    float most = 0;
+                    for (int i = Math.Max(0, x - StirRadius), end = Math.Min(w - 1, x + StirRadius); i <= end; i++)
+                        most = Math.Max(most, Math.Abs(luma[y * w + i] - previousLuma[y * w + i]));
+                    stirredRows[y * w + x] = most;
+                }
+        });
+        RowBands.For(h, (_, from, to) =>
+        {
+            for (int y = from; y < to; y++)
+                for (int x = 0; x < w; x++)
+                {
+                    float most = 0;
+                    for (int j = Math.Max(0, y - StirRadius), end = Math.Min(h - 1, y + StirRadius); j <= end; j++)
+                        most = Math.Max(most, stirredRows[j * w + x]);
+                    stirred[y * w + x] = most;
+                }
+        });
     }
 
     /// <summary>

@@ -1544,17 +1544,225 @@ ran, and the uninstall removed both. Then:
     buffer without a second copy under the depth service's lock, an asynchronous log writer,
     one base class for the two input hooks.
 
+### Model loading, from the user's run (2026-10-25, user: "something is off with model loading and unloading ... make sure model is load as soon as the app start")
+
+The run (14:44–14:59, all four models in the theater, Release, the new extension) worked, and
+showed three things. The chosen model did load at start, AI 3D on or not (`UpdateDepthService`);
+the waits were elsewhere. Measured with a throwaway console on Distill-Any-Depth Base 756×420
+(engines folder backed up and restored after):
+
+- **A model's first use on a PC builds its engine** (load 8.9 s against 1.1–2.3 s cached; 26 s
+  for Video Depth Anything's two graphs), so the first change to each model waited and the later
+  ones did not. Now `EnginePreparer` builds every offered model's engines in the background
+  after start, one at a time at low priority, only while AI 3D is off and the chosen model is not
+  loading. Checked: with one engine missing it waited while not allowed, then built only that
+  one (4.2 s, kernels 0.6 s) and stopped. The background build and a model load take the same
+  engine's lock, so they never build one twice.
+- **The session made right after a build kept 1.5 GB more** (2,335 MB against 840 cached; the
+  run's 6.9 GB with Video Depth Anything), until the model was unloaded. After a build one
+  session is now made and dropped, and the kept one loads from the runtime cache: 1,130 MB, for
+  1.3 s more once.
+- **The first frames were slow**: the first inference 45–480 ms (10 after) and the
+  post-processing 48, 10, 7 ms (6 after). The depth service now warms both, on a test picture
+  and a post-processor of its own, before it says Ready: the first frame through it took 10 ms
+  in the model and 19 ms from submit to depth (`WarmsTheModelBeforeItIsReady`).
+- **The app redrew 32–50 times a second with nothing changing** after the theater closed: depth
+  still queued from it kept the session's "new depth" check true while AI 3D was off, and nothing
+  took it. With AI 3D off `AiStereo` now takes it and stops the service keeping results.
+
+The reset test's `Started` signal was set by the warm-up's runs, which made it fail now and then
+under load; it is cleared with the warm-up's log. 170 tests pass (three full runs).
+
+### Pause on a model change, VRAM, and the temporal model measured (2026-10-25, user: "the player should pause when changing model ... check if the vram is optimize ... should we keep only temporal? Is our temporal logic optimize yet? Do deep research")
+
+- **The theater pauses while a model loads.** The status tells the page `loading` (a model or
+  size chosen, or the first load; glasses in 3D, the video converted), sent at once from
+  `Evaluate`, not at the next 250 ms tick. The player pauses a playing video with its spinner
+  and plays on when the model is ready; a video already paused, ended or live is left alone, and
+  one the user plays meanwhile is theirs (`holdForModel`). The model takes no frames until it is
+  ready, so those played meanwhile had no depth.
+- **A model swapped out while it loaded blocked the UI and could stay in GPU memory.**
+  `DepthService.Dispose` waited up to 3 s for the worker on the UI thread (the run's clicks
+  through models at 18:41:20–23 held it 2.3 s), and past 3 s (a first-use build) left the model
+  loaded until the process ended. The worker now unloads its own model when it ends; a loading
+  one is not waited for (`AModelSwappedOutWhileItLoadsIsUnloadedOnceLoadedWithoutWaitingForIt`).
+- **VRAM** (the run, this process on the render adapter, of 7.1 GB): 1.0 GB with Video Depth
+  Anything Small 756×420 loaded and 3D off, 1.04 in the theater; 1.10–1.12 with
+  Distill-Any-Depth Base and 1.16 with Depth Anything 3 Base; one model is loaded at a time.
+  The largest single part is Video Depth Anything's state ring: 43 × 7.9 MB = 339 MB in fp32
+  at 756×420. Stored in fp16 (the model runs in fp16, so nothing is lost) it would be 170 MB;
+  its two graphs each hold the same weights (55 MB). Both need a new export; not done.
+  Process memory (2.6–2.8 GB in the theater) is mostly the runtime's; the managed part's swings
+  (160–740 MB) are garbage collected late, not kept: a picture is one byte array, read into a
+  reused buffer.
+- **Every model on 150 consecutive frames of the sample clip** (`TemporalDepthTests`, now all
+  four; the clip is in `%LOCALAPPDATA%\ImmersiveSBS\samples` on this PC):
+
+  | 756×420 | ms/frame | M4 alone | M4 through the service |
+  |---|---|---|---|
+  | Distill-Any-Depth Base | 10.4 | 0.0042 | 0.0010 |
+  | Depth Anything 3 Small | 4.8 | 0.0096 | 0.0025 |
+  | Depth Anything 3 Base | 11.1 | 0.0105 | 0.0027 |
+  | Video Depth Anything Small | 11.3 | 0.0019 | 0.0010 |
+
+  At 518×294: 4.9, 2.5, 5.4 and 5.8 ms; M4 alone 0.0057, 0.0110, 0.0117, 0.0020; through the
+  service 0.0013, 0.0033, 0.0030, 0.0011. Depth Anything 3 flickers 2.3–2.7 times as much as
+  Distill-Any-Depth Base, alone and after smoothing. Video Depth Anything alone flickers 36–45 %
+  as much, but the service's per-pixel smoothing (`Smoothing` 0.2) evens the two out on still
+  pixels, at the cost of lag where things move.
+- **Smoothing against lag** (a scratch console on the same frames; trail: mean |output −
+  output unsmoothed| on pixels whose luma moved more than 6/255). Distill-Any-Depth Base: 0.2 →
+  M4 0.0010, trail 0.0021; 0.35 → 0.0016, 0.0017; 0.5 → 0.0022, 0.0013. Video Depth Anything:
+  0.2 → 0.0010, 0.0018; 0.35 → 0.0013, 0.0012; 0.5 → 0.0015, 0.0008. At every level the
+  temporal model has less flicker for the same lag; at 0.35–0.5 it has the default's flicker or
+  near it with half the lag. The percentiles' time constant (0.5 against 0.2 s) changed nothing
+  on this clip. A two-way per-pixel filter (forward and backward over frames held for the
+  buffer) gave 10 % less flicker for every model and a third less trail for Video Depth
+  Anything only: not worth a backward pass over ~45 held frames each frame.
+- **What the streaming mode costs** (the authors' README): it is training-free, and against
+  their offline mode (windows of 32 frames, 10 kept from the window before, aligned by scale
+  and shift, 8 blended) it loses accuracy: ScanNet δ1 0.926 → 0.836. The offline mode needs 22
+  frames ahead (0.73 s at 30 fps) plus a window's run: it fits the theater's buffer (1–2 s), not
+  live or matched timing. Only Small is Apache-2.0 (Base and Large are CC-BY-NC-4.0).
+
+### Smooth motion: the theater at 60 fps (2026-10-25, user: "i want to view the playback at 60 fps")
+
+Every video in the runs played at 25 or 30 fps; the glasses show 60 Hz, so each frame was shown
+two or three times. Now the player draws the frames between (extension 1.9.0):
+
+- **Where:** in the player, while it shows the picture late with the sound (the buffer, matched
+  timing). It keeps each frame until its sound is heard, so the next one is already there: no
+  delay is added. Live timing has no next frame and shows the video's own. Only below 40 fps.
+- **How** (`extension/motion.js`, loaded before `content.js`): luma pyramids at 1/4, 1/8, 1/16
+  and 1/32 of the size shown; at each level, block matching of 5×5 texels for the motion at the
+  moment half-way between the two frames (so every pixel of a frame between has one: no holes),
+  from the coarser level's motion here and at its four neighbours, ±1 px (±4 at the coarsest),
+  a cost for straying from them and a small bonus for none; a 3×3 vector median; then a quarter-
+  px refinement of each pixel's own motion and another median. A frame between is both frames
+  moved along it and mixed by the phase; where they still differ by over a quarter of the range
+  (a cut) the nearer one alone. The phase is where the moment due falls between the two frames'
+  audio-clock times, in 16ths; each step is drawn once.
+- **Tuned and measured** in a browser page (Chromium through Playwright; a scratch page, not in
+  the repo) on the sample clip: the frame made between frames k and k+2 against the real
+  k+1, PSNR over 25 pairs. Repeating frame k (what was shown): 32.8 dB; mixing the two: 37.1;
+  motion: 38.3. Four frames apart (more motion): 28.8, 32.3 and 35.9. Better than repeating on
+  every pair. The first try was below mixing (35.4): the coarsest pass read the texture it
+  wrote (WebGL refused that draw), the motion was in whole px of the 1/4 level (4 px shown), and
+  the fallback to the nearer frame at small differences cost 1 dB. A new pair takes 1.55 ms of
+  GPU at 1280×720 (about 3.5 ms at 1920×1080: a tenth of the GPU at 30 pairs a second); a
+  frame from a pair found, 0.07 ms. Needs `EXT_color_buffer_float`, else the video's own frames.
+- **In the player** with the real `content.js` (a stand-in worker, a recorded 30 fps video with
+  sound, the buffer at 1 s): it drew 98 frames a second on a 180 Hz screen, 92 % of them made
+  between, each later in the video than the one before; the moving bar sharp, not doubled.
+- **The app:** each frame between is reported (`frame`, `between: true`) at its time in the
+  video; its depth is the two frames' blended (`PagePictures.Nearness`, as for frames the model
+  skipped), so the model still runs on the video's frames only. `PageVideo.FrameRate` counts
+  those only: with the frames between counted, the look-ahead would have held twice as many
+  frames as the model gets (`FramesMadeBetweenTheVideosAreNotCountedInItsFrameRate`).
+- **The panel:** "Motion: smooth, 60 fps" or "as the video" (`motionNext`,
+  `AppSettings.SmoothMotion`). Off by default (user: "60 fps only needed when the source is
+  60fps ... If the source is 30fps then do 30"): each video at its own rate, a 60 fps one with
+  all its frames, as before.
+
+Not yet seen in the glasses: the depth under a frame between is blended, not moved with the
+motion, so a fast edge's depth may lag half a frame there.
+
+**Removed on 2026-10-26** (user: "Does smooth motion do anything? Or it just virtually convert
+30fps to fake 60 fps. If that it then remove it entirely to make the app lighter"): it made
+frames between, nothing for the 3D. Gone: `motion.js`, the player's frames between, the panel's
+Motion line, `AppSettings.SmoothMotion`, the frame report's `between` and its count in
+`PageVideo.FrameRate`. Its search lives on in the app as `MotionField` (below).
+
+### Depth smoothed along the motion (2026-10-25, user: "repurpose the motion into temporal smoothing for depth consistency and reducing trailling and flickering")
+
+The depth's per-pixel smoothing mixed each pixel's new depth with its own history at its place.
+Where the picture moved, that history belonged to something else, so the filter took the new
+depth outright wherever the luma changed (a moving thing flickered as much as the model) and
+kept the old one where it did not (a trail where the picture behind looked like the thing).
+
+- **`MotionField`** finds where each pixel was a frame before, from the model input's luma (on
+  the post thread, at model size): the search of smooth motion's `motion.js` on the CPU and backward (1/16, 1/8,
+  1/4 levels, 3×3 texels, cost for straying and bonus for none, vector median, half then quarter
+  texel refinement, median), the levels kept with a 24-texel border so the search reads without
+  bounds checks. 4.3–5.4 ms a frame at 756×420 over the cores (20 ms on one).
+- **`DepthPostProcessor.FollowMotion`** (on): a pixel's history is the smoothed depth where its
+  part of the picture was, and it takes the new depth where the picture there does not match
+  (uncovered, a wrong motion) or, where the picture moves within 4 px, where the depth jumped by
+  0.1–0.25 or more (`DepthJumpFrom`/`To`): what a moving thing uncovered may look like it. Where
+  the picture is still, depth still eases into a change (`StillPixelsSettleSlowly…` holds).
+  History is double-buffered now (a pixel reads a neighbour's).
+- **Measured** on 150 frames of the sample clip, 756×420, Responsiveness 0.2; flicker along the
+  motion: on pixels whose luma moved, |n − n before, where it was| (the motion from a fixed copy
+  of the search):
+
+  | | M4 still, at its place → along | along the motion, at its place → along |
+  |---|---|---|
+  | Distill-Any-Depth Base | 0.0010 → 0.0011 | 0.0026 → 0.0011 |
+  | Depth Anything 3 Small | 0.0024 → 0.0025 | 0.0117 → 0.0044 |
+  | Video Depth Anything Small | 0.0010 → 0.0010 | 0.0018 → 0.0008 |
+
+  At 0.1 the still flicker falls a third more for every model (0.0007, 0.0016, 0.0008) and
+  along the motion 0.0007, 0.0029, 0.0006. The measure shares the search with the filter; the
+  synthetic test does not: a textured near object moving 2 px a frame over a textured far
+  background, depth noisy ±0.04 (`FollowingTheMotionSmoothsAMovingObjectWithoutATrail`): its
+  spread 0.0139 at its place, 0.0070 along the motion (the still background 0.0069); the trail
+  in the 8 px behind it 0.140 against 0.002. With white-noise textures the gain was small: a
+  quarter-px error makes such a picture unlike itself, so every pixel looked changed; video
+  changes smoothly between pixels. Tried and dropped: a per-component median (moving flicker
+  0.0011 → 0.0014), unchecked reads (20 → 17 ms on one core, the same over the cores), the jump
+  allowed only near found motion (the 0.5-texel motion was missed now and then: trail 0.04).
+- **Cost:** post-processing 11.7 ms a frame at 756×420 (from 3.1) and 6.4 at 518×294 (from 2.2),
+  alongside the model's 5–11 ms on its own thread: the pair keeps up with 60 fps at 756×420.
+  If it ever paces the depth, the motion could be found on the model thread while the GPU runs.
+
+173 tests pass.
+
+### Buffer 2, 3 or 4 s (2026-10-26, user: "set 2S buffer as default and minimum. you can add 3s and 4s")
+
+- **The choices:** Live, Auto, Matched, then Buffer 2 s (the default, as before), 3 s and 4 s;
+  0.5 and 1 s are gone. A saved 0.5 or 1 s loads as 2 (`AppSettings.ForgetRemovedChoices`,
+  `MinBufferSeconds`/`MaxBufferSeconds`).
+- **Room for 4 s:** the player's kept frames may take 800 MB (4 s of 1080p at 60 fps is 746 MB;
+  640 before, which would have dropped frames past 3.4 s), and `PagePictures` keeps 300 depth
+  frames (240 before: 4 s at 60 fps with nothing over for the look-ahead). The sound's delay line
+  is sized to the delay asked (up to 179 s), and the model's look-ahead stays at 30 frames at most.
+- **Lighter storage** (user: "Check if there any better way to handle buffer storage"):
+  - The player keeps each frame at the smaller of its size on the screen and the video's own: a
+    720p video on the 1080p screen at 1280×720, 1.4 MB a frame instead of 3.1 (its chroma is the
+    video's own then; the show pass scales as the canvas did). 4 s at 60 fps: 330 MB, not 746.
+  - Slots a whole stretch of the delay and a second never needed are given back (`trimSlots`,
+    four spare): from 4 s to 2 s, half the memory goes after about 3 s; with the delay off, all
+    of it. Before, they stayed until the theater closed. A seek keeps them (refilled within the stretch).
+  - The app keeps the depth for the delay in 16 bits a pixel (`NearnessBlend.Pack`; steps of
+    1/65535 of the clamped 0..1): 300 frames at 756×420 take 190 MB, not 381. Unpacking or
+    blending the frame shown: 0.08–0.46 ms (`ParallelSpeedTests`). The model's own frame goes
+    back to it at once (it was held as long as its depth was kept).
+  - Room checked on this PC: RTX 5060 with 8 GB (the app about 1.1 GB), 32 GB RAM.
+- **The user's run** (Release, 11:57–12:14; 4K, 1440p, 1080p and 720p videos at 24–30 fps):
+  the 3 and 4 s buffers held (sound 2.95 and 3.95 s late, about 90 depth frames ahead at 4 s and
+  24 fps), VRAM 1.0–1.17 GB, process memory 1.9–2.7 GB, no errors.
+- **Fixed: a model change dropped the delay** ("plays the sound live again", then 0.00 s, and the
+  whole delay filled again: up to 4 s more of spinner after the load; in the 2026-10-25 run too).
+  While a model loads the app asks the player for no frames, and the player reported `pictures:
+  false`; the model ready, the app read that as a player that cannot send its frames, went live
+  and stopped the delay, before the player's next state said otherwise. `pictures` now says what
+  the player can do (WebGL, a video it may read), whether or not frames are wanted now.
+
 ### Next
 
 1. The decisions still open in `docs/packaging.md`: the extension in a store, signing, an
    update check, shipping Windows ML's DLL beside GPL-3.0 code.
-2. Judge Video Depth Anything Small in the glasses against Distill-Any-Depth Base: keep it as a
-   choice or remove it.
-3. Measures worth taking in a run: M4 flicker for one clip in live, matched and buffer timing;
+2. Judge Video Depth Anything Small in the glasses against Distill-Any-Depth Base (above: same
+   cost, half the model's flicker, the smoothing evens them on still pixels): keep it, make it
+   the theater's default, or give it lighter smoothing (0.35–0.5). Depth Anything 3 flickers
+   most for no speed gain at Base: remove it, or keep Small as the fast choice.
+3. Video Depth Anything's offline mode in the buffer (the authors' trained mode, above), and
+   its states in fp16 (170 MB less VRAM): a new export each.
+4. Measures worth taking in a run: M4 flicker for one clip in live, matched and buffer timing;
    the `post … ms` part at 756×420; Soft edges Auto against 1 and 0, Warp Splat against Lookup.
-4. From P1, still open: the glasses' refresh rate in 3D mode, and whether the hardware 3D button
+5. From P1, still open: the glasses' refresh rate in 3D mode, and whether the hardware 3D button
    works with the glasses removed from the desktop (plan D2 Stage B).
-5. Depth with no delay at all, from the player's own buffered segments (checked feasible on
+6. Depth with no delay at all, from the player's own buffered segments (checked feasible on
    YouTube and WeTV, see "Depth ahead from the player's own buffer"): build only if wanted.
 
 ## Carried over from the DesktopSbS session

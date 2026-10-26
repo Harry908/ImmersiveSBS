@@ -23,8 +23,11 @@ namespace ImmersiveSBS.Depth;
 /// </remarks>
 public sealed class PagePictures : IDisposable
 {
-    /// <summary>Depth frames kept at most (4 s at 60 fps).</summary>
-    public const int MaxKept = 240;
+    /// <summary>
+    /// Depth frames kept at most: 5 s at 60 fps, the longest buffer (4 s) ahead of the frame shown
+    /// and a second behind it; at 756×420, 16 bits a pixel, 190 MB (as floats it was twice that).
+    /// </summary>
+    public const int MaxKept = 300;
 
     /// <summary>The model's frame ids for these frames start here, apart from the captured frames'.</summary>
     public const long FirstId = 1L << 40;
@@ -34,9 +37,11 @@ public sealed class PagePictures : IDisposable
     private readonly object gate = new();
     /// <summary>Handed to the model, depth not back yet: id → which frame, and when it was handed over.</summary>
     private readonly Dictionary<long, (Key Key, long Ticks)> pending = [];
-    /// <summary>Depth by frame, sorted by line, then time in the video.</summary>
-    private readonly List<(Key Key, DepthFrame Depth)> kept = [];
-    private readonly Stack<DepthFrame> pool = new();
+    /// <summary>Depth by frame, sorted by line, then time in the video; 16 bits a pixel (<see cref="NearnessBlend.Pack"/>).</summary>
+    private readonly List<(Key Key, ushort[] Depth)> kept = [];
+    private readonly Stack<ushort[]> pool = new();
+    /// <summary>The model's last frame, handed back to it with the next take (its memory reused).</summary>
+    private DepthFrame? spent;
     private readonly long clockOrigin = Stopwatch.GetTimestamp();
     private long nextId = FirstId;
     private int lastLine = int.MinValue;
@@ -150,7 +155,8 @@ public sealed class PagePictures : IDisposable
     public int TakeDepth(DepthService service, List<double>? agesMs = null)
     {
         int taken = 0;
-        DepthFrame? frame = pool.Count > 0 ? pool.Pop() : null;
+        // Each frame is packed as it is filed and goes back to the model with the next take.
+        ref DepthFrame? frame = ref spent;
         while (service.TryTake(ref frame))
         {
             (Key Key, long Ticks) found;
@@ -167,25 +173,28 @@ public sealed class PagePictures : IDisposable
             taken++;
             agesMs?.Add(Stopwatch.GetElapsedTime(found.Ticks).TotalMilliseconds - frame.HeldMs);
             File(found.Key.Line, found.Key.MediaTime, frame);
-            frame = pool.Count > 0 ? pool.Pop() : null;
         }
-        if (frame != null) pool.Push(frame);
         return taken;
     }
 
-    /// <summary>Files the depth of a frame (line, time in the video), as <see cref="TakeDepth"/> does for the model's; render thread.</summary>
+    /// <summary>
+    /// Files the depth of a frame (line, time in the video), as <see cref="TakeDepth"/> does for
+    /// the model's; render thread. Packed into 16 bits: <paramref name="frame"/> may be reused at once.
+    /// </summary>
     public void File(int line, double mediaTime, DepthFrame frame)
     {
         var key = new Key(line, mediaTime);
+        ushort[] depth = pool.Count > 0 && pool.Peek().Length == frame.Nearness.Length ? pool.Pop() : new ushort[frame.Nearness.Length];
+        NearnessBlend.Pack(frame.Nearness, depth);
         int i = kept.Count;
         while (i > 0 && kept[i - 1].Key.CompareTo(key) > 0) i--;
         if (i > 0 && kept[i - 1].Key.Equals(key))
         {
             Recycle(kept[i - 1].Depth);
-            kept[i - 1] = (key, frame);
+            kept[i - 1] = (key, depth);
             return;
         }
-        kept.Insert(i, (key, frame));
+        kept.Insert(i, (key, depth));
         while (kept.Count > MaxKept)
         {
             Recycle(kept[0].Depth);
@@ -193,9 +202,9 @@ public sealed class PagePictures : IDisposable
         }
     }
 
-    private void Recycle(DepthFrame frame)
+    private void Recycle(ushort[] depth)
     {
-        if (pool.Count < 8) pool.Push(frame);
+        if (pool.Count < 8) pool.Push(depth);
     }
 
     /// <summary>Depth frames filed; render thread.</summary>
@@ -236,7 +245,7 @@ public sealed class PagePictures : IDisposable
         if (before >= 0 && after >= 0 && kept[after].Key.MediaTime - kept[before].Key.MediaTime <= spanSeconds)
         {
             double t0 = kept[before].Key.MediaTime, t1 = kept[after].Key.MediaTime;
-            float[] a = kept[before].Depth.Nearness, b = kept[after].Depth.Nearness;
+            ushort[] a = kept[before].Depth, b = kept[after].Depth;
             if (a.Length != into.Length || b.Length != into.Length) return false;
             NearnessBlend.Lerp(a, b, (float)((mediaTime - t0) / (t1 - t0)), into);
             lagMs = Math.Min(mediaTime - t0, t1 - mediaTime) * 1000;
@@ -249,9 +258,9 @@ public sealed class PagePictures : IDisposable
     private bool Copy(int k, double lagSeconds, float[] into, out double lagMs)
     {
         lagMs = lagSeconds * 1000;
-        float[] from = kept[k].Depth.Nearness;
+        ushort[] from = kept[k].Depth;
         if (from.Length != into.Length) return false;
-        Array.Copy(from, into, into.Length);
+        NearnessBlend.Lerp(from, from, 0, into);
         return true;
     }
 

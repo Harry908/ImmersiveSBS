@@ -215,13 +215,14 @@ public sealed class BrowserLink : IDisposable
     /// <summary>
     /// What every browser is told about the app: whether the glasses show 3D (the theater
     /// button shows only then), the 3D settings its panel shows, and the size the theater sends
-    /// its frames at for the depth model (null: none wanted). Sent when it changes and to each
-    /// browser that connects. Any thread.
+    /// its frames at for the depth model (null: none wanted), and whether a depth model is loading
+    /// (the theater pauses its video until it is ready). Sent when it changes and to each browser
+    /// that connects. Any thread.
     /// </summary>
-    public void SetStatus(bool glasses, object? settings, System.Drawing.Size? picture = null)
+    public void SetStatus(bool glasses, object? settings, System.Drawing.Size? picture = null, bool loading = false)
     {
         object? size = picture is { Width: > 0, Height: > 0 } p ? new { width = p.Width, height = p.Height } : null;
-        string text = JsonSerializer.Serialize(new { type = "status", glasses, settings, picture = size });
+        string text = JsonSerializer.Serialize(new { type = "status", glasses, settings, picture = size, loading });
         if (Interlocked.Exchange(ref status, text) == text) return;
         foreach (BrowserConnection c in Connections) SendText(c, text);
     }

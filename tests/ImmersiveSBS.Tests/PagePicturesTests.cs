@@ -26,8 +26,34 @@ public class PagePicturesTests
         pictures.File(0, 1.067, Flat(0.3f));
         var into = new float[W * H];
         Assert.True(pictures.Nearness(0, 1.0333, 0.15, into, out double lag));
-        Assert.Equal(0.2f, into[5]);
+        Assert.Equal(0.2f, into[5], Packed);
         Assert.Equal(0, lag);
+    }
+
+    /// <summary>The depth is kept in 16 bits: steps of 1/65535.</summary>
+    private const float Packed = 1f / 65535;
+
+    [Fact]
+    public void TheLongestBufferAtSixtyFramesASecondFitsWithItsDepthKeptInSixteenBits()
+    {
+        // 4 s ahead of the frame shown and 1 s behind it, 60 frames a second: every frame ahead
+        // keeps its own depth (the cap lets go of the oldest, behind, first).
+        using var pictures = new PagePictures();
+        for (int f = 0; f < 5 * 60; f++) pictures.File(0, f / 60.0, Flat(f / 300f));
+        var into = new float[W * H];
+        for (int f = 60; f < 5 * 60; f += 7)
+        {
+            Assert.True(pictures.Nearness(0, f / 60.0, 0.07, into, out double lag));
+            Assert.Equal(f / 300f, into[3], Packed);
+            Assert.Equal(0, lag);
+        }
+        // Out of range values are clamped to the nearness's 0..1, and the steps are that fine.
+        pictures.File(1, 0, Flat(1.5f));
+        pictures.File(1, 1, Flat(0.123456f));
+        Assert.True(pictures.Nearness(1, 0, 0.07, into, out _));
+        Assert.Equal(1f, into[0]);
+        Assert.True(pictures.Nearness(1, 1, 0.07, into, out _));
+        Assert.Equal(0.123456f, into[0], Packed);
     }
 
     [Fact]
@@ -38,12 +64,12 @@ public class PagePicturesTests
         pictures.File(0, 1.100, Flat(0.6f));
         var into = new float[W * H];
         Assert.True(pictures.Nearness(0, 1.025, 0.15, into, out double lag));
-        Assert.Equal(0.3f, into[0], 5);
+        Assert.Equal(0.3f, into[0], Packed);
         Assert.Equal(25, lag, 6);
         // Too far apart to interpolate: the newest before it, within half a second (live timing).
         pictures.File(0, 1.400, Flat(0.9f));
         Assert.True(pictures.Nearness(0, 1.300, 0.15, into, out lag));
-        Assert.Equal(0.6f, into[0]);
+        Assert.Equal(0.6f, into[0], Packed);
         Assert.Equal(200, lag, 6);
     }
 
@@ -56,12 +82,12 @@ public class PagePicturesTests
         pictures.File(1, 1.000, Flat(0.1f));
         var into = new float[W * H];
         Assert.True(pictures.Nearness(0, 5.000, 0.15, into, out _));
-        Assert.Equal(0.5f, into[0]);
+        Assert.Equal(0.5f, into[0], Packed);
         Assert.Equal(2, pictures.Count);
         Assert.False(pictures.Nearness(1, 0.400, 0.15, into, out _));   // nothing before it on its line
         Assert.Equal(1, pictures.Count);                                 // line 0 is past
         Assert.True(pictures.Nearness(1, 1.000, 0.15, into, out _));
-        Assert.Equal(0.1f, into[0]);
+        Assert.Equal(0.1f, into[0], Packed);
     }
 
     [Fact]

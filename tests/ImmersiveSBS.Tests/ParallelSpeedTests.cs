@@ -51,8 +51,8 @@ public class ParallelSpeedTests(ITestOutputHelper output)
         double serialLuma = Time(() => { using (RowBands.Limit(1)) foreach (float[] x in s.Inputs) DepthService.Luma(x, luma, w * h); }) / Frames;
         double parallelLuma = Time(() => { foreach (float[] x in s.Inputs) DepthService.Luma(x, luma, w * h); }) / Frames;
 
-        // 3. The render thread's blend for a shown frame whose own depth the model skipped.
-        float[][] maps = [.. parallelOut.Take(2)];
+        // 3. The render thread's blend for a shown frame whose own depth the model skipped (kept in 16 bits).
+        ushort[][] maps = [.. parallelOut.Take(2).Select(n => { var p = new ushort[n.Length]; NearnessBlend.Pack(n, p); return p; })];
         var blended = new float[w * h];
         double serialTwo = Time(() => { using (RowBands.Limit(1)) for (int k = 0; k < Frames; k++) NearnessBlend.Lerp(maps[0], maps[1], 0.4f, blended); }) / Frames;
         double parallelTwo = Time(() => { for (int k = 0; k < Frames; k++) NearnessBlend.Lerp(maps[0], maps[1], 0.4f, blended); }) / Frames;

@@ -81,7 +81,7 @@ per file. Source files mix CRLF and LF line endings; keep each file's own.
   on a second thread, alongside the next frame's model, each step split over bands of rows on
   up to 8 cores (`RowBands`; the theater's depth by frame needs it on the CPU anyway)
   (`DepthPostProcessor`: normalisation,
-  temporal smoothing, then on the output only `EdgeFilters` anti-aliasing and soft edges, the
+  temporal smoothing along the picture's motion (`MotionField`), then on the output only `EdgeFilters` anti-aliasing and soft edges, the
   player's boxes, static overlays, `CaptionLock` for burned-in subtitles); `StereoSynth` builds
   both eyes with compute shaders (guided upsample, optional snap and dilation, slope limit, then
   the forward splat or the lookup warp). Only new pictures go to the model: in the theater the
@@ -95,14 +95,16 @@ per file. Source files mix CRLF and LF line endings; keep each file's own.
   through I/O binding, reset at seeks and scene cuts.
 - **Timing** (`StereoSettings.Timing`, `BufferSeconds`): live; matched (`MatchedDelay` sets a
   delay of 50–300 ms from the measured depth age; Auto turns it on when depth runs over 60 ms
-  behind); or the buffer (2 s by default). Only the theater is ever delayed, and only by its page.
+  behind); or the buffer (2, 3 or 4 s; 2 by default and at least). Only the theater is ever delayed, and only by its page.
 - **Delay: only in the page, sound and picture together.** The app never delays, captures,
   replays or turns down any sound, and never shows the screen late: it is always shown as it
   is. The extension delays the theater video's tab's sound through Web Audio, and its player
   shows the picture as late itself (WebGL: each presented frame kept as luma and half-size
-  chroma, 1.5 bytes a pixel at the size shown, stamped on the audio clock and drawn when its
+  chroma, 1.5 bytes a pixel at the size shown or the video's own if smaller, slots no longer
+  needed given back (`trimSlots`), stamped on the audio clock and drawn when its
   sound is heard), with the caption read with each frame, its bar, panel and spinner live over
-  it. The session reports `DelayRegion`/`DelaySeconds`; the controller asks the page for that
+  it; each video at its own frame rate (frame interpolation to 60 fps was tried and removed on
+  2026-10-26: no better 3D, only more work). The session reports `DelayRegion`/`DelaySeconds`; the controller asks the page for that
   delay (`SetDelay`: the sound's with the trim and output latency, the picture's without) and
   tells the session how late the sound plays now (`SoundDelay`: the model looks that far
   ahead). Protected and cross-site media cannot be delayed (`BrowserCanDelay`): live then. No
@@ -112,7 +114,8 @@ per file. Source files mix CRLF and LF line endings; keep each file's own.
   jumps, which keys the depth); the player shows a spinner until the new place's first frame;
   a paused seek shows its frame at once.
 - **Theater** (`content.js` "The 3D theater"): while the app says the glasses are in 3D mode
-  (`BrowserLink.SetStatus`, with the 3D panel's values, the stretch and what the video is), a
+  (`BrowserLink.SetStatus`, with the 3D panel's values, the stretch, what the video is, and
+  whether a model is loading: the player then waits, paused, `holdForModel`), a
   "3D theater" button shows over a video the mouse is on; pressed (a real click, so the page may
   go full screen), a player in a closed shadow root covers the page, goes full screen and draws
   the video on a WebGL 2 canvas at the picture's size on the screen (stretched if set; a 2D
@@ -146,63 +149,32 @@ per file. Source files mix CRLF and LF line endings; keep each file's own.
 - A Debug build runs the depth post-processing 5–7 times slower (55 ms against 8 ms a frame at
   518×294 with the edge steps, single-threaded); the app logs a warning. Use Release for runs in
   the glasses, and only trust timings from Release tests. Split over cores (16 bands on at most
-  8 threads), Release takes 2.2 ms at 518×294 and 3.1 ms at 756×420 against 4.7 and 8.7 on one
+  8 threads), Release took 2.2 ms at 518×294 and 3.1 ms at 756×420 against 4.7 and 8.7 on one
   core on 48 consecutive frames (20–26 ms in the app before; the 3.3/5.7 first recorded were one
-  picture 48 times, see below). `ParallelSpeedTests` measures both on 48 frames of a real
+  picture 48 times, see below); with the smoothing following the motion (2026-10-25), 6.4 and
+  11.7 ms (19.7 and 42.1 on one core), alongside the model's 5–11. `ParallelSpeedTests` measures both on 48 frames of a real
   clip with the real model's depth, when `%LOCALAPPDATA%\ImmersiveSBS\samples` has the clip
   (Big Buck Bunny 720p, 10 s, CC-BY; not in the repo); timing tests share the "Timing" xUnit
   collection, which runs alone.
-- The forward splat opens a hole wherever nearness changes by more than 2/S per px
-  (improvement-plan.md §2.1); soft edges alone do not prevent it for big steps, the slope limit
-  does. Holes at the region's side edges are not counted in M2.
 - GPU timings from tests mean nothing while the GPU idles between frames (a laptop GPU clocks
   down tenfold): keep it busy, as `EdgePipelineTests` does.
 
 - `BlendDescription` needs the four-argument form (alpha factors Zero/One), or
   `CreateBlendState` fails with E_INVALIDARG.
-- `DepthService.TryTake` swaps frames with the caller; frames from another model size must not
-  be recycled.
-- TensorRT for RTX runs a model at the precision of its file, so speed needs fp16 files.
-  `onnxconverter_common`'s fp16 converter breaks on a dynamic export's shape arithmetic (casts
-  around Shape/Gather/Range); fold it into constants first (ORT's basic optimizer on the static
-  fp32 model), then convert. Cached engines are named by a fingerprint of the model file.
 - Never reset a delay line on a passing change: dropping the kept frames freezes the picture
   for the whole delay, restarting the delayed sound silences it as long, and jumping the audio
   read position is a click.
-- In an element's full screen Edge's `outerWidth`/`outerHeight` need not match `screen` (1489×832
-  against 1501×844): the theater counts as on the screen when `document.fullscreenElement` is
-  its player, not by comparing sizes. A hidden element's `innerText` is all its text, so caption
-  boxes are read only when `checkVisibility()` says they are shown. While another element (the
-  theater) is full screen, WeTV lays its video out at no height (937×0) but keeps its caption
-  shown: captions are not tested against a video box that has no size.
 - A captured screen has the page's video and its controls merged into one picture: delaying it
   in the app (the buffer, matched timing, removed 2026-10-19) brought the controls seconds late,
   and patching them in from the live screen showed the video at another time through them, a
   see-through hole that stayed where a panel had been for the length of the delay (the video
   under an old panel is in no capture). Two layers exist only in the page: it delays the
   picture itself, and the app shows the screen as it is.
-- An element replaced between a press and its release gets no click: the player rewrote its
-  play icon on every mouse move (`showControls`), so a press on the icon with the slightest move
-  did nothing (6 of 6 in a test). Icons change only when they differ (`setIcon`), icons take no
-  pointer events, and the 3D panel is built once and only its values change.
-- Python's `http.server` answers no range requests: a page test's video served by it cannot
-  seek (every seek lands at 0). Load it as a blob for seek tests.
-- Page reports (frames, boxes) go page → worker → socket and often arrive after the capture of
-  the frame they describe. Matching a capture only with reports already in dropped 40 % of a
-  30 fps video's frames; `PageVideo.TryFrameAt` counts frames on past the newest report (not
-  for the player's own delayed frames: it holds one while a new delay fills, the video playing
-  on), and boxes go straight to `PageVideo` with their time (never through the controller's
-  250 ms timer) so the depth thread takes each frame's own.
 - `MediaComposition.GetThumbnailsAsync` with times 1/30 s apart returns one picture for all of
   them; `SampleClip` asks for one thumbnail per call (the earlier "consecutive frames" were one
   picture repeated).
-- TensorRT for RTX fuses MatMul–softmax–MatMul into an attention kernel that gives NaN for heads
-  of 8 and 24 channels (Video Depth Anything's 64- and 192-channel temporal modules; 48 works),
-  also with the softmax written out. The export writes that attention without matrix products.
-  A traced `torch.empty` (baddbmm with beta 0) becomes a constant of whatever memory held.
-- `createMediaElementSource` reroutes an element for good, and through a suspended
-  `AudioContext` it goes silent: the extension attaches only playing elements, only once its
-  context runs, and never cross-origin or protected media (Web Audio gets silence from them).
+
+More in `src/ImmersiveSBS/Depth/CLAUDE.md` (the depth path) and `extension/CLAUDE.md` (the page).
 
 ## Rules carried over from DesktopSbS
 

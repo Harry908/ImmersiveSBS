@@ -256,6 +256,14 @@ public sealed class AiStereo : IDisposable
             Forget();
             DelaySeconds = 0;
             Status = "AI 3D off";
+            // Depth still queued from the theater, which nothing takes now, kept the session
+            // redrawing every refresh for a new result (32–50 fps with nothing on the screen changing).
+            if (service != null)
+            {
+                service.KeepAll = false;
+                service.LookAheadFrames = lookAheadFrames = 0;
+                service.TryTake(ref depth);
+            }
             return null;
         }
         // While the video is looked for, a delay already running is kept (the controller allows a

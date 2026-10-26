@@ -63,6 +63,53 @@ public sealed class DepthEstimator : IDepthRunner
     }
 
     /// <summary>
+    /// Builds <paramref name="model"/>'s engines for this GPU if it has none yet, so its first use
+    /// loads in about a second instead of waiting for the build (the background preparation at
+    /// start, <see cref="EnginePreparer"/>). False when they were all there already.
+    /// </summary>
+    public static bool Prepare(DepthModel model)
+    {
+        if (!model.Exists) return false;
+        OrtEpDevice device = TensorRtRtx.Devices()[0];
+        bool built = false;
+        foreach ((string label, string stem, string path) in Graphs(model))
+            built |= EnsureEngine(label, stem, path, device, null) is { Built: true };
+        return built;
+    }
+
+    /// <summary>The model files a model runs: one, or a temporal model's first-frame graph and its step.</summary>
+    internal static IEnumerable<(string Label, string Stem, string Path)> Graphs(DepthModel model) => model.Temporal
+        ? [(model + " (first frame)", model.FirstStem, model.FirstFilePath), (model.ToString(), model.Stem, model.FilePath)]
+        : [(model.ToString(), model.Stem, model.FilePath)];
+
+    /// <summary>One build of an engine at a time: the background preparation and a model being loaded may want the same one.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, object> EngineLocks = new();
+
+    /// <summary>
+    /// The engine for one model file on this GPU, built and cached first if there is none: its
+    /// path, or the model file itself when the build failed.
+    /// </summary>
+    private static (string Path, bool Built) EnsureEngine(string label, string stem, string path, OrtEpDevice device, Action<string>? progress)
+    {
+        string gpu = $"{device.HardwareDevice.VendorId:x4}-{device.HardwareDevice.DeviceId:x4}";
+        Directory.CreateDirectory(EnginesDirectory);
+        string compiled = Path.Combine(EnginesDirectory, EngineFileName(stem, path, gpu));
+        lock (EngineLocks.GetOrAdd(compiled, _ => new object()))
+        {
+            if (File.Exists(compiled)) return (compiled, false);
+            progress?.Invoke($"Preparing {label} for this GPU (first use, about 20 s)…");
+            if (!TryCompile(label, stem, path, device, compiled)) return (path, false);
+            // The first session from a new engine compiles its kernels into the runtime cache and
+            // kept that work: 2.3 GB against 0.8 GB for Distill-Any-Depth Base 756×420, until the
+            // model was unloaded. Made and dropped here, the session that is kept loads from the cache.
+            var watch = Stopwatch.StartNew();
+            CreateSession(compiled, device).Dispose();
+            Log.Write($"Depth: {label} loaded once for its kernels in {watch.Elapsed.TotalSeconds:0.0} s.");
+            return (compiled, true);
+        }
+    }
+
+    /// <summary>
     /// A session for one model file on TensorRT for RTX, from its cached engine, compiling and
     /// caching that first if needed. <paramref name="stem"/> names the engine; <paramref name="label"/> the status lines.
     /// </summary>
@@ -70,16 +117,8 @@ public sealed class DepthEstimator : IDepthRunner
     {
         IReadOnlyList<OrtEpDevice> devices = TensorRtRtx.Devices(progress);
         device = devices[0];
-        string gpu = $"{device.HardwareDevice.VendorId:x4}-{device.HardwareDevice.DeviceId:x4}";
-        Directory.CreateDirectory(EnginesDirectory);
-        string compiled = Path.Combine(EnginesDirectory, EngineFileName(stem, path, gpu));
-
         var watch = Stopwatch.StartNew();
-        if (!File.Exists(compiled))
-        {
-            progress?.Invoke($"Preparing {label} for this GPU (first use, about 20 s)…");
-            if (!TryCompile(label, stem, path, device, compiled)) compiled = path;
-        }
+        string compiled = EnsureEngine(label, stem, path, device, progress).Path;
 
         try
         {
@@ -93,7 +132,7 @@ public sealed class DepthEstimator : IDepthRunner
             Log.Write($"Depth: cached engine failed to load ({e.Message}); rebuilding.");
             File.Delete(compiled);
             progress?.Invoke($"Rebuilding {label} for this GPU…");
-            return CreateSession(TryCompile(label, stem, path, device, compiled) ? compiled : path, device);
+            return CreateSession(EnsureEngine(label, stem, path, device, progress).Path, device);
         }
     }
 

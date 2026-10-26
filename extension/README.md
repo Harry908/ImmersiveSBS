@@ -10,22 +10,24 @@ Part of the ImmersiveSBS app, for Chrome and Edge. It is how browser video reach
   its window.
 - **Its controls** sit together toward the middle of the screen, away from the edges the glasses
   blur: one frosted bar with the seek bar, the time, 10 s back and forward, play/pause, mute,
-  the 3D settings panel (model, resolution, depth, screen plane, timing, stretch, whether the
-  video is 2D or already 3D) and Exit. The bar hides while the video plays and the mouse rests.
+  the 3D settings panel (model, resolution, depth, screen plane, timing, stretch,
+  whether the video is 2D or already 3D) and Exit. The bar hides while the video plays and the mouse rests.
   A click on the picture plays or pauses. Keys: Space or K play/pause, ← → or J L skip 10 s,
   M mute, Esc leaves. The page's subtitles are shown in the picture, whether or not the site's
   own player was full screen.
 - **Pause, play and seek without gaps.** With the buffer, a pause holds the delayed picture and
   sound, and play goes on from the same moment; opening the theater or seeking shows a spinner
-  while the buffer fills (its length, 2 s by default). A seek while paused shows the new place
+  while the buffer fills (its length: 2, 3 or 4 s, 2 by default). A seek while paused shows the new place
   at once. A live stream is never buffered.
 - **The delay.** For the buffer and matched timing, the player shows the video late itself and
   plays that tab's sound as late, through Web Audio, so it keeps its full quality and its usual
   output; other tabs stay live. Its controls stay live on top, and the app shows the screen as
   it is. Meanwhile it sends the app each frame as it plays, small, so the depth is ready before
   the frame is shown.
+- **A model change waits.** While the app loads another depth model (or resolution), the video
+  pauses with the spinner and plays on once the model is ready.
 
-The app speaks one version of it (protocol 3; this is extension 1.8.3). An older copy still
+The app speaks one version of it (protocol 3; this is extension 1.9.0). An older copy still
 loaded in the browser is refused, and the app says to reload it.
 
 ## Install

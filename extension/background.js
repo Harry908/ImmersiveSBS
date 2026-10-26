@@ -109,8 +109,12 @@ function onAppMessage(text) {
       break;
     case 'status':
       // Whether the glasses show 3D (the theater button shows only then), the 3D settings, and
-      // the size the theater sends its frames at for the depth model (null: none).
-      appStatus = { type: 'status', glasses: m.glasses === true, settings: m.settings ?? null, picture: m.picture ?? null };
+      // the size the theater sends its frames at for the depth model (null: none), and whether a
+      // depth model is loading (the theater waits, paused).
+      appStatus = {
+        type: 'status', glasses: m.glasses === true, settings: m.settings ?? null, picture: m.picture ?? null,
+        loading: m.loading === true,
+      };
       for (const entry of frames.values()) entry.port.postMessage(appStatus);
       break;
     case 'theater':

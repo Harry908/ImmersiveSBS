@@ -239,10 +239,12 @@
       appStatus = {
         glasses: m.glasses === true, settings: m.settings ?? null,
         picture: Number(size?.width) > 0 && Number(size?.height) > 0 ? { width: Number(size.width), height: Number(size.height) } : null,
+        loading: m.loading === true,
       };
       if (!appStatus.glasses) showButton(null);
       renderPanel();
       if (theater) {
+        holdForModel(theater);
         // The stretch may have changed.
         if (delaying(theater)) sizePicture(theater);
         else drawLive(theater, null);
@@ -640,7 +642,7 @@
       captions: [], captionPlayer: null, captionObserver: null, captionsDirty: true, captionsStale: true, tracks: [],
       onCaptionChange: null, onTracks: null, liveCaption: '', shownCaption: '', captionStyle: '',
       liveTime: NaN, drawn: 0, drawnTime: NaN, drawnLine: 0, reported: '', boxes: '', state: '', onMedia: null, onResize: null,
-      panelBuilt: false,
+      panelBuilt: false, modelHold: null,
       small: null, smallCtx: null, picturesOut: 0, picturesBlocked: false,
     };
     // Kept frames need WebGL, which refuses a video the page may not read (another site's, without CORS).
@@ -728,6 +730,8 @@
         if (delaying(t)) showDue(t);
         else dropPictures(t);
       }
+      if (t.pic) trimSlots(t.pic);
+      holdForModel(t);
       showSpinner(t);
       readCaptions(t);
       showProgress();
@@ -803,6 +807,8 @@
     const el = t.el;
     switch (act) {
       case 'play':
+        // Played while it waits for a model: the user's choice, kept.
+        if (t.modelHold === 'paused') t.modelHold = 'left';
         if (el.paused || el.ended) el.play().catch(() => {});
         else el.pause();
         break;
@@ -878,10 +884,31 @@
     button.innerHTML = icon(name);
   }
 
-  /** The spinner while a new delay line fills, and after a seek until its first frame shows (not while paused: the bar says that). */
+  /**
+   * While the app loads a depth model (another model or size chosen, or its first load), the
+   * video waits, paused, with the spinner: the model takes no frames until it is ready, so the
+   * ones played meanwhile would have no depth. It plays on once the model is ready. A video
+   * paused already, ended or live is left as it is, and so is one the user plays meanwhile.
+   */
+  function holdForModel(t) {
+    const el = t.el;
+    if (appStatus.loading) {
+      if (t.modelHold !== null) return;
+      t.modelHold = !el.paused && !el.ended && el.duration !== Infinity ? 'paused' : 'left';
+      if (t.modelHold === 'paused') el.pause();
+    } else if (t.modelHold !== null) {
+      if (t.modelHold === 'paused' && el.paused && !el.ended) el.play().catch(() => {});
+      t.modelHold = null;
+    }
+  }
+
+  /**
+   * The spinner while a new delay line fills, and after a seek until its first frame shows (not
+   * while paused: the bar says that), and while the video waits for a model (holdForModel).
+   */
   function showSpinner(t) {
     if (t.waitFor !== null && !delaying(t)) t.waitFor = null;
-    const on = !!context && (t.fillUntil > context.currentTime || t.waitFor !== null) && !t.el.paused;
+    const on = t.modelHold === 'paused' || (!!context && (t.fillUntil > context.currentTime || t.waitFor !== null) && !t.el.paused);
     if (t.spinner.hidden !== on) return;
     t.spinner.hidden = !on;
     reportBoxes(t);
@@ -975,8 +1002,10 @@
   }
 
   /**
-   * Sizes the canvas: with kept frames, the picture's size on the screen (they are kept at that
-   * size); without, the video's own (stretched). False while the video has no picture yet.
+   * Sizes the canvas: with kept frames, the picture's size on the screen; without, the video's
+   * own (stretched). Frames are kept at the smaller of the two in each direction: a 720p video
+   * on a 1080p screen at its own 1280×720 (less than half the memory, nothing lost: the show pass
+   * scales it as the canvas would), a 4K one at the screen's. False while the video has no picture yet.
    */
   function sizePicture(t) {
     const el = t.el, vw = el.videoWidth, vh = el.videoHeight;
@@ -997,13 +1026,14 @@
     if (t.canvas.width !== w || t.canvas.height !== h) {
       t.canvas.width = w;
       t.canvas.height = h;
-      if (t.pic) {
-        t.pic.width = w;
-        t.pic.height = h;
-        // A new size clears the canvas: the kept frame on it again (frames kept at the old size are drawn scaled).
-        if (t.pic.shown) glPass(t.pic, 'show', null, w, h, t.pic.shown.y.tex, t.pic.shown.uv.tex);
-      }
+      // A new size clears the canvas: the kept frame on it again (frames kept at another size are drawn scaled).
+      if (t.pic?.shown) glPass(t.pic, 'show', null, w, h, t.pic.shown.y.tex, t.pic.shown.uv.tex);
       placeCaption(t);
+    }
+    if (t.pic) {
+      // Also when only the video's size changes (a stream switching quality).
+      t.pic.width = Math.min(w, vw);
+      t.pic.height = Math.min(h, vh);
     }
     return true;
   }
@@ -1019,8 +1049,9 @@
   // clock, and drawn when its sound is heard: that clock stops while the sound is held (a pause),
   // so the picture holds with it.
 
-  const PICTURE_BUDGET = 640 * 1024 * 1024;  // bytes of kept frames at most (2 s of 1080p at 60 fps: 373 MB)
+  const PICTURE_BUDGET = 800 * 1024 * 1024;  // bytes of kept frames at most (the longest buffer, 4 s of 1080p at 60 fps: 746 MB)
   const PICTURE_LEAD = 0.035;                // s from drawing to the glasses: the page's next frame, the app's capture and present
+  const SPARE_SLOTS = 4;                     // free slots kept beyond the fewest needed (trimSlots)
 
   const GL_VERTEX = `#version 300 es
     out vec2 uv;
@@ -1077,7 +1108,7 @@
     gl.bindVertexArray(gl.createVertexArray());
     // The video at its own size, with mipmaps: drawn smaller (4K into the screen's size) without shimmer.
     const live = glTexture(gl, gl.LINEAR_MIPMAP_LINEAR);
-    return { gl, programs, live, width: 0, height: 0, slots: [], free: [], queue: [], shown: null };
+    return { gl, programs, live, width: 0, height: 0, slots: [], free: [], queue: [], shown: null, leastFree: 0, trimmedAt: performance.now() };
   }
 
   function glTexture(gl, minFilter) {
@@ -1130,19 +1161,16 @@
     sendState(true);
   }
 
-  /** A free place for a frame at the canvas's size, made while the budget allows; null when full. */
+  /** A free place for a frame at the size frames are kept at, made while the budget allows; null when full. */
   function takeSlot(pic) {
     while (pic.free.length) {
       const slot = pic.free.pop();
+      pic.leastFree = Math.min(pic.leastFree, pic.free.length);
       if (slot.y.w === pic.width && slot.y.h === pic.height) return slot;
-      // Of a size before (the stretch changed): its memory goes.
-      const gl = pic.gl;
-      for (const plane of [slot.y, slot.uv]) {
-        gl.deleteFramebuffer(plane.fb);
-        gl.deleteTexture(plane.tex);
-      }
-      pic.slots.splice(pic.slots.indexOf(slot), 1);
+      // Of a size before (the stretch or the video's size changed): its memory goes.
+      deleteSlot(pic, slot);
     }
+    pic.leastFree = 0;
     const bytes = slot => slot.y.w * slot.y.h * 1.5;
     if (pic.slots.reduce((sum, slot) => sum + bytes(slot), 0) + pic.width * pic.height * 1.5 > PICTURE_BUDGET) return null;
     const gl = pic.gl;
@@ -1157,6 +1185,28 @@
     const slot = { y: plane(gl.R8, pic.width, pic.height), uv: plane(gl.RG8, (pic.width + 1) >> 1, (pic.height + 1) >> 1) };
     pic.slots.push(slot);
     return slot;
+  }
+
+  function deleteSlot(pic, slot) {
+    const gl = pic.gl;
+    for (const plane of [slot.y, slot.uv]) {
+      gl.deleteFramebuffer(plane.fb);
+      gl.deleteTexture(plane.tex);
+    }
+    pic.slots.splice(pic.slots.indexOf(slot), 1);
+  }
+
+  /**
+   * Gives back the memory of the free slots that a whole stretch of the delay and a second more
+   * never needed (the fewest free in it, less a few spare): after the delay shortens (4 s to 2 s:
+   * half the frames) or ends. A seek's refill takes them back within the stretch, so it keeps them.
+   */
+  function trimSlots(pic) {
+    const now = performance.now();
+    if (now - pic.trimmedAt < (wantedPicture + 1) * 1000) return;
+    for (let n = Math.min(pic.leastFree, pic.free.length) - SPARE_SLOTS; n > 0; n--) deleteSlot(pic, pic.free.shift());
+    pic.leastFree = pic.free.length;
+    pic.trimmedAt = now;
   }
 
   /** The picture is delayed: kept frames, a delay asked for, and the sound going through its delay line. */
@@ -1277,9 +1327,12 @@
     const message = {
       type: 'state', id: t.id, paused: el.paused || el.ended, seeking: el.seeking, seeks: media.get(el)?.seeks ?? 0,
       rate: el.playbackRate, clockError: Number.isFinite(clockError) ? Math.round(clockError * 100) / 100 : null,
-      // A video with no end (a live stream) is never delayed; the player sends its frames for
-      // the depth model and can show them late (WebGL, a video it may read).
-      live: el.duration === Infinity, pictures: !!appStatus.picture && !t.picturesBlocked && !!t.pic,
+      // A video with no end (a live stream) is never delayed; the player can send its frames for
+      // the depth model and show them late (WebGL, a video it may read), also while the app wants
+      // none (a model loading): reported only while it wanted them, the app took the player's
+      // pause for the load as a video it could not delay and dropped the delay, which then
+      // filled again from nothing (up to 4 s of spinner after each model change).
+      live: el.duration === Infinity, pictures: !t.picturesBlocked && !!t.pic,
     };
     const text = JSON.stringify(message);
     if (!force && text === t.state) return;

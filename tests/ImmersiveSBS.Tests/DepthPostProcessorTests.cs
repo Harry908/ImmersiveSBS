@@ -1,8 +1,9 @@
 using ImmersiveSBS.Depth;
+using Xunit.Abstractions;
 
 namespace ImmersiveSBS.Tests;
 
-public class DepthPostProcessorTests
+public class DepthPostProcessorTests(ITestOutputHelper output)
 {
     private const int W = 64, H = 36;
 
@@ -218,5 +219,96 @@ public class DepthPostProcessorTests
         plain.Process(raw, Flat(0.5f), 1 / 30.0, a);
         edged.Process(raw, Flat(0.5f), 1 / 30.0, b);
         Assert.Equal(a, b);
+    }
+
+    /// <summary>A picture's texture: noise blurred over 5×5 px twice (a picture changes smoothly from pixel to pixel), 0.2..0.8.</summary>
+    private static float[] Texture(Random random, int w, int h)
+    {
+        float[] a = [.. Enumerable.Range(0, w * h).Select(_ => random.NextSingle())];
+        for (int pass = 0; pass < 2; pass++)
+        {
+            var b = new float[w * h];
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                {
+                    float sum = 0;
+                    int count = 0;
+                    for (int j = -2; j <= 2; j++)
+                        for (int i = -2; i <= 2; i++)
+                            if (x + i >= 0 && x + i < w && y + j >= 0 && y + j < h)
+                            {
+                                sum += a[(y + j) * w + x + i];
+                                count++;
+                            }
+                    b[y * w + x] = sum / count;
+                }
+            a = b;
+        }
+        float min = a.Min(), max = a.Max();
+        return [.. a.Select(v => 0.2f + 0.6f * (v - min) / (max - min))];
+    }
+
+    /// <summary>
+    /// A textured near object moving 2 px a frame over a textured far background, the model's
+    /// depth noisy by ±0.04 each frame: at its place, the smoothing could not smooth the moving
+    /// object (its picture changes under every pixel, so each takes the new depth) and its depth
+    /// flickered; along the motion it is smoothed as much as the still background, with no trail
+    /// behind it.
+    /// </summary>
+    [Fact]
+    public void FollowingTheMotionSmoothsAMovingObjectWithoutATrail()
+    {
+        const int w = 128, h = 72, ow = 40, oh = 24, oy = 24;
+        var random = new Random(3);
+        float[] background = Texture(random, w, h), texture = Texture(random, ow, oh);
+
+        (double Moving, double Still, double Trail) Run(bool follow)
+        {
+            var noise = new Random(7);
+            var p = new DepthPostProcessor(w, h) { FollowMotion = follow };
+            var n = new float[w * h];
+            double moving = 0, still = 0, trail = 0;
+            int frames = 0;
+            for (int t = 0; t < 30; t++)
+            {
+                int ox = 20 + 2 * t;
+                var luma = (float[])background.Clone();
+                var raw = new float[w * h];
+                for (int y = 0; y < h; y++)
+                    for (int x = 0; x < w; x++)
+                    {
+                        bool inside = x >= ox && x < ox + ow && y >= oy && y < oy + oh;
+                        if (inside) luma[y * w + x] = texture[(y - oy) * ow + x - ox];
+                        raw[y * w + x] = (inside ? 1f : 0.2f) + 0.04f * (2 * noise.NextSingle() - 1);
+                    }
+                p.Process(raw, luma, 1 / 30.0, n);
+                if (t < 15) continue;
+                // Spread inside the object (inset 4 px) and in a still patch of background, and
+                // the background just left behind (the last 4 frames' places) against the still patch.
+                double Spread(int x0, int x1, int y0, int y1, out double mean)
+                {
+                    var values = new List<float>();
+                    for (int y = y0; y < y1; y++)
+                        for (int x = x0; x < x1; x++) values.Add(n[y * w + x]);
+                    double m = values.Average();
+                    mean = m;
+                    return values.Average(v => Math.Abs(v - m));
+                }
+                moving += Spread(ox + 4, ox + ow - 4, oy + 4, oy + oh - 4, out _);
+                still += Spread(4, 16, 4, 16, out double far);
+                Spread(ox - 8, ox, oy + 4, oy + oh - 4, out double behind);
+                trail += behind - far;
+                frames++;
+            }
+            return (moving / frames, still / frames, trail / frames);
+        }
+
+        var atPlace = Run(follow: false);
+        var along = Run(follow: true);
+        output.WriteLine($"at its place: moving {atPlace.Moving:0.0000}, still {atPlace.Still:0.0000}, trail {atPlace.Trail:0.0000}");
+        output.WriteLine($"along motion: moving {along.Moving:0.0000}, still {along.Still:0.0000}, trail {along.Trail:0.0000}");
+        Assert.True(along.Moving < 0.6 * atPlace.Moving, $"moving object {along.Moving:0.0000} against {atPlace.Moving:0.0000} at its place");
+        Assert.True(along.Moving < 1.5 * along.Still, $"moving object {along.Moving:0.0000} against still background {along.Still:0.0000}");
+        Assert.True(Math.Abs(along.Trail) < 0.03, $"trail {along.Trail:0.0000}");
     }
 }

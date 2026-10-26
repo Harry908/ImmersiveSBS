@@ -186,6 +186,9 @@ public class DepthServiceTests
         var clock = Stopwatch.StartNew();
         while (service.State != DepthServiceState.Ready && clock.Elapsed < TimeSpan.FromSeconds(5)) Thread.Sleep(5);
         var input = new float[3 * Model.Width * Model.Height];
+        // The warm-up's runs, and the reset after them, come before Ready (WarmsTheModelBeforeItIsReady).
+        lock (fake.Log) fake.Log.Clear();
+        fake.Started.Reset();
 
         fake.Release.Reset();
         input[0] = 1;
@@ -201,6 +204,60 @@ public class DepthServiceTests
         Assert.True(SpinWait.SpinUntil(() => { lock (fake.Log) return fake.Log.Contains("run 3"); }, 2000));
 
         lock (fake.Log) Assert.Equal(["run 1", "run 2", "reset", "run 3"], fake.Log);
+    }
+
+    [Fact]
+    public void WarmsTheModelBeforeItIsReady()
+    {
+        // The first frames of 3D must not pay for the GPU's first work or the post-processing's
+        // first, unoptimised calls: the model runs before Ready, and a model with memory forgets it.
+        var fake = new TemporalFake(Model.Width * Model.Height, Model.Width);
+        using var service = new DepthService(Model, (_, _) => fake);
+        var clock = Stopwatch.StartNew();
+        while (service.State != DepthServiceState.Ready && clock.Elapsed < TimeSpan.FromSeconds(5)) Thread.Sleep(5);
+        Assert.Equal(DepthServiceState.Ready, service.State);
+        lock (fake.Log)
+        {
+            Assert.True(fake.Log.Count(e => e.StartsWith("run ")) >= 2, string.Join(", ", fake.Log));
+            Assert.Equal("reset", fake.Log[^1]);
+        }
+        Assert.False(service.HasResult);   // nothing of it reaches the caller
+    }
+
+    /// <summary>A model that takes <paramref name="loadMs"/> to load and says when it is unloaded.</summary>
+    private sealed class SlowLoad(int length, int loadMs) : IDepthRunner
+    {
+        public readonly ManualResetEventSlim Disposed = new(false);
+
+        public int OutputLength => length;
+
+        public SlowLoad Load()
+        {
+            Thread.Sleep(loadMs);
+            return this;
+        }
+
+        public void Run(float[] input, float[] output)
+        {
+        }
+
+        public void Dispose() => Disposed.Set();
+    }
+
+    [Fact]
+    public void AModelSwappedOutWhileItLoadsIsUnloadedOnceLoadedWithoutWaitingForIt()
+    {
+        // Clicking through models disposes each while it loads: that must neither hold the
+        // caller (the UI thread) until the load ends, nor leave the model in GPU memory for good.
+        var fake = new SlowLoad(Model.Width * Model.Height, loadMs: 800);
+        var service = new DepthService(Model, (_, _) => fake.Load());
+        Thread.Sleep(50);
+        var clock = Stopwatch.StartNew();
+        service.Dispose();
+        Assert.True(clock.Elapsed < TimeSpan.FromMilliseconds(200), $"{clock.Elapsed.TotalMilliseconds:0} ms");
+        Assert.False(fake.Disposed.IsSet);
+        Assert.True(fake.Disposed.Wait(5000), "never unloaded");
+        Assert.NotEqual(DepthServiceState.Ready, service.State);
     }
 
     [Fact]

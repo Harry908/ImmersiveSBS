@@ -277,7 +277,7 @@ flowchart TD
   E(["End of video"]) --> E1["Release: the delayed tail plays out"]
     </pre></div>
   </div>
-  <p class="note">Kept frames cost 1.5 bytes a pixel at the size shown (2 s of 1080p at 60 fps is about 373 MB, capped at 640 MB). A video the page may not read (another site's, without CORS) and DRM video play live, with depth from the screen.</p>
+  <p class="note">Kept frames cost 1.5 bytes a pixel at the size shown, or the video's own if smaller (4 s of 1080p at 60 fps is about 746 MB, capped at 800 MB; a 720p video less than half); slots a shorter delay no longer needs are given back. The app keeps the depth for them in 16 bits a pixel. A video the page may not read (another site's, without CORS) and DRM video play live, with depth from the screen.</p>
 </section>
 
 <section id="depth">
@@ -356,7 +356,7 @@ sequenceDiagram
       <tr><td><code>overlays</code></td><td><span class="dir up">page → app</span></td><td>Boxes of the bar, panel, spinner (drawn flat) and caption (held in front), with when they appeared.</td></tr>
       <tr><td><code>command</code></td><td><span class="dir up">page → app</span></td><td>A 3D panel button: depth, plane, model, resolution, timing, stretch, video layout.</td></tr>
       <tr><td><code>clock</code></td><td><span class="dir up">both</span></td><td>NTP-style ping and answer, so frame times are on the app's clock.</td></tr>
-      <tr><td><code>status</code></td><td><span class="dir down">app → page</span></td><td>Glasses in 3D (the button shows only then), the panel's values, the model's input size for pictures.</td></tr>
+      <tr><td><code>status</code></td><td><span class="dir down">app → page</span></td><td>Glasses in 3D (the button shows only then), the panel's values, the model's input size for pictures, whether a model is loading (the player waits, paused).</td></tr>
       <tr><td><code>delay</code></td><td><span class="dir down">app → page</span></td><td>How late to play the tab's sound, and the picture (without the trim and output latency).</td></tr>
       <tr><td><code>ping</code></td><td><span class="dir down">app → page</span></td><td>Every 20 s, so the browser keeps the service worker awake.</td></tr>
     </tbody>
@@ -401,9 +401,9 @@ sequenceDiagram
   const HOT = new Set(['AppController.cs', 'AiStereo.cs', 'content.js', 'BrowserLink.cs', 'DepthService.cs', 'StereoSynth.cs', 'Session.cs']);
   const FOLDERS = [
     { name: 'src/ImmersiveSBS', about: 'The app shell: the controller, the session, settings and windows.', files: [
-      ['AppController.cs', 1102, 'The brain, on the UI thread: display layout → session, the depth model, the browser link (delay, status, panel buttons), tray, shortcuts.'],
+      ['AppController.cs', 1120, 'The brain, on the UI thread: display layout → session, the depth model, the browser link (delay, status, panel buttons), tray, shortcuts.'],
       ['Session.cs', 548, 'One render thread: capture → AiStereo → TheaterUi → Renderer → present; the 10 s Stats line.'],
-      ['AppSettings.cs', 309, 'settings.json: displays, model and resolution, timing and buffer, tuning, shortcuts.'],
+      ['AppSettings.cs', 310, 'settings.json: displays, model and resolution, timing and buffer, tuning, shortcuts.'],
       ['SettingsWindow.xaml(.cs)', 340, 'Displays, 3D (whole screen, model, resolution; timing is the theater panel\'s), the extension, startup and shortcuts.'],
       ['TuningWindow.xaml(.cs)', 208, 'Live sliders for depth and edges: preview on the next frame, Save or Cancel.'],
       ['App.xaml(.cs)', 73, 'WPF entry point: starts the controller.'],
@@ -411,14 +411,16 @@ sequenceDiagram
     ]},
     { name: 'Depth', about: 'AI 3D: frames to the model, depth back, and the two eye images.', files: [
       ['StereoSynth.cs', 875, 'The GPU half: model input from the screen, guided upsample, slope limit, forward splat or lookup warp into two eyes.'],
-      ['AiStereo.cs', 813, 'Per-frame driver: the region, timing, where depth comes from (player frames or captures), the eye images, the measures.'],
-      ['DepthService.cs', 572, 'Model thread and post thread, look-ahead hold, the queue of results.'],
+      ['AiStereo.cs', 821, 'Per-frame driver: the region, timing, where depth comes from (player frames or captures), the eye images, the measures.'],
+      ['DepthService.cs', 648, 'Model thread and post thread, look-ahead hold, the queue of results.'],
       ['EdgeFilters.cs', 497, 'Anti-aliasing and soft depth edges, so the warp opens fewer holes.'],
-      ['DepthPostProcessor.cs', 383, 'Raw model output → steady nearness: normalisation, temporal smoothing, edges, page boxes, captions.'],
+      ['DepthPostProcessor.cs', 461, 'Raw model output → steady nearness: normalisation, temporal smoothing along the motion, edges, page boxes, captions.'],
+      ['MotionField.cs', 308, 'Where each pixel was a frame before (block matching on luma, coarse to fine), for the smoothing to follow.'],
       ['CaptionLock.cs', 301, 'Holds subtitles flat in front of the scene: detected ones, or the page\'s own boxes.'],
-      ['PageVideo.cs', 310, 'The theater video as its player reports it: frames drawn, state, boxes; owns PagePictures.'],
-      ['PagePictures.cs', 267, 'The player\'s frames: JPEG → model input, depth filed by line and time, the shown frame\'s depth.'],
-      ['DepthEstimator.cs', 214, 'One ONNX Runtime session on TensorRT for RTX, with the compiled-engine cache.'],
+      ['PageVideo.cs', 332, 'The theater video as its player reports it: frames drawn, state, boxes; owns PagePictures.'],
+      ['PagePictures.cs', 276, 'The player\'s frames: JPEG → model input, depth filed by line and time (16 bits), the shown frame\'s depth.'],
+      ['EnginePreparer.cs', 63, 'At start, in the background while 3D is off: builds the engines of every model and size that has none yet.'],
+      ['DepthEstimator.cs', 253, 'One ONNX Runtime session on TensorRT for RTX, with the compiled-engine cache.'],
       ['MatchedDelay.cs', 181, 'How late matched timing shows the picture, from the measured depth age.'],
       ['VideoDepthEstimator.cs', 154, 'Video Depth Anything Small, streaming: two graphs and a ring of past states on the GPU; StateWindow, the authors\' window over them.'],
       ['ImageNet.cs', 11, 'The ImageNet normalisation of the models' input, for the CPU paths (the GPU shader writes the same numbers).'],
@@ -430,10 +432,10 @@ sequenceDiagram
       ['Selection.cs', 43, 'Percentiles without sorting.'],
       ['StereoMath.cs', 42, 'Disparity from field of view and comfort budget.'],
       ['Native3D.cs', 32, 'Video that is already side-by-side or top-bottom 3D.'],
-      ['NearnessBlend.cs', 28, 'SIMD blend of two depth maps, for a frame the model skipped.'],
+      ['NearnessBlend.cs', 43, 'Depth packed in 16 bits for the delay; SIMD unpack and blend of two maps, for a frame the model skipped.'],
     ]},
     { name: 'Browser', about: 'The app\'s end of the extension.', files: [
-      ['BrowserLink.cs', 580, 'WebSocket server on 127.0.0.1:47391: extension origin only, protocol 3, parses every page message, sends status and delay.'],
+      ['BrowserLink.cs', 581, 'WebSocket server on 127.0.0.1:47391: extension origin only, protocol 3, parses every page message, sends status and delay.'],
       ['BrowserMedia.cs', 71, 'The page\'s media list and the theater report (CSS px → screen px).'],
     ]},
     { name: 'Capture', about: 'Getting the virtual monitor\'s picture onto the GPU.', files: [
@@ -481,12 +483,12 @@ sequenceDiagram
       ['ImmersiveSBS.iss', 174, 'The installer script: no pages, the driver only when missing, its publisher trusted, finish-page options, uninstall.'],
     ]},
     { name: 'extension', about: 'The browser half, loaded unpacked from the app\'s folder.', files: [
-      ['content.js', 1547, 'In every frame: media report, sound delay, the theater player, the delayed picture (WebGL), captions, frames for the model.'],
-      ['background.js', 316, 'The service worker: WebSocket to the app, relay, delay per tab, toolbar badge, window full screen.'],
+      ['content.js', 1627, 'In every frame: media report, sound delay, the theater player, the delayed picture (WebGL), captions, frames for the model.'],
+      ['background.js', 321, 'The service worker: WebSocket to the app, relay, delay per tab, toolbar badge, window full screen.'],
     ]},
   ];
 
-  const MAX = 1547;
+  const MAX = 1659;
   const root = document.getElementById('folders');
   const count = document.getElementById('count');
   const filter = document.getElementById('filter');

@@ -128,7 +128,23 @@ public class AppSettingsTests
         AppController.SetTiming(s, 0);
         AppController.SetTiming(s, 4);
         Assert.Equal(VideoTiming.Live, s.Timing);
-        Assert.Equal(1, s.BufferSeconds);
+        Assert.Equal(3, s.BufferSeconds);
+    }
+
+    [Theory]
+    [InlineData(2, 0, 0)]
+    [InlineData(2, 0.5, 2)]
+    [InlineData(2, 1, 2)]
+    [InlineData(2, 3, 3)]
+    [InlineData(2, 6, 4)]
+    public void TheBufferIsTwoSecondsByDefaultAndAtLeast(double fresh, double saved, double loaded)
+    {
+        // 2 s by default; a saved 0.5 or 1 s (choices since removed) loads as 2, none stays none.
+        Assert.Equal(fresh, new AppSettings().BufferSeconds);
+        Assert.Equal(AppSettings.MinBufferSeconds, AppController.TimingChoices[3].Buffer);
+        var s = System.Text.Json.JsonSerializer.Deserialize<AppSettings>($$"""{"BufferSeconds":{{saved}}}""")!;
+        s.ForgetRemovedChoices();
+        Assert.Equal(loaded, s.BufferSeconds);
     }
 
     [Fact]

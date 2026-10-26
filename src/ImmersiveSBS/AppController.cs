@@ -31,6 +31,9 @@ public sealed class AppController : IDisposable
     private readonly DispatcherTimer retryTimer = new() { Interval = TimeSpan.FromSeconds(5) };
     private DisplayChangeMonitor? displayMonitor;
     private DepthService? depthService;
+    private EnginePreparer? enginePreparer;
+    /// <summary>The background engine builds may run: AI 3D not in use and the chosen model not loading (set on the UI thread, read on the preparer's).</summary>
+    private volatile bool prepareAllowed;
     private DepthModel? missingModel;
     private string? depthStatus;
 
@@ -109,6 +112,8 @@ public sealed class AppController : IDisposable
         };
         audioTimer.Start();
         Evaluate("start", force: true);
+        // The chosen model loads at once (Evaluate); the others' engines are built after it, while 3D is not in use.
+        enginePreparer = new EnginePreparer(Settings.DepthPreset, () => prepareAllowed);
     }
 
     #region Delayed sound
@@ -494,21 +499,22 @@ public sealed class AppController : IDisposable
     #region Theater
 
     /// <summary>What the browsers were last told (<see cref="UpdateStatus"/>).</summary>
-    private (bool Glasses, TheaterPanel? Panel, double Stretch, Native3DMode Layout, System.Drawing.Size? Picture) sentStatus;
+    private (bool Glasses, TheaterPanel? Panel, double Stretch, Native3DMode Layout, System.Drawing.Size? Picture, bool Loading) sentStatus;
 
     /// <summary>
     /// The timing choices, from no delay to the longest (the theater panel steps through them by
     /// their short names, the settings window lists them): live, auto, matched
-    /// (improvement-plan.md §6), then the buffer.
+    /// (improvement-plan.md §6), then the buffer: 2 s at least (the default), up to 4 (0.5 and
+    /// 1 s went on 2026-10-26, the user's choice; <see cref="AppSettings.MinBufferSeconds"/>).
     /// </summary>
     public static readonly (string Label, string Short, VideoTiming Timing, double Buffer)[] TimingChoices =
     [
         ("Live", "Live", VideoTiming.Live, 0),
         ("Auto: matched when depth is slow", "Auto", VideoTiming.Auto, 0),
         ("Matched: video just late enough for its depth", "Matched", VideoTiming.Matched, 0),
-        ("Buffer 0.5 s", "Buffer 0.5 s", VideoTiming.Auto, 0.5),
-        ("Buffer 1 s", "Buffer 1 s", VideoTiming.Auto, 1),
         ("Buffer 2 s", "Buffer 2 s", VideoTiming.Auto, 2),
+        ("Buffer 3 s", "Buffer 3 s", VideoTiming.Auto, 3),
+        ("Buffer 4 s", "Buffer 4 s", VideoTiming.Auto, 4),
     ];
 
     /// <summary>
@@ -635,7 +641,8 @@ public sealed class AppController : IDisposable
     /// Tells the browsers what their theater needs (UI thread, every tick; sent only on a
     /// change): whether the glasses show the virtual monitor in 3D (the button shows only then),
     /// the 3D panel's values, and the depth model's input size, at which the theater sends its
-    /// frames (none while the model is not ready, or the video is shown as the 3D it already is).
+    /// frames (none while the model is not ready, or the video is shown as the 3D it already is),
+    /// and whether a model is loading for it (the theater waits, paused, meanwhile).
     /// </summary>
     private void UpdateStatus()
     {
@@ -646,7 +653,8 @@ public sealed class AppController : IDisposable
                                        && session?.Depth is { State: DepthServiceState.Ready, Model: var model }
             ? new System.Drawing.Size(model.Width, model.Height)
             : null;
-        var status = (glasses, panel, Settings.VideoStretch, Settings.Native3D, picture);
+        bool loading = glasses && Settings.Native3D == Native3DMode.Off && ModelBusy;
+        var status = (glasses, panel, Settings.VideoStretch, Settings.Native3D, picture, loading);
         if (status == sentStatus) return;
         sentStatus = status;
         object? settings = panel == null ? null : new
@@ -664,7 +672,7 @@ public sealed class AppController : IDisposable
                 _ => "2d",
             },
         };
-        browserLink.SetStatus(glasses, settings, picture);
+        browserLink.SetStatus(glasses, settings, picture, loading);
     }
 
     #endregion
@@ -839,6 +847,8 @@ public sealed class AppController : IDisposable
         // A kept session follows the settled layout (e.g. a new main display rebases every monitor).
         if (desired is { MirrorBounds: null }) session?.MoveTo(Glasses!.Bounds);
         if (session != null) ApplyAi(session);
+        // At once, not at the next tick: a new model's load pauses the theater (its frames would go without depth).
+        UpdateStatus();
         UpdateGuards();
         Notify();
     }
@@ -1028,6 +1038,8 @@ public sealed class AppController : IDisposable
 
     private void Notify()
     {
+        prepareAllowed = !shuttingDown && EffectiveAi3D == AiTarget.Off
+                         && depthService?.State is not (DepthServiceState.Loading or DepthServiceState.Preparing);
         tray?.Refresh();
         StatusChanged?.Invoke();
     }
@@ -1093,6 +1105,8 @@ public sealed class AppController : IDisposable
         keyboard?.Dispose();
         browserLink?.Dispose();
         browserLink = null;
+        enginePreparer?.Dispose();
+        enginePreparer = null;
         depthService?.Dispose();
         depthService = null;
         keyboard = null;

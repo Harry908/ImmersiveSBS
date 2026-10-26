@@ -274,12 +274,38 @@ public sealed class DepthService : IDisposable
         if (spareFrames.Count < MaxReady) spareFrames.Push(frame);
     }
 
+    /// <summary>
+    /// The worker, which unloads its own model when it ends: <see cref="Dispose"/> does not wait
+    /// for a load, so a model swapped out while it loads is unloaded once the load is done.
+    /// </summary>
     private void Run()
     {
         try
         {
+            Work();
+        }
+        finally
+        {
+            stopSource.Cancel();
+            postThread?.Join(1000);
+            if (estimator != null)
+            {
+                estimator.Dispose();
+                estimator = null;
+                Log.Write($"Depth: unloaded {Model}.");
+            }
+            wake.Dispose();
+        }
+    }
+
+    private void Work()
+    {
+        try
+        {
             estimator = load(Model, s => SetStatus(DepthServiceState.Preparing, s));
+            if (stopping) return;
             post = new DepthPostProcessor(Model.Width, Model.Height);
+            WarmUp(estimator, Model);
             SetStatus(DepthServiceState.Ready, $"{Model} ready");
         }
         catch (Exception e)
@@ -338,6 +364,32 @@ public sealed class DepthService : IDisposable
                 return;
             }
         }
+    }
+
+    /// <summary>
+    /// Runs the model and the post-processing on a test picture before the service says it is
+    /// ready, so the first frames of 3D are as quick as the rest. Measured on a fresh load: the
+    /// first inference 45–480 ms against 10 ms after (the GPU's first work), and the
+    /// post-processing 48, 10, 7 ms over its first calls, then 6 (.NET optimising it as it runs).
+    /// A post-processor of its own with every step on, so each is compiled and the service's own
+    /// keeps no history of it; its picture is dark, so it finds no subtitles to log.
+    /// </summary>
+    private static void WarmUp(IDepthRunner runner, DepthModel model)
+    {
+        int plane = model.Width * model.Height;
+        var input = new float[3 * plane];
+        for (int i = 0; i < input.Length; i++) input[i] = (i % 97) / 48f - 1;   // not flat: the depth has edges to work on
+        var output = new float[runner.OutputLength];
+        for (int i = 0; i < 2; i++) runner.Run(input, output);
+        if (runner is ITemporalDepthRunner temporal) temporal.Reset();
+
+        var warm = new DepthPostProcessor(model.Width, model.Height)
+        {
+            AntiAlias = true, Captions = true, StaticOverlays = true, SoftEdgePassesX = 2, SoftEdgePassesY = 1,
+        };
+        var luma = new float[plane];
+        var nearness = new float[plane];
+        for (int i = 0; i < 6; i++) warm.Process(output, luma, 1.0 / 30, nearness, warm.MeasureRange(output));
     }
 
     /// <summary>
@@ -571,27 +623,26 @@ public sealed class DepthService : IDisposable
     }
 
     /// <summary>
-    /// Stops the worker and unloads the model (its GPU memory). A worker still busy after a few
-    /// seconds (loading, or compiling a first-use engine) keeps its model: unloading it under a
-    /// running inference would crash, and process exit frees it anyway.
+    /// Stops the worker, which unloads the model (its GPU memory). A ready one is waited for (its
+    /// current frame, then the unload). A loading one is not: the load cannot be stopped (1–2 s,
+    /// or 5–26 s building a first-use engine), and waiting held the UI thread while the user
+    /// clicked through models; the worker unloads the model once it has loaded.
     /// </summary>
     public void Dispose()
     {
         stopping = true;
         stopSource.Cancel();
-        wake.Set();
-        postThread?.Join(1000);
-        if (!thread.Join(3000))
+        try
         {
-            Log.Write($"Depth: the worker is still busy ({State}); {Model} is left for the process to free.");
-            return;
+            wake.Set();
         }
-        if (estimator != null)
+        catch (ObjectDisposedException)
         {
-            estimator.Dispose();
-            estimator = null;
-            Log.Write($"Depth: unloaded {Model}.");
+            // The worker has ended already.
         }
-        wake.Dispose();
+        if (State is DepthServiceState.Loading or DepthServiceState.Preparing)
+            Log.Write($"Depth: {Model} is unloaded once it has loaded.");
+        else if (!thread.Join(3000))
+            Log.Write($"Depth: the worker is still busy; {Model} is unloaded when its frame is done.");
     }
 }

@@ -53,8 +53,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- The browser extension, next to the app, for "Load unpacked" from the settings window. -->
-    <None Include="..\..\extension\**\*" LinkBase="extension" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The browser extension, next to the app, for "Load unpacked" from the settings window (not its notes for Claude Code). -->
+    <None Include="..\..\extension\**\*" Exclude="..\..\extension\CLAUDE.md" LinkBase="extension" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

@@ -97,7 +97,7 @@ public sealed class BrowserLinkTests : IDisposable
 
     /// <summary>
     /// The extension's theater needs to know whether the glasses show 3D, whether the user wants
-    /// its button, and the 3D panel's values; a browser that connects is told at once, the rest
+    /// its button, the 3D panel's values and whether a model is loading; a browser that connects is told at once, the rest
     /// only on a change. The panel's buttons come back as commands.
     /// </summary>
     [Fact]
@@ -115,6 +115,11 @@ public sealed class BrowserLinkTests : IDisposable
         link.SetStatus(glasses: false, settings: new { depth = 0.6, timing = "auto" });
         JsonElement second = await ReceiveAsync(socket);
         Assert.False(second.GetProperty("glasses").GetBoolean());
+        Assert.False(second.GetProperty("loading").GetBoolean());
+
+        // A model loading: the theater waits, paused.
+        link.SetStatus(glasses: true, settings: new { depth = 0.6, timing = "auto" }, loading: true);
+        Assert.True((await ReceiveAsync(socket)).GetProperty("loading").GetBoolean());
 
         string? command = null;
         link.Command += (_, name) => command = name;
