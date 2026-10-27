@@ -190,7 +190,7 @@ flowchart LR
 <section id="startup">
   <span class="kicker">Activity diagram</span>
   <h2>Deciding when the glasses show the virtual monitor</h2>
-  <p><code>AppController.Evaluate</code> runs on every display change, settings save, theater open or close, and pause. It never changes the display layout itself; it only reacts to it.</p>
+  <p><code>AppController.Evaluate</code> runs on every display change, settings save, theater open or close, and pause. It never changes the display layout itself; it only reacts to it. The one exception is at exit and start: the virtual monitor goes off the desktop while the app is closed and back where it was when it starts (<code>VirtualMonitorSwitch</code>).</p>
   <div class="diagram"><pre class="mermaid">
 flowchart TD
   S(["Display change · settings · theater · pause"]) --> A["Read the layout (CCD API)"]
@@ -452,8 +452,9 @@ sequenceDiagram
       ['MirrorWindow.cs', 79, 'A normal window on a real monitor while the glasses do not show the virtual monitor.'],
     ]},
     { name: 'Displays', about: 'Which display is which, and what mode the glasses are in.', files: [
-      ['DisplayConfigurationService.cs', 417, 'Lists displays with stable identities (CCD API).'],
+      ['DisplayConfigurationService.cs', 426, 'Lists displays with stable identities (CCD API).'],
       ['DisplayInfo.cs', 265, 'A display\'s identity and how strongly a saved one matches.'],
+      ['VirtualMonitorSwitch.cs', 90, 'The virtual monitor off the desktop while the app is closed, back where it was at start (SetDisplayConfig, that path only).'],
       ['DisplayChangeMonitor.cs', 237, 'One debounced event per burst of display changes.'],
       ['GlassesState.cs', 97, 'GlassesStateEvaluator: 3D, 2D or off, from the glasses\' mode.'],
       ['KnownGlasses.cs', 57, 'Known glasses: field of view, eye size, EDID keys.'],

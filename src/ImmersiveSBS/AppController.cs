@@ -99,6 +99,7 @@ public sealed class AppController : IDisposable
         // 8 ms a frame with the edge steps), which no measurement from such a run would show.
         if (System.Reflection.CustomAttributeExtensions.GetCustomAttribute<DebuggableAttribute>(typeof(AppController).Assembly)?.IsJITOptimizerDisabled == true)
             Log.Write("App: this is a Debug build, not optimised: depth post-processing runs several times slower. Use a Release build for runs in the glasses.");
+        ReconnectVirtualMonitor();
         BuildShortcuts();
         tray = new TrayIcon(this);
         keyboard = new GlobalKeyboardHook { KeyPressed = OnKey };
@@ -114,6 +115,18 @@ public sealed class AppController : IDisposable
         Evaluate("start", force: true);
         // The chosen model loads at once (Evaluate); the others' engines are built after it, while 3D is not in use.
         enginePreparer = new EnginePreparer(Settings.DepthPreset, () => prepareAllowed);
+    }
+
+    /// <summary>
+    /// The virtual monitor this app took off the desktop at its last exit goes back on, before the
+    /// layout is read (whatever the setting is now); kept to try again if it is not there yet.
+    /// </summary>
+    private void ReconnectVirtualMonitor()
+    {
+        if (DisplayIdentity.Parse(Settings.DisconnectedVirtualMonitor) is not { } monitor) return;
+        if (!VirtualMonitorSwitch.Connect(monitor)) return;
+        Settings.DisconnectedVirtualMonitor = null;
+        Settings.Save();
     }
 
     #region Delayed sound
@@ -1087,6 +1100,14 @@ public sealed class AppController : IDisposable
         {
             Log.Write($"App: moving windows from the virtual monitor to {host.Identity}.");
             StrayWindowGuard.Evacuate(VirtualMonitor.Bounds, host.WorkingArea);
+        }
+        // And off the desktop until the next start; not the main display (the taskbar is there:
+        // Windows would have to make another one the main display, the user's choice).
+        if (Settings.DisconnectVirtualMonitor && VirtualMonitor is { IsPrimary: false } monitor
+            && VirtualMonitorSwitch.Disconnect(monitor.Identity))
+        {
+            Settings.DisconnectedVirtualMonitor = monitor.Identity.Serialize();
+            Settings.Save();
         }
 
         Dispose();

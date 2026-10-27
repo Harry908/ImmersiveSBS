@@ -138,6 +138,16 @@ public sealed class AppSettings
     /// <summary>Also show the virtual monitor while the glasses are in 2D mode (1:1).</summary>
     public bool ShowIn2D { get; set; } = true;
 
+    /// <summary>
+    /// Takes the virtual monitor off the desktop when the app exits and puts it back when it
+    /// starts (<see cref="VirtualMonitorSwitch"/>): nothing shows it while the app is closed, and
+    /// windows and the mouse went there out of sight. On by default (the user's request, 2026-10-26).
+    /// </summary>
+    public bool DisconnectVirtualMonitor { get; set; } = true;
+
+    /// <summary>The virtual monitor the app took off the desktop at its last exit, put back at its next start; null: none.</summary>
+    public string? DisconnectedVirtualMonitor { get; set; }
+
     /// <summary>Shortcut text per command, e.g. "Ctrl+Alt+B"; empty disables one.</summary>
     [JsonConverter(typeof(ShortcutMapConverter))]
     public Dictionary<ShortcutCommand, string> Shortcuts { get; set; } = DefaultShortcuts();

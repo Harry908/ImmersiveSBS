@@ -11,7 +11,8 @@ namespace ImmersiveSBS.Displays;
 ///
 /// Read-only by design. This class never calls SetDisplayConfig and never changes a display
 /// mode: switching the glasses between 2D and 3D is the user's job, and the app only reports
-/// what Windows currently says.
+/// what Windows currently says (the one change, the virtual monitor off the desktop while the
+/// app is closed, is <see cref="VirtualMonitorSwitch"/>'s).
 /// </summary>
 public static class DisplayConfigurationService
 {
@@ -138,7 +139,7 @@ public static class DisplayConfigurationService
         }
     }
 
-    private static bool TryQuery(uint flags,
+    internal static bool TryQuery(uint flags,
         out DisplayConfig.DISPLAYCONFIG_PATH_INFO[] paths,
         out DisplayConfig.DISPLAYCONFIG_MODE_INFO[] modes)
     {
@@ -201,25 +202,7 @@ public static class DisplayConfigurationService
         HashSet<string> hmdTargets,
         Dictionary<string, SWF.Screen> screensByDevice)
     {
-        var identity = new DisplayIdentity();
-
-        var targetName = new DisplayConfig.DISPLAYCONFIG_TARGET_DEVICE_NAME();
-        targetName.header.type = DisplayConfig.DISPLAYCONFIG_DEVICE_INFO_TYPE.GET_TARGET_NAME;
-        targetName.header.size = (uint)Marshal.SizeOf<DisplayConfig.DISPLAYCONFIG_TARGET_DEVICE_NAME>();
-        targetName.header.adapterId = path.targetInfo.adapterId;
-        targetName.header.id = path.targetInfo.id;
-
-        string outputTechnology = path.targetInfo.outputTechnology.ToString();
-
-        if (DisplayConfig.DisplayConfigGetDeviceInfo(ref targetName) == DisplayConfig.ERROR_SUCCESS)
-        {
-            identity.DevicePath = Clean(targetName.monitorDevicePath);
-            identity.FriendlyName = Clean(targetName.monitorFriendlyDeviceName);
-            identity.EdidValid = targetName.EdidIdsValid;
-            identity.EdidManufacturer = DisplayConfig.DecodeEdidManufacturer(targetName.edidManufactureId);
-            identity.EdidProductCode = targetName.edidProductCodeId;
-            outputTechnology = targetName.outputTechnology.ToString();
-        }
+        DisplayIdentity identity = TargetIdentity(path, out string outputTechnology);
 
         var sourceName = new DisplayConfig.DISPLAYCONFIG_SOURCE_DEVICE_NAME();
         sourceName.header.type = DisplayConfig.DISPLAYCONFIG_DEVICE_INFO_TYPE.GET_SOURCE_NAME;
@@ -254,6 +237,32 @@ public static class DisplayConfigurationService
         }
 
         return info;
+    }
+
+    /// <summary>The monitor at a path's target: its device path, EDID and name (no GDI name: that is the source's).</summary>
+    internal static DisplayIdentity TargetIdentity(DisplayConfig.DISPLAYCONFIG_PATH_INFO path, out string outputTechnology)
+    {
+        var identity = new DisplayIdentity();
+
+        var targetName = new DisplayConfig.DISPLAYCONFIG_TARGET_DEVICE_NAME();
+        targetName.header.type = DisplayConfig.DISPLAYCONFIG_DEVICE_INFO_TYPE.GET_TARGET_NAME;
+        targetName.header.size = (uint)Marshal.SizeOf<DisplayConfig.DISPLAYCONFIG_TARGET_DEVICE_NAME>();
+        targetName.header.adapterId = path.targetInfo.adapterId;
+        targetName.header.id = path.targetInfo.id;
+
+        outputTechnology = path.targetInfo.outputTechnology.ToString();
+
+        if (DisplayConfig.DisplayConfigGetDeviceInfo(ref targetName) == DisplayConfig.ERROR_SUCCESS)
+        {
+            identity.DevicePath = Clean(targetName.monitorDevicePath);
+            identity.FriendlyName = Clean(targetName.monitorFriendlyDeviceName);
+            identity.EdidValid = targetName.EdidIdsValid;
+            identity.EdidManufacturer = DisplayConfig.DecodeEdidManufacturer(targetName.edidManufactureId);
+            identity.EdidProductCode = targetName.edidProductCodeId;
+            outputTechnology = targetName.outputTechnology.ToString();
+        }
+
+        return identity;
     }
 
     /// <summary>

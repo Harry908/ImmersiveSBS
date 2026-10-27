@@ -1,4 +1,5 @@
 using ImmersiveSBS.Depth;
+using ImmersiveSBS.Displays;
 
 namespace ImmersiveSBS.Tests;
 
@@ -13,6 +14,8 @@ public class AppSettingsTests
             Ai3DStrength = 0.8,
             BufferSeconds = 1,
             AudioOffsetMs = -40,
+            DisconnectVirtualMonitor = false,
+            DisconnectedVirtualMonitor = new DisplayIdentity { DevicePath = @"\\?\DISPLAY#MTT1337#1", EdidManufacturer = "MTT", EdidProductCode = 0x1337, EdidValid = true }.Serialize(),
             VideoStretch = 1.3333,
             Tuning = new StereoTuning { DilateRadius = 5, SoftEdges = 3, AntiAlias = AutoSwitch.Off, Foreground = -2, Smoothing = 0.4, SceneCut = 0.2, FloatingWindow = false, StaticOverlays = true },
         };
@@ -24,6 +27,9 @@ public class AppSettingsTests
         Assert.Equal(0.8, c.Ai3DStrength);
         Assert.Equal(1, c.BufferSeconds);
         Assert.Equal(-40, c.AudioOffsetMs);
+        Assert.False(c.DisconnectVirtualMonitor);
+        // The monitor taken off the desktop at exit is found again at the next start.
+        Assert.Equal("MTT-1337", DisplayIdentity.Parse(c.DisconnectedVirtualMonitor)!.EdidKey);
         Assert.Equal(1.3333, c.VideoStretch);
         Assert.Equal(s.Tuning, c.Tuning);
         Assert.Equal("Ctrl+Shift+Up", c.Shortcuts[ShortcutCommand.MoreDepth]);
@@ -142,6 +148,8 @@ public class AppSettingsTests
         // 2 s by default; a saved 0.5 or 1 s (choices since removed) loads as 2, none stays none.
         Assert.Equal(fresh, new AppSettings().BufferSeconds);
         Assert.Equal(AppSettings.MinBufferSeconds, AppController.TimingChoices[3].Buffer);
+        // Disconnecting the virtual monitor while the app is closed is on by default.
+        Assert.True(new AppSettings().DisconnectVirtualMonitor);
         var s = System.Text.Json.JsonSerializer.Deserialize<AppSettings>($$"""{"BufferSeconds":{{saved}}}""")!;
         s.ForgetRemovedChoices();
         Assert.Equal(loaded, s.BufferSeconds);

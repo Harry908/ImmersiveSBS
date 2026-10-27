@@ -1747,6 +1747,33 @@ kept the old one where it did not (a trail where the picture behind looked like 
   false`; the model ready, the app read that as a player that cannot send its frames, went live
   and stopped the delay, before the player's next state said otherwise. `pictures` now says what
   the player can do (WebGL, a video it may read), whether or not frames are wanted now.
+  Seen in the next run: 7 model changes with the 4 s buffer, the sound 3.95 s late throughout.
+
+### The virtual monitor off while the app is closed (2026-10-26, user: "when the app is close it disconnect the virtual display")
+
+Nothing shows the virtual monitor while the app is closed: windows, dialogs and the mouse went
+there out of sight (the app moved its windows off at exit, new ones could still open there).
+
+- **The driver's own control cannot.** Its pipe (`\\.\pipe\MTTVirtualDisplayPipe`, open to every
+  user, UTF-16 commands; `RELOAD_DRIVER`, `SETDISPLAYCOUNT n`, `GETSETTINGS`, `PING`) took
+  `SETDISPLAYCOUNT 0`, wrote `<count>0</count>` and restarted, and loaded one monitor again
+  ("Loading singular monitor (Monitor Count is not valid)"); put back to 1. Disabling the
+  device needs admin (a prompt at every start and exit).
+- **So the Windows layout** (the user's choice, against the DesktopSbS rule, now with one
+  exception): `Displays/VirtualMonitorSwitch`. At exit, after the windows are moved off, the
+  virtual monitor's path is made inactive and the others applied as they are
+  (`SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE`), and its
+  identity saved (`AppSettings.DisconnectedVirtualMonitor`); not when it is the main display.
+  At start, before the layout is read, a path to it from a free source is made active with
+  the others and Windows asked for the modes it remembers for that set (`SDC_TOPOLOGY_SUPPLIED`:
+  where it was), else the supplied layout with Windows placing it. Kept to try again when it is
+  not there (the driver not running). Settings: "Disconnect the virtual monitor while ImmersiveSBS
+  is closed" (`DisconnectVirtualMonitor`, on by default).
+- **Tested on this PC** (with the user's go-ahead): the switch alone, off and on: the main display
+  and the glasses unmoved, the virtual monitor back at (325, −1080). Then the app twice, quit
+  with its shortcut: off at exit ("disconnected the virtual monitor VDD by MTT while the app is
+  closed"), back at start before the layout was read ("connected … again, where it was"), the
+  session on it as before.
 
 ### Next
 

@@ -13,8 +13,10 @@ namespace ImmersiveSBS.Interop
     /// is not stable across hot-plug, which is why the app cannot key its
     /// settings on a screen index.
     ///
-    /// Nothing here changes the display configuration. SetDisplayConfig is
-    /// deliberately not imported.
+    /// SetDisplayConfig is used for one thing only: taking the virtual monitor
+    /// off the desktop while the app is closed and putting it back when it
+    /// starts (Displays/VirtualMonitorSwitch). Nothing else changes the display
+    /// configuration.
     /// </summary>
     public static class DisplayConfig
     {
@@ -35,6 +37,20 @@ namespace ImmersiveSBS.Interop
 
         public const int ERROR_SUCCESS = 0;
         public const int ERROR_INSUFFICIENT_BUFFER = 122;
+
+        #endregion
+
+        #region SetDisplayConfig flags and path flags
+
+        public const uint SDC_TOPOLOGY_SUPPLIED = 0x00000010;
+        public const uint SDC_USE_SUPPLIED_DISPLAY_CONFIG = 0x00000020;
+        public const uint SDC_APPLY = 0x00000080;
+        public const uint SDC_SAVE_TO_DATABASE = 0x00000200;
+        public const uint SDC_ALLOW_CHANGES = 0x00000400;
+        public const uint SDC_ALLOW_PATH_ORDER_CHANGES = 0x00002000;
+
+        public const uint DISPLAYCONFIG_PATH_ACTIVE = 0x00000001;
+        public const uint DISPLAYCONFIG_PATH_MODE_IDX_INVALID = 0xFFFFFFFF;
 
         #endregion
 
@@ -328,6 +344,14 @@ namespace ImmersiveSBS.Interop
         [DllImport(dll)]
         public static extern int DisplayConfigGetDeviceInfo(
             ref DISPLAYCONFIG_SOURCE_DEVICE_NAME requestPacket);
+
+        [DllImport(dll)]
+        public static extern int SetDisplayConfig(
+            uint numPathArrayElements,
+            [In] DISPLAYCONFIG_PATH_INFO[]? pathArray,
+            uint numModeInfoArrayElements,
+            [In] DISPLAYCONFIG_MODE_INFO[]? modeInfoArray,
+            uint flags);
 
         #endregion
 

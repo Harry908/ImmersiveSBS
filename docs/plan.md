@@ -48,7 +48,9 @@ carry over. Its process split, overlay presentation and DesktopSbS integration (
 - Several virtual screens, head tracking, screens anchored in space (Viture SpaceWalker style).
 - Browser extensions, our own display or audio drivers.
 - Changing display settings from the app. The user positions and enables monitors in Windows
-  Settings; the app reads the layout (DesktopSbS rule: never call `SetDisplayConfig`).
+  Settings; the app reads the layout (DesktopSbS rule: never call `SetDisplayConfig`). One
+  exception since 2026-10-26: the virtual monitor is taken off the desktop while the app is
+  closed and put back where it was when it starts (`Displays/VirtualMonitorSwitch`).
 
 ## 2. Architecture
 

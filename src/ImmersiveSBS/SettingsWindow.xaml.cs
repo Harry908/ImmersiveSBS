@@ -56,6 +56,7 @@ public partial class SettingsWindow : Window
         Fill(GlassesBox, displays, s.GlassesIdentity, s.ResolveGlassesIdentity(displays));
 
         ShowIn2DBox.IsChecked = s.ShowIn2D;
+        DisconnectBox.IsChecked = s.DisconnectVirtualMonitor;
         StartWithWindowsBox.IsChecked = AppSettings.StartWithWindows;
         BuildShortcutRows(s);
 
@@ -164,6 +165,7 @@ public partial class SettingsWindow : Window
         settings.VirtualMonitorIdentity = (VirtualMonitorBox.SelectedItem as DisplayChoice)?.Identity;
         settings.GlassesIdentity = (GlassesBox.SelectedItem as DisplayChoice)?.Identity;
         settings.ShowIn2D = ShowIn2DBox.IsChecked == true;
+        settings.DisconnectVirtualMonitor = DisconnectBox.IsChecked == true;
         settings.Shortcuts = shortcuts;
         settings.Ai3D = WholeScreenBox.IsChecked == true ? AiTarget.WholeScreen : AiTarget.Off;
         settings.DepthTier = (DepthTier)Math.Max(0, DepthTierBox.SelectedIndex);

@@ -61,7 +61,9 @@ per file. Source files mix CRLF and LF line endings; keep each file's own.
   It runs the Stage A guards (`Input/CursorGuard`, `StrayWindowGuard`; always on, no setting)
   only while the glasses show the virtual monitor, owns the shared `DepthService` (loaded at start, swapped when the
   model file changes), the browser link (the theater, the page's delayed sound), and pushes
-  settings to the session live through `ApplyAi` (`StereoSettings`).
+  settings to the session live through `ApplyAi` (`StereoSettings`). At exit it moves windows
+  off the virtual monitor and takes it off the desktop; at start it puts it back first
+  (`VirtualMonitorSwitch`, the one change it makes to the layout).
 - **`Session`** runs one render thread: capture (`Capture/DuplicationCapture`, or
   `GraphicsCapture`) → `Depth/AiStereo.Process` → `Theater/TheaterUi.Build` (the model badge) →
   `Renderer.Render` → present on a flip-model swap chain in `PresenterWindow` (glasses) or
@@ -181,7 +183,12 @@ More in `src/ImmersiveSBS/Depth/CLAUDE.md` (the depth path) and `extension/CLAUD
 - The app takes over the glasses. Claude may start the Release build for test runs and close
   the copy it started, but never one the user started; any other launch needs asking first.
 - Do not install or remove the virtual display driver, change display settings or scaling, or
-  call `SetDisplayConfig`. The user changes the display layout in Windows Settings.
+  call `SetDisplayConfig`. The user changes the display layout in Windows Settings. The one
+  exception is the app's own (`Displays/VirtualMonitorSwitch`, since 2026-10-26, the user's
+  request): the virtual monitor off the desktop at exit and back where it was at start
+  (`AppSettings.DisconnectVirtualMonitor`, on by default), only that path; the virtual display
+  driver's own control cannot (its pipe's `SETDISPLAYCOUNT 0` still loads one monitor). Running
+  it for a test needs the user's go-ahead.
 - Do not kill the user's running session; if the exe is locked, build another configuration.
 - Harnesses and experiments are throwaway and stay out of the repo (use the scratchpad).
 - Commit only when asked. Commit straight to `main`: no feature branches (the user's choice).

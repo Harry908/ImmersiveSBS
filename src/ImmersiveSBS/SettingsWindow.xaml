@@ -65,6 +65,7 @@
                         <TextBlock Text="Glasses" Style="{StaticResource FieldLabel}" Margin="0 16 0 4"/>
                         <ComboBox x:Name="GlassesBox"/>
                         <CheckBox x:Name="ShowIn2DBox" Margin="0 16 0 0" Content="Also show it when the glasses are in 2D mode"/>
+                        <CheckBox x:Name="DisconnectBox" Margin="0 8 0 0" Content="Disconnect the virtual monitor while ImmersiveSBS is closed"/>
                         <TextBlock Style="{StaticResource CaptionText}" Margin="0 12 0 0"
                                    Text="Arrange the displays in Windows Settings &gt; System &gt; Display."/>
                     </StackPanel>
