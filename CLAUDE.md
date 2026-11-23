@@ -97,54 +97,43 @@ per file. Source files mix CRLF and LF line endings; keep each file's own.
   through I/O binding, reset at seeks and scene cuts.
 - **Timing** (`StereoSettings.Timing`, `BufferSeconds`): live; matched (`MatchedDelay` sets a
   delay of 50–300 ms from the measured depth age; Auto turns it on when depth runs over 60 ms
-  behind); or the buffer (2, 3 or 4 s; 2 by default and at least). Only the theater is ever delayed, and only by its page.
+  behind); or the buffer (2, 3 or 4 s; 2 by default and at least). Only the theater is ever
+  delayed, and only by its page.
 - **Delay: only in the page, sound and picture together.** The app never delays, captures,
   replays or turns down any sound, and never shows the screen late: it is always shown as it
   is. The extension delays the theater video's tab's sound through Web Audio, and its player
-  shows the picture as late itself (WebGL: each presented frame kept as luma and half-size
-  chroma, 1.5 bytes a pixel at the size shown or the video's own if smaller, slots no longer
-  needed given back (`trimSlots`), stamped on the audio clock and drawn when its
-  sound is heard), with the caption read with each frame, its bar, panel and spinner live over
-  it; each video at its own frame rate (frame interpolation to 60 fps was tried and removed on
-  2026-10-26: no better 3D, only more work). The session reports `DelayRegion`/`DelaySeconds`; the controller asks the page for that
-  delay (`SetDelay`: the sound's with the trim and output latency, the picture's without) and
-  tells the session how late the sound plays now (`SoundDelay`: the model looks that far
-  ahead). Protected and cross-site media cannot be delayed (`BrowserCanDelay`): live then. No
-  gaps for a watched video (never for a live stream, the page's `live`): a pause suspends the
-  AudioContext, which holds sound and picture; at the end the tail plays out; a seek starts the
-  delay line again, drops the kept frames not shown and starts a new line (the page's count of
-  jumps, which keys the depth); the player shows a spinner until the new place's first frame;
-  a paused seek shows its frame at once.
-- **Theater** (`content.js` "The 3D theater"): while the app says the glasses are in 3D mode
+  shows the picture as late itself (frames kept by the player, stamped on the audio clock and drawn
+  when their sound is heard), each video at its own frame rate. The session reports
+  `DelayRegion`/`DelaySeconds`; the controller asks the page for that delay (`SetDelay`: the
+  sound's with the trim and output latency, the picture's without) and tells the session how
+  late the sound plays now (`SoundDelay`: the model looks that far ahead). Protected and
+  cross-site media cannot be delayed (`BrowserCanDelay`): live then. No gaps for a watched video
+  (never for a live stream, the page's `live`); a seek starts a new line (the page's count of
+  jumps, which keys the depth). How the page keeps frames, pauses and seeks is in
+  `extension/CLAUDE.md`.
+- **Theater** (`content.js` "The 3D theater"; the player itself is described in
+  `extension/CLAUDE.md`): while the app says the glasses are in 3D mode
   (`BrowserLink.SetStatus`, with the 3D panel's values, the stretch, what the video is, and
-  whether a model is loading: the player then waits, paused, `holdForModel`), a
-  "3D theater" button shows over a video the mouse is on; pressed (a real click, so the page may
-  go full screen), a player in a closed shadow root covers the page, goes full screen and draws
-  the video on a WebGL 2 canvas at the picture's size on the screen (stretched if set; a 2D
-  canvas at the video's size for a video it may not read). It stays full screen while open:
-  leaving full screen closes it (no windowed theater), and the page is back in its window. Opened
-  while the page is in its own full screen, the player goes inside that element and uses it
-  instead of going full screen over it: with two levels, YouTube missed the end of its own and
-  stayed in its full-screen layout after the theater closed. One frosted bar (seek bar, time, ±10 s, play/pause, mute, 3D
-  panel, exit; keys Space/K, ←/→ J/L, M, Esc; a click on the picture plays or pauses), a 3D
-  panel whose buttons come back as `command` messages, and the page's captions copied in (its
-  caption boxes within 6 ancestors of the video, and text tracks; read only when a
-  MutationObserver on the page's player or a `cuechange` says they changed, and once a second
-  anyway: a read forces the page's layout). The bar, the panel and the spinner are one box each,
-  which the renderer draws from the capture flat in both eyes (`AiStereo.LiveControls`), the
-  depth under them (and 3 model px around) set to the screen plane (`PageBoxes.Flatten`); the
-  caption is held flat in front of the scene at render time (`CaptionLock.ApplyGiven`). While
-  open it reports itself (`theater`: its picture in viewport CSS px, the px ratio, whether the
-  viewport is the screen), each frame it draws on the app's clock (with its line), its state,
-  its own boxes, and each frame the video presents at the model's size (`picture`, only to the
-  app; the status says the size); `TheaterReport` maps the picture to the screen. The controller follows the
-  newest open theater, if the browser is full screen on the virtual monitor (`FullScreenOn`),
-  and sets `Theater` (AI 3D on for it). From the tray (no click in the page) the worker opens it
-  on the largest playing video of the tab in front, fills the browser window and puts the
-  window in full screen. Removed on 2026-10-12: the app's own button, player window and mouse
-  hook, in-place conversion of page videos (following a video through window geometry, page
-  layout and player overlays), already-3D detection, dirty-rectangle and luma-grid change
-  detection, and the app's stretch.
+  whether a model is loading), a "3D theater" button shows over a video; pressed, a full-screen
+  player draws the video at the picture's size on the screen. Its 3D panel's buttons come back
+  as `command` messages. While open it reports itself (`theater`: its picture in viewport CSS
+  px, the px ratio, whether the viewport is the screen), each frame it draws on the app's clock
+  (with its line), its state, its own boxes, and each frame the video presents at the model's
+  size (`picture`, only to the app; the status says the size); `TheaterReport` maps the picture
+  to the screen. The controller follows the newest open theater, if the browser is full screen
+  on the virtual monitor (`FullScreenOn`), and sets `Theater` (AI 3D on for it). The player's
+  bar, panel and spinner are one box each, which the renderer draws from the capture flat in
+  both eyes (`AiStereo.LiveControls`), the depth under them (and 3 model px around) set to the
+  screen plane (`PageBoxes.Flatten`); the caption is held flat in front of the scene at render
+  time (`CaptionLock.ApplyGiven`). From the tray (no click in the page) the worker opens it on
+  the largest playing video of the tab in front, fills the browser window and puts the window
+  in full screen.
+- **Removed; do not bring back:** the app's own theater button,
+  player window and mouse hook; in-place conversion of page videos (following a video through
+  window geometry, page layout and player overlays); already-3D detection; dirty-rectangle and
+  luma-grid change detection; the app's stretch (all 2026-10-12); delaying the captured screen
+  in the app (2026-10-19, see below); frame interpolation to 60 fps (2026-10-26: no better 3D,
+  only more work).
 
 ## Things measured the hard way
 
